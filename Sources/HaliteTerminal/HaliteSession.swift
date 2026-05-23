@@ -12,8 +12,9 @@ public final class HaliteSession: ObservableObject {
     @Published public private(set) var processExited: Bool = false
     public private(set) var exitCode: Int32? = nil
 
-    /// M1 placeholder: 누적된 PTY 출력. M2+에서 `Grid` + parser로 교체됨.
-    @Published public private(set) var rawOutput: String = ""
+    /// 새로 디코드된 UTF-8 텍스트 청크를 발행. 호스트(NSTextView/렌더러)가 구독해서 append.
+    /// M1 placeholder. M2부터는 VTParser가 토큰화해서 의미 있는 이벤트로 발행.
+    public let outputChunks = PassthroughSubject<String, Never>()
 
     // 호스트가 구독하는 콜백. weak 캡처 권장.
     public var onTitleChanged: ((String) -> Void)?
@@ -79,7 +80,7 @@ public final class HaliteSession: ObservableObject {
         onOutput?(data)
         let appended = utf8Decoder.append(data)
         if !appended.isEmpty {
-            rawOutput.append(appended)
+            outputChunks.send(appended)
         }
     }
 

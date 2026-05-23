@@ -54,6 +54,7 @@ public final class HaliteSurfaceView: NSView {
     private let scrollView: NSScrollView
     private let textView: PassiveTextView
     private var outputSubscription: AnyCancellable?
+    private var lastReportedSize: (cols: Int, rows: Int)? = nil
 
     public init(session: HaliteSession) {
         self.session = session
@@ -88,11 +89,11 @@ public final class HaliteSurfaceView: NSView {
         addSubview(scroll)
         scroll.frame = bounds
 
-        // PTY 출력을 textView에 append.
-        outputSubscription = session.$rawOutput
+        // PTY 출력 chunk를 textView에 append.
+        outputSubscription = session.outputChunks
             .receive(on: RunLoop.main)
-            .sink { [weak self] text in
-                self?.applyRawOutput(text)
+            .sink { [weak self] chunk in
+                self?.appendOutput(chunk)
             }
     }
 
@@ -102,6 +103,32 @@ public final class HaliteSurfaceView: NSView {
     public override func layout() {
         super.layout()
         scrollView.frame = bounds
+        reportSizeIfChanged()
+    }
+
+    /// 현재 뷰 크기를 (cols, rows)로 환산해서 변경 시에만 PTY로 통지.
+    private func reportSizeIfChanged() {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+
+        let font = textView.font ?? NSFont.userFixedPitchFont(ofSize: session.config.fontSize)
+            ?? NSFont.systemFont(ofSize: session.config.fontSize)
+        // monospace 가정. M5에서 정확한 advance/line-height 사용으로 교체.
+        let glyphSize = ("M" as NSString).size(withAttributes: [.font: font])
+        let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
+        let cellW = max(glyphSize.width, 1)
+        let cellH = max(lineHeight, 1)
+
+        let inset = textView.textContainerInset
+        let usableW = bounds.width - inset.width * 2
+        let usableH = bounds.height - inset.height * 2
+        let cols = max(Int(floor(usableW / cellW)), 1)
+        let rows = max(Int(floor(usableH / cellH)), 1)
+
+        if lastReportedSize?.cols == cols && lastReportedSize?.rows == rows {
+            return
+        }
+        lastReportedSize = (cols, rows)
+        session.resize(cols: cols, rows: rows)
     }
 
     public override var acceptsFirstResponder: Bool { true }
@@ -180,42 +207,64 @@ public final class HaliteSurfaceView: NSView {
 
     // MARK: - Output
 
-    /// M1 placeholder: PTY 누적 텍스트를 통째로 textView에 반영.
-    /// 비효율적이지만 M1 검증용. M2+에서 Grid 기반 incremental 렌더로 교체.
-    private func applyRawOutput(_ text: String) {
-        textView.string = sanitizeForDisplay(text)
+    /// PTY 출력 chunk를 받아 textStorage에 직접 append.
+    /// 전체 텍스트 교체 대신 델타만 추가해서 O(n²) 회피.
+    /// M2에서 VTParser가 도착하면 이 부분은 .text 이벤트 핸들러로 갈아끼움.
+    private func appendOutput(_ chunk: String) {
+        guard let storage = textView.textStorage else { return }
+
+        var pending = ""
+        var iterator = chunk.unicodeScalars.makeIterator()
+        while let scalar = iterator.next() {
+            switch scalar.value {
+            case 0x1B: // ESC — CSI/OSC 등은 일단 끝까지 소비하고 버림 (M2에서 파서로)
+                flushPlain(&pending, into: storage)
+                if let next = iterator.next() {
+                    if next.value == 0x5B { // '['
+                        // CSI — 영문자(0x40-0x7E) 종결자까지
+                        while let c = iterator.next() {
+                            if (0x40...0x7E).contains(c.value) { break }
+                        }
+                    } else if next.value == 0x5D { // ']'
+                        // OSC — BEL(0x07) 또는 ST(ESC \) 까지
+                        while let c = iterator.next() {
+                            if c.value == 0x07 { break }
+                            if c.value == 0x1B {
+                                _ = iterator.next() // ST의 \\ 소비
+                                break
+                            }
+                        }
+                    } else {
+                        // 기타 escape 1바이트 — 무시
+                    }
+                }
+            case 0x07: // BEL — TODO: bell 콜백
+                flushPlain(&pending, into: storage)
+            case 0x08: // BS — 마지막 글자 제거
+                flushPlain(&pending, into: storage)
+                if storage.length > 0 {
+                    storage.deleteCharacters(in: NSRange(location: storage.length - 1, length: 1))
+                }
+            case 0x0D: // CR — M1은 LF만 사용
+                continue
+            default:
+                pending.unicodeScalars.append(scalar)
+            }
+        }
+        flushPlain(&pending, into: storage)
         textView.scrollToEndOfDocument(nil)
     }
 
-    /// VT 파서가 없으니 화면 표시용으로 흔한 제어 시퀀스를 최소한만 정리.
-    /// 이건 M2가 오면 사라질 코드.
-    private func sanitizeForDisplay(_ text: String) -> String {
-        var result = ""
-        result.reserveCapacity(text.count)
-        var iterator = text.unicodeScalars.makeIterator()
-        while let scalar = iterator.next() {
-            switch scalar.value {
-            case 0x1B:
-                // ESC + '['  → CSI 시퀀스. 'a-zA-Z' 종결자까지 스킵.
-                if let next = iterator.next(), next.value == 0x5B {
-                    while let c = iterator.next() {
-                        if (0x40...0x7E).contains(c.value) { break }
-                    }
-                }
-                // ESC + ']' → OSC 시퀀스. BEL(0x07) 또는 ST(ESC \) 까지 스킵.
-                else {
-                    // 단일 ESC 또는 다른 escape는 그냥 버림
-                }
-            case 0x07: // BEL — 무시
-                continue
-            case 0x08: // BS — 마지막 글자 제거
-                if !result.isEmpty { result.removeLast() }
-            case 0x0D: // CR — M1은 LF만 사용 (다음 LF가 받쳐줌)
-                continue
-            default:
-                result.unicodeScalars.append(scalar)
-            }
-        }
-        return result
+    private func flushPlain(_ pending: inout String, into storage: NSTextStorage) {
+        if pending.isEmpty { return }
+        let font = textView.font
+            ?? NSFont.userFixedPitchFont(ofSize: session.config.fontSize)
+            ?? NSFont.systemFont(ofSize: session.config.fontSize)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: session.config.foregroundColor,
+        ]
+        storage.append(NSAttributedString(string: pending, attributes: attrs))
+        pending = ""
     }
 }

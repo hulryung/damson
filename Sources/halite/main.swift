@@ -6,6 +6,19 @@ import SwiftUI
 // SwiftPM 실행: `swift run halite`
 // 추후 정식 .app 배포는 별도 Xcode 프로젝트로 그래듀에이션.
 
+final class HaliteWindowDelegate: NSObject, NSWindowDelegate {
+    let session: HaliteSession
+
+    init(session: HaliteSession) {
+        self.session = session
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        session.terminate()
+        NSApp.terminate(nil)
+    }
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 
@@ -25,6 +38,11 @@ let window = NSWindow(
 window.title = "halite"
 window.contentViewController = hostingController
 window.center()
+
+// 윈도우 close → 세션 종료 → 앱 종료. (좀비 zsh 방지)
+let windowDelegate = HaliteWindowDelegate(session: session)
+window.delegate = windowDelegate
+
 window.makeKeyAndOrderFront(nil)
 
 app.activate(ignoringOtherApps: true)
