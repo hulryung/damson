@@ -55,9 +55,11 @@ public final class HaliteSurfaceView: NSView {
     private let textView: PassiveTextView
     private var outputSubscription: AnyCancellable?
     private var lastReportedSize: (cols: Int, rows: Int)? = nil
+    private var sgr: SGRState
 
     public init(session: HaliteSession) {
         self.session = session
+        self.sgr = SGRState(defaultFG: session.config.foregroundColor)
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
@@ -68,7 +70,7 @@ public final class HaliteSurfaceView: NSView {
         let tv = PassiveTextView(frame: .zero)
         tv.isEditable = false
         tv.isSelectable = false
-        tv.isRichText = false
+        tv.isRichText = true
         tv.allowsUndo = false
         tv.font = NSFont.userFixedPitchFont(ofSize: session.config.fontSize)
         tv.textColor = session.config.foregroundColor
@@ -89,11 +91,11 @@ public final class HaliteSurfaceView: NSView {
         addSubview(scroll)
         scroll.frame = bounds
 
-        // PTY 출력 chunk를 textView에 append.
-        outputSubscription = session.outputChunks
+        // 파서가 발행하는 이벤트 구독.
+        outputSubscription = session.outputEvents
             .receive(on: RunLoop.main)
-            .sink { [weak self] chunk in
-                self?.appendOutput(chunk)
+            .sink { [weak self] event in
+                self?.handleEvent(event)
             }
     }
 
@@ -156,6 +158,25 @@ public final class HaliteSurfaceView: NSView {
         window?.makeFirstResponder(self)
     }
 
+    /// SwiftPM 실행 시 메뉴바가 자동 인식되지 않을 수 있어서, 표준 단축키를 직접 처리.
+    /// 메뉴가 잡혀있어도 안전 (중복 호출은 NSApp/NSWindow가 idempotent).
+    public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard mods == .command else {
+            return super.performKeyEquivalent(with: event)
+        }
+        switch event.charactersIgnoringModifiers {
+        case "q":
+            NSApp.terminate(nil)
+            return true
+        case "w":
+            window?.performClose(nil)
+            return true
+        default:
+            return super.performKeyEquivalent(with: event)
+        }
+    }
+
     // MARK: - Input
 
     public override func keyDown(with event: NSEvent) {
@@ -205,66 +226,154 @@ public final class HaliteSurfaceView: NSView {
         return nil
     }
 
-    // MARK: - Output
+    // MARK: - Output (VTParser-driven)
 
-    /// PTY 출력 chunk를 받아 textStorage에 직접 append.
-    /// 전체 텍스트 교체 대신 델타만 추가해서 O(n²) 회피.
-    /// M2에서 VTParser가 도착하면 이 부분은 .text 이벤트 핸들러로 갈아끼움.
-    private func appendOutput(_ chunk: String) {
-        guard let storage = textView.textStorage else { return }
-
-        var pending = ""
-        var iterator = chunk.unicodeScalars.makeIterator()
-        while let scalar = iterator.next() {
-            switch scalar.value {
-            case 0x1B: // ESC — CSI/OSC 등은 일단 끝까지 소비하고 버림 (M2에서 파서로)
-                flushPlain(&pending, into: storage)
-                if let next = iterator.next() {
-                    if next.value == 0x5B { // '['
-                        // CSI — 영문자(0x40-0x7E) 종결자까지
-                        while let c = iterator.next() {
-                            if (0x40...0x7E).contains(c.value) { break }
-                        }
-                    } else if next.value == 0x5D { // ']'
-                        // OSC — BEL(0x07) 또는 ST(ESC \) 까지
-                        while let c = iterator.next() {
-                            if c.value == 0x07 { break }
-                            if c.value == 0x1B {
-                                _ = iterator.next() // ST의 \\ 소비
-                                break
-                            }
-                        }
-                    } else {
-                        // 기타 escape 1바이트 — 무시
-                    }
-                }
-            case 0x07: // BEL — TODO: bell 콜백
-                flushPlain(&pending, into: storage)
-            case 0x08: // BS — 마지막 글자 제거
-                flushPlain(&pending, into: storage)
-                if storage.length > 0 {
-                    storage.deleteCharacters(in: NSRange(location: storage.length - 1, length: 1))
-                }
-            case 0x0D: // CR — M1은 LF만 사용
-                continue
-            default:
-                pending.unicodeScalars.append(scalar)
+    private func handleEvent(_ event: HaliteOutputEvent) {
+        switch event {
+        case .text(let s):
+            appendText(s)
+        case .execute(let b):
+            handleControl(b)
+        case .csi(let params, _, let final, _):
+            if final == 0x6D { // 'm' = SGR
+                applySGR(params)
             }
+            // 기타 CSI(커서 이동/erase 등)는 Grid 모델이 들어오는 M3에서 처리.
+        case .osc:
+            break // 세션이 이미 title을 잡았음.
         }
-        flushPlain(&pending, into: storage)
-        textView.scrollToEndOfDocument(nil)
     }
 
-    private func flushPlain(_ pending: inout String, into storage: NSTextStorage) {
-        if pending.isEmpty { return }
-        let font = textView.font
+    private func handleControl(_ b: UInt8) {
+        guard let storage = textView.textStorage else { return }
+        switch b {
+        case 0x08: // BS
+            if storage.length > 0 {
+                storage.deleteCharacters(in: NSRange(location: storage.length - 1, length: 1))
+            }
+        case 0x07: // BEL
+            break // 세션이 onBell 발사 — TODO 시각 피드백
+        case 0x09: // TAB
+            appendText("\t")
+        case 0x0A: // LF
+            appendText("\n")
+            textView.scrollToEndOfDocument(nil)
+        case 0x0D: // CR — Grid 없는 동안은 무시
+            break
+        default:
+            break
+        }
+    }
+
+    private func appendText(_ s: String) {
+        guard let storage = textView.textStorage else { return }
+        let attrs = currentAttributes()
+        storage.append(NSAttributedString(string: s, attributes: attrs))
+    }
+
+    private func currentAttributes() -> [NSAttributedString.Key: Any] {
+        let baseFont = textView.font
             ?? NSFont.userFixedPitchFont(ofSize: session.config.fontSize)
             ?? NSFont.systemFont(ofSize: session.config.fontSize)
-        let attrs: [NSAttributedString.Key: Any] = [
+
+        let font: NSFont
+        if sgr.bold {
+            font = NSFontManager.shared.convert(baseFont, toHaveTrait: .boldFontMask)
+        } else {
+            font = baseFont
+        }
+
+        let displayFG = sgr.inverse ? (sgr.bg ?? session.config.backgroundColor) : sgr.fg
+        let displayBG = sgr.inverse ? sgr.fg : sgr.bg
+
+        var attrs: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: session.config.foregroundColor,
+            .foregroundColor: displayFG,
         ]
-        storage.append(NSAttributedString(string: pending, attributes: attrs))
-        pending = ""
+        if let bg = displayBG {
+            attrs[.backgroundColor] = bg
+        }
+        if sgr.underline {
+            attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
+        return attrs
+    }
+
+    private func applySGR(_ rawParams: [Int]) {
+        // -1 (unspecified)을 0(reset)으로 정규화.
+        let params = rawParams.map { $0 < 0 ? 0 : $0 }
+        var i = 0
+        while i < params.count {
+            let p = params[i]
+            switch p {
+            case 0:
+                sgr = SGRState(defaultFG: session.config.foregroundColor)
+            case 1:  sgr.bold = true
+            case 3:  sgr.italic = true
+            case 4:  sgr.underline = true
+            case 7:  sgr.inverse = true
+            case 22: sgr.bold = false
+            case 23: sgr.italic = false
+            case 24: sgr.underline = false
+            case 27: sgr.inverse = false
+            case 30...37:
+                sgr.fg = Palette.normal16[p - 30]
+            case 38:
+                if let (color, skip) = extendedColor(params: params, from: i + 1) {
+                    sgr.fg = color
+                    i += skip
+                }
+            case 39:
+                sgr.fg = session.config.foregroundColor
+            case 40...47:
+                sgr.bg = Palette.normal16[p - 40]
+            case 48:
+                if let (color, skip) = extendedColor(params: params, from: i + 1) {
+                    sgr.bg = color
+                    i += skip
+                }
+            case 49:
+                sgr.bg = nil
+            case 90...97:
+                sgr.fg = Palette.bright16[p - 90]
+            case 100...107:
+                sgr.bg = Palette.bright16[p - 100]
+            default:
+                break
+            }
+            i += 1
+        }
+    }
+
+    /// `38;5;n` 또는 `38;2;r;g;b` 파싱. 반환은 (색, 소비한 추가 파람 수).
+    private func extendedColor(params: [Int], from idx: Int) -> (NSColor, Int)? {
+        guard idx < params.count else { return nil }
+        switch params[idx] {
+        case 5:
+            guard idx + 1 < params.count else { return nil }
+            return (Palette.color256(params[idx + 1]), 2)
+        case 2:
+            guard idx + 3 < params.count else { return nil }
+            let r = max(0, min(255, params[idx + 1]))
+            let g = max(0, min(255, params[idx + 2]))
+            let b = max(0, min(255, params[idx + 3]))
+            return (Palette.rgb(r, g, b), 4)
+        default:
+            return nil
+        }
+    }
+}
+
+/// 현재 펜(pen) 속성. 텍스트가 들어올 때 적용할 색/볼드/언더라인/반전.
+private struct SGRState {
+    var fg: NSColor
+    var bg: NSColor? = nil
+    var bold = false
+    var italic = false
+    var underline = false
+    var inverse = false
+
+    init(defaultFG: NSColor) {
+        self.fg = defaultFG
     }
 }

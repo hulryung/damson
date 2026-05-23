@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import Foundation
 
-/// 터미널 인스턴스 1개. PTY + 파서 + Grid + 렌더 상태를 묶음.
+/// 터미널 인스턴스 1개. PTY + 파서 + (장차) Grid + 렌더 상태를 묶음.
 /// 호스트(cmux / halite.app)가 생성·소유하고 `HaliteTerminalView`에 주입.
 public final class HaliteSession: ObservableObject {
     public private(set) var config: HaliteConfig
@@ -12,9 +12,8 @@ public final class HaliteSession: ObservableObject {
     @Published public private(set) var processExited: Bool = false
     public private(set) var exitCode: Int32? = nil
 
-    /// 새로 디코드된 UTF-8 텍스트 청크를 발행. 호스트(NSTextView/렌더러)가 구독해서 append.
-    /// M1 placeholder. M2부터는 VTParser가 토큰화해서 의미 있는 이벤트로 발행.
-    public let outputChunks = PassthroughSubject<String, Never>()
+    /// VTParser가 발행하는 의미적 이벤트.
+    public let outputEvents = PassthroughSubject<HaliteOutputEvent, Never>()
 
     // 호스트가 구독하는 콜백. weak 캡처 권장.
     public var onTitleChanged: ((String) -> Void)?
@@ -25,10 +24,12 @@ public final class HaliteSession: ObservableObject {
     public var onOutput: ((Data) -> Void)?
 
     private let pty = PTYHost()
-    private var utf8Decoder = UTF8Decoder()
+    private let parser = VTParser()
 
     public init(config: HaliteConfig) {
         self.config = config
+
+        parser.delegate = self
 
         pty.onData = { [weak self] data in
             self?.handlePTYData(data)
@@ -46,7 +47,6 @@ public final class HaliteSession: ObservableObject {
                 rows: 24
             )
         } catch {
-            // M1에선 콘솔에 출력. M2에서 에러 상태 모델링.
             NSLog("halite: PTY spawn failed: \(error)")
         }
     }
@@ -78,10 +78,7 @@ public final class HaliteSession: ObservableObject {
 
     private func handlePTYData(_ data: Data) {
         onOutput?(data)
-        let appended = utf8Decoder.append(data)
-        if !appended.isEmpty {
-            outputChunks.send(appended)
-        }
+        parser.feed(data)
     }
 
     private func handlePTYExit(code: Int32) {
@@ -89,33 +86,51 @@ public final class HaliteSession: ObservableObject {
         exitCode = code
         onExit?(code)
     }
+
+    /// 파서 이벤트를 outputEvents로 forward + 일부는 세션 상태 갱신
+    /// (예: OSC 0/2 → title).
+    fileprivate func dispatchTitleIfNeeded(_ oscParams: [String]) {
+        guard oscParams.count >= 2 else { return }
+        switch oscParams[0] {
+        case "0", "2":
+            let newTitle = oscParams[1]
+            if newTitle != title {
+                title = newTitle
+                onTitleChanged?(newTitle)
+            }
+        default:
+            break
+        }
+    }
 }
 
-/// PTY가 UTF-8 시퀀스 중간에 끊어 보내도 안전하게 누적 디코드.
-/// 가장 긴 유효 prefix만 방출하고 나머지(부분 시퀀스)는 다음 호출까지 보류.
-/// M1 placeholder. M2+에서 `VTParser` 안으로 이동.
-private struct UTF8Decoder {
-    private var pending: [UInt8] = []
+extension HaliteSession: VTParserDelegate {
+    public func vtParser(_ parser: VTParser, didEmitText text: String) {
+        outputEvents.send(.text(text))
+    }
 
-    mutating func append(_ data: Data) -> String {
-        pending.append(contentsOf: data)
-        if pending.isEmpty { return "" }
+    public func vtParser(_ parser: VTParser, didExecute byte: UInt8) {
+        if byte == 0x07 { onBell?() }
+        outputEvents.send(.execute(byte))
+    }
 
-        // UTF-8 코드포인트는 최대 4바이트. 뒤쪽에서 최대 3바이트까지 잘라보며
-        // 디코딩되는 가장 긴 prefix를 찾는다.
-        let maxTrail = min(3, pending.count)
-        for trail in 0...maxTrail {
-            let len = pending.count - trail
-            if len == 0 { return "" }
-            let slice = pending.prefix(len)
-            if let str = String(bytes: slice, encoding: .utf8) {
-                pending.removeFirst(len)
-                return str
-            }
-        }
+    public func vtParser(
+        _ parser: VTParser,
+        didEmitCSI params: [Int],
+        intermediates: [UInt8],
+        finalByte: UInt8,
+        privateMarker: UInt8?
+    ) {
+        outputEvents.send(.csi(
+            params: params,
+            intermediates: intermediates,
+            finalByte: finalByte,
+            privateMarker: privateMarker
+        ))
+    }
 
-        // 어떤 prefix로도 디코드 실패 — 손상된 바이트. 한 바이트 버리고 진행.
-        pending.removeFirst()
-        return ""
+    public func vtParser(_ parser: VTParser, didEmitOSC params: [String]) {
+        dispatchTitleIfNeeded(params)
+        outputEvents.send(.osc(params))
     }
 }
