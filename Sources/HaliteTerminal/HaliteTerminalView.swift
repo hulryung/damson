@@ -31,6 +31,14 @@ public struct HaliteTerminalView: NSViewRepresentable {
     }
 }
 
+/// 내부 표시용 NSTextView. first responder도 mouse hit도 거부해서
+/// 키/클릭 라우팅이 항상 부모 `HaliteSurfaceView`에 가도록 함.
+private final class PassiveTextView: NSTextView {
+    override var acceptsFirstResponder: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func becomeFirstResponder() -> Bool { false }
+}
+
 /// M1 placeholder: 자식 `NSTextView`에 PTY 출력을 누적해서 보여주고,
 /// 키 이벤트는 이쪽에서 잡아 `session.write(_:)`로 전달.
 /// M4 이후 `CAMetalLayer` + 자체 렌더러로 교체.
@@ -44,7 +52,7 @@ public final class HaliteSurfaceView: NSView {
     public var onFocus: (() -> Void)?
 
     private let scrollView: NSScrollView
-    private let textView: NSTextView
+    private let textView: PassiveTextView
     private var outputSubscription: AnyCancellable?
 
     public init(session: HaliteSession) {
@@ -56,9 +64,9 @@ public final class HaliteSurfaceView: NSView {
         scroll.autoresizingMask = [.width, .height]
         scroll.drawsBackground = false
 
-        let tv = NSTextView(frame: .zero)
+        let tv = PassiveTextView(frame: .zero)
         tv.isEditable = false
-        tv.isSelectable = true
+        tv.isSelectable = false
         tv.isRichText = false
         tv.allowsUndo = false
         tv.font = NSFont.userFixedPitchFont(ofSize: session.config.fontSize)
@@ -102,6 +110,23 @@ public final class HaliteSurfaceView: NSView {
         let ok = super.becomeFirstResponder()
         if ok { onFocus?() }
         return ok
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // SwiftUI 호스팅을 통과해도 우리 NSView가 first responder가 되도록 강제.
+        // 안 그러면 안쪽 NSTextView/NSScrollView가 키를 가져가서 keyDown이 안 옴.
+        if let window = window {
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self = self, let window = window else { return }
+                window.makeFirstResponder(self)
+            }
+        }
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        // 클릭으로 키 입력 되찾기 (혹시 다른 곳에 first responder가 가있을 때 대비)
+        window?.makeFirstResponder(self)
     }
 
     // MARK: - Input
