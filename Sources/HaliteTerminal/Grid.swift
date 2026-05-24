@@ -29,6 +29,12 @@ public final class Grid {
     /// DECSTBM scroll region 하단 (0-based, inclusive). 기본값 rows - 1.
     public private(set) var scrollBottom: Int = 0
 
+    /// DECSC/DECRC (또는 CSI s/u)로 저장되는 cursor + pen 스냅샷.
+    /// 각 buffer(primary/alt)가 자기 saved state를 가져야 함 — alt screen snapshot에 포함.
+    private var savedCursorRow: Int = 0
+    private var savedCursorCol: Int = 0
+    private var savedPen: CellAttrs? = nil
+
     /// 현재 펜(pen) 속성. SGR이 갱신.
     public var pen: CellAttrs
 
@@ -64,6 +70,9 @@ public final class Grid {
         var cursorVisible: Bool
         var scrollTop: Int
         var scrollBottom: Int
+        var savedCursorRow: Int
+        var savedCursorCol: Int
+        var savedPen: CellAttrs?
     }
     private var savedPrimary: PrimarySnapshot? = nil
 
@@ -228,6 +237,37 @@ public final class Grid {
         bumpVersion()
     }
 
+    /// CHA / HPA — 같은 줄에서 cursor를 절대 col로 이동 (1-based).
+    public func setCursorColumn(_ col: Int) {
+        cursorCol = max(0, min(cols - 1, max(col, 1) - 1))
+        pendingWrap = false
+        bumpVersion()
+    }
+
+    /// VPA — cursor를 절대 row로 이동 (1-based). col은 유지.
+    public func setCursorRow(_ row: Int) {
+        cursorRow = max(0, min(rows - 1, max(row, 1) - 1))
+        pendingWrap = false
+        bumpVersion()
+    }
+
+    // MARK: - Cursor save/restore (DECSC/DECRC, CSI s/u)
+
+    public func saveCursor() {
+        savedCursorRow = cursorRow
+        savedCursorCol = cursorCol
+        savedPen = pen
+    }
+
+    public func restoreCursor() {
+        guard savedPen != nil else { return }
+        cursorRow = max(0, min(rows - 1, savedCursorRow))
+        cursorCol = max(0, min(cols - 1, savedCursorCol))
+        if let p = savedPen { pen = p }
+        pendingWrap = false
+        bumpVersion()
+    }
+
     // MARK: - Erase (CSI)
 
     /// EL — `\e[Km` modes:
@@ -274,6 +314,18 @@ public final class Grid {
             scrollback.removeAll(keepingCapacity: true)
         default:
             return
+        }
+        bumpVersion()
+    }
+
+    /// ECH — cursor 위치부터 같은 줄에서 n개 셀을 blank로 (cursor는 그대로).
+    public func eraseChars(_ n: Int) {
+        let count = max(1, n)
+        let endCol = min(cols, cursorCol + count)
+        let blank = Cell.empty(attrs: pen)
+        guard cursorRow >= 0, cursorRow < rows, cursorCol < endCol else { return }
+        for c in cursorCol..<endCol {
+            cells[cursorRow][c] = blank
         }
         bumpVersion()
     }
@@ -497,7 +549,10 @@ public final class Grid {
             scrollbackPushCount: scrollbackPushCount,
             cursorVisible: cursorVisible,
             scrollTop: scrollTop,
-            scrollBottom: scrollBottom
+            scrollBottom: scrollBottom,
+            savedCursorRow: savedCursorRow,
+            savedCursorCol: savedCursorCol,
+            savedPen: savedPen
         )
         // 빈 alt buffer로 swap. pen은 그대로 (앱이 곧 SGR로 재설정).
         cells = Self.makeBlank(rows: rows, cols: cols, attrs: pen)
@@ -508,6 +563,9 @@ public final class Grid {
         scrollbackPushCount = 0
         scrollTop = 0
         scrollBottom = rows - 1
+        savedCursorRow = 0
+        savedCursorCol = 0
+        savedPen = nil
         isAltScreenActive = true
         bumpVersion()
     }
@@ -528,6 +586,9 @@ public final class Grid {
         cursorVisible = saved.cursorVisible
         scrollTop = saved.scrollTop
         scrollBottom = saved.scrollBottom
+        savedCursorRow = saved.savedCursorRow
+        savedCursorCol = saved.savedCursorCol
+        savedPen = saved.savedPen
         savedPrimary = nil
         isAltScreenActive = false
         bumpVersion()

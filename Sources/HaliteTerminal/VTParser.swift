@@ -24,6 +24,13 @@ public protocol VTParserDelegate: AnyObject {
         privateMarker: UInt8?
     )
     func vtParser(_ parser: VTParser, didEmitOSC params: [String])
+    /// ESC + single final byte 시퀀스 (예: `ESC 7` = DECSC, `ESC 8` = DECRC, `ESC c` = RIS).
+    /// 인수 없는 단일 바이트 escape만. CSI/OSC와 별개 경로.
+    func vtParser(_ parser: VTParser, didEmitESC finalByte: UInt8)
+}
+
+public extension VTParserDelegate {
+    func vtParser(_ parser: VTParser, didEmitESC finalByte: UInt8) {}
 }
 
 public final class VTParser {
@@ -128,7 +135,8 @@ public final class VTParser {
         case 0x20...0x2F:
             intermediates.append(b)
         case 0x30...0x7E:
-            // 단일 바이트 ESC 시퀀스 (예: ESC '7' = save cursor). M2는 무시.
+            // ESC + single final byte: DECSC(7) / DECRC(8) / RIS(c) / keypad mode 등.
+            delegate?.vtParser(self, didEmitESC: b)
             state = .ground
         default:
             state = .ground

@@ -144,6 +144,20 @@ public final class HaliteSession: ObservableObject {
         case 0x4B:                          // K — EL
             let mode = (params.first ?? -1) < 0 ? 0 : params[0]
             grid.eraseInLine(mode: mode)
+        case 0x47, 0x60:                    // G / ` — CHA / HPA: 절대 column으로
+            grid.setCursorColumn(p1)
+        case 0x64:                          // d — VPA: 절대 row로
+            grid.setCursorRow(p1)
+        case 0x58:                          // X — ECH: cursor부터 n셀 erase
+            grid.eraseChars(p1)
+        case 0x73:                          // s — SC (DECSC ANSI variant)
+            if privateMarker == nil {
+                grid.saveCursor()
+            }
+        case 0x75:                          // u — RC (DECRC ANSI variant)
+            if privateMarker == nil {
+                grid.restoreCursor()
+            }
         case 0x53: grid.scrollUp(count: p1)   // S — SU
         case 0x54: grid.scrollDown(count: p1) // T — SD
         case 0x72:                          // r — DECSTBM (private marker가 없어야 함)
@@ -230,5 +244,21 @@ extension HaliteSession: VTParserDelegate {
     public func vtParser(_ parser: VTParser, didEmitOSC params: [String]) {
         dispatchTitleIfNeeded(params)
         outputEvents.send(.osc(params))
+    }
+
+    public func vtParser(_ parser: VTParser, didEmitESC finalByte: UInt8) {
+        switch finalByte {
+        case 0x37: // '7' — DECSC: save cursor + pen
+            grid.saveCursor()
+        case 0x38: // '8' — DECRC: restore cursor + pen
+            grid.restoreCursor()
+        case 0x63: // 'c' — RIS: 화면 + 상태 리셋 (간소 버전)
+            grid.eraseInDisplay(mode: 2)
+            grid.setCursor(row: 1, col: 1)
+        case 0x3D, 0x3E: // '=' / '>' — application/normal keypad mode (M3.9는 무시)
+            break
+        default:
+            break
+        }
     }
 }

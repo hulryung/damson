@@ -570,4 +570,87 @@ final class GridTests: XCTestCase {
         g.scrollUp(count: 1)
         XCTAssertEqual(g.scrollback.count, 0) // top != 0 이면 push 안 함
     }
+
+    // MARK: M3.9 — CHA / VPA / ECH / SC / RC
+
+    func testSetCursorColumnAbsolute() {
+        let g = makeGrid(cols: 8, rows: 4)
+        g.setCursor(row: 3, col: 1) // (2, 0)
+        g.setCursorColumn(5) // 1-based → col 4
+        XCTAssertEqual(g.cursorRow, 2) // row 유지
+        XCTAssertEqual(g.cursorCol, 4)
+    }
+
+    func testSetCursorRowAbsolute() {
+        let g = makeGrid(cols: 4, rows: 8)
+        g.setCursor(row: 2, col: 3) // (1, 2)
+        g.setCursorRow(6) // 1-based → row 5
+        XCTAssertEqual(g.cursorRow, 5)
+        XCTAssertEqual(g.cursorCol, 2) // col 유지
+    }
+
+    func testEraseChars() {
+        let g = makeGrid(cols: 8, rows: 2)
+        write(g, "ABCDEFGH")
+        g.setCursor(row: 1, col: 3) // (0, 2)
+        g.eraseChars(3) // cols 2,3,4 blank
+        XCTAssertEqual(g.cell(row: 0, col: 1).char, "B")
+        XCTAssertEqual(g.cell(row: 0, col: 2).char, " ")
+        XCTAssertEqual(g.cell(row: 0, col: 4).char, " ")
+        XCTAssertEqual(g.cell(row: 0, col: 5).char, "F")
+        // cursor 위치 그대로
+        XCTAssertEqual(g.cursorRow, 0)
+        XCTAssertEqual(g.cursorCol, 2)
+    }
+
+    func testEraseCharsClipsAtRowEnd() {
+        let g = makeGrid(cols: 4, rows: 2)
+        write(g, "ABCD")
+        g.setCursor(row: 1, col: 3) // (0, 2)
+        g.eraseChars(10) // 끝까지만
+        XCTAssertEqual(g.cell(row: 0, col: 2).char, " ")
+        XCTAssertEqual(g.cell(row: 0, col: 3).char, " ")
+    }
+
+    func testSaveAndRestoreCursor() {
+        let g = makeGrid(cols: 8, rows: 4)
+        g.setCursor(row: 3, col: 5) // (2, 4)
+        g.applySGR([31]) // red
+        g.saveCursor()
+        g.setCursor(row: 1, col: 1) // (0, 0)
+        g.applySGR([34]) // blue
+        g.restoreCursor()
+        XCTAssertEqual(g.cursorRow, 2)
+        XCTAssertEqual(g.cursorCol, 4)
+        // pen도 복원
+        XCTAssertEqual(g.pen.fg, Palette.normal16[1]) // red
+    }
+
+    func testRestoreCursorWithoutSaveIsNoOp() {
+        let g = makeGrid()
+        g.setCursor(row: 2, col: 3) // (1, 2)
+        let v0 = g.version
+        g.restoreCursor()
+        XCTAssertEqual(g.version, v0)
+        XCTAssertEqual(g.cursorRow, 1)
+        XCTAssertEqual(g.cursorCol, 2)
+    }
+
+    func testSavedCursorIsolatedAcrossAltScreen() {
+        let g = makeGrid(cols: 4, rows: 4)
+        g.setCursor(row: 4, col: 4) // (3, 3)
+        g.saveCursor()
+        g.enterAltScreen()
+        // alt에선 saved 비어있음
+        let altCheckpoint = g.cursorRow
+        XCTAssertEqual(altCheckpoint, 0)
+        g.restoreCursor() // no-op
+        XCTAssertEqual(g.cursorRow, 0)
+        g.leaveAltScreen()
+        // primary 복귀 후 saved 살아있어야 함
+        g.setCursor(row: 1, col: 1) // (0, 0)
+        g.restoreCursor()
+        XCTAssertEqual(g.cursorRow, 3)
+        XCTAssertEqual(g.cursorCol, 3)
+    }
 }
