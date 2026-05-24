@@ -164,7 +164,14 @@ public final class HaliteSession: ObservableObject {
             switch p {
             case 25:
                 grid.setCursorVisible(set)
-            // 1049 (alt screen) 등은 M3.6 이후에 추가
+            case 47, 1047, 1049:
+                // 47/1047/1049 차이는 cursor 저장과 클리어 타이밍의 미세 차이지만,
+                // M3.7은 셋 다 동일하게 "enter/leave alt"로 처리. 실용상 vim/less/htop OK.
+                if set {
+                    grid.enterAltScreen()
+                } else {
+                    grid.leaveAltScreen()
+                }
             default:
                 break
             }

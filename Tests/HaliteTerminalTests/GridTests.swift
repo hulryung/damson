@@ -365,4 +365,91 @@ final class GridTests: XCTestCase {
         g.setCursorVisible(true) // already true
         XCTAssertEqual(g.version, v0)
     }
+
+    // MARK: alt screen (M3.7)
+
+    func testEnterAltScreenStartsBlank() {
+        let g = makeGrid(cols: 4, rows: 2)
+        write(g, "ABCD"); g.lineFeed(); g.carriageReturn()
+        write(g, "EFGH")
+        g.enterAltScreen()
+        XCTAssertTrue(g.isAltScreenActive)
+        XCTAssertEqual(g.cursorRow, 0)
+        XCTAssertEqual(g.cursorCol, 0)
+        for r in 0..<2 {
+            for c in 0..<4 {
+                XCTAssertEqual(g.cell(row: r, col: c).char, " ")
+            }
+        }
+    }
+
+    func testLeaveAltScreenRestoresPrimary() {
+        let g = makeGrid(cols: 4, rows: 2)
+        write(g, "ABCD"); g.lineFeed(); g.carriageReturn()
+        write(g, "EFG")
+        let savedRow = g.cursorRow
+        let savedCol = g.cursorCol
+        g.enterAltScreen()
+        write(g, "XYZW") // alt 내용
+        g.leaveAltScreen()
+        XCTAssertFalse(g.isAltScreenActive)
+        XCTAssertEqual(g.cursorRow, savedRow)
+        XCTAssertEqual(g.cursorCol, savedCol)
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, "A")
+        XCTAssertEqual(g.cell(row: 1, col: 2).char, "G")
+    }
+
+    func testAltScreenDoesNotPushToScrollback() {
+        let g = makeGrid(cols: 2, rows: 2)
+        // Primary: push one line off first
+        write(g, "AA"); g.lineFeed(); g.carriageReturn()
+        write(g, "BB"); g.lineFeed()
+        let scrollbackBeforeAlt = g.scrollback.count
+        XCTAssertGreaterThan(scrollbackBeforeAlt, 0)
+
+        g.enterAltScreen()
+        // Alt 스크롤백은 0이어야 함
+        XCTAssertEqual(g.scrollback.count, 0)
+        // alt 내에서 한참 흘려도 scrollback 안 생김
+        for _ in 0..<5 {
+            write(g, "XX"); g.lineFeed(); g.carriageReturn()
+        }
+        XCTAssertEqual(g.scrollback.count, 0)
+
+        g.leaveAltScreen()
+        // 복귀 후 primary scrollback 복원
+        XCTAssertEqual(g.scrollback.count, scrollbackBeforeAlt)
+    }
+
+    func testEnterAltScreenIdempotent() {
+        let g = makeGrid()
+        g.enterAltScreen()
+        let v1 = g.version
+        g.enterAltScreen() // no-op
+        XCTAssertEqual(g.version, v1)
+    }
+
+    func testLeaveAltScreenWithoutEnterIsNoOp() {
+        let g = makeGrid()
+        let v0 = g.version
+        g.leaveAltScreen()
+        XCTAssertEqual(g.version, v0)
+        XCTAssertFalse(g.isAltScreenActive)
+    }
+
+    func testResizeWhileInAltKeepsSavedPrimaryConsistent() {
+        let g = makeGrid(cols: 4, rows: 3)
+        write(g, "AAA"); g.lineFeed(); g.carriageReturn()
+        write(g, "BBB")
+        g.enterAltScreen()
+        write(g, "alt!")
+        g.resize(cols: 6, rows: 4)
+        g.leaveAltScreen()
+        // 복귀 후 grid는 새 크기지만 primary 내용은 잘 살아있어야 함
+        XCTAssertEqual(g.cols, 6)
+        XCTAssertEqual(g.rows, 4)
+        // "AAA"가 첫줄에 있어야 (grow 시 위쪽 정렬 유지)
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, "A")
+        XCTAssertEqual(g.cell(row: 1, col: 0).char, "B")
+    }
 }

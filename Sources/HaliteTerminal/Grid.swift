@@ -44,6 +44,22 @@ public final class Grid {
     /// scrollback 최대 줄 수. `HaliteSession`이 config에서 받아서 설정.
     public var maxScrollbackLines: Int = 10_000
 
+    /// alt screen 진입 여부. true면 현재 buffer는 alt, 진입 직전의 primary 상태가 `savedPrimary`에 보존.
+    public private(set) var isAltScreenActive: Bool = false
+
+    /// alt screen 진입 시 보존되는 primary buffer 스냅샷. alt 도중 resize가 와도 같이 따라감.
+    private struct PrimarySnapshot {
+        var cells: [[Cell]]
+        var cursorRow: Int
+        var cursorCol: Int
+        var pen: CellAttrs
+        var pendingWrap: Bool
+        var scrollback: [[Cell]]
+        var scrollbackPushCount: UInt64
+        var cursorVisible: Bool
+    }
+    private var savedPrimary: PrimarySnapshot? = nil
+
     public init(cols: Int, rows: Int, pen: CellAttrs) {
         precondition(cols > 0 && rows > 0)
         self.cols = cols
@@ -120,18 +136,19 @@ public final class Grid {
     // MARK: - 스크롤
 
     /// viewport 전체를 위로 `count`줄 만큼 밀어 올림.
-    /// 위로 빠지는 줄은 scrollback에 push. 바닥은 빈 줄로 채움.
+    /// primary buffer면 위로 빠지는 줄을 scrollback에 push, alt에선 그냥 버림. 바닥은 빈 줄로 채움.
     public func scrollUp(count n: Int) {
         guard n > 0 else { return }
         let evictCount = min(n, rows)
 
-        // 위쪽 evictCount줄을 scrollback으로
-        for i in 0..<evictCount {
-            pushToScrollback(cells[i])
+        // alt screen일 땐 scrollback에 누적하지 않음 (vim/less 등이 이걸 기대).
+        if !isAltScreenActive {
+            for i in 0..<evictCount {
+                pushToScrollback(cells[i])
+            }
         }
 
         if n >= rows {
-            // 모두 비움 (scrollback push는 위에서 끝)
             cells = Self.makeBlank(rows: rows, cols: cols, attrs: pen)
         } else {
             cells.removeFirst(n)
@@ -335,36 +352,122 @@ public final class Grid {
         if newCols == cols && newRows == rows { return }
 
         let rowOffset: Int = newRows < rows ? rows - newRows : 0
-        let blank = Cell.empty(attrs: pen)
 
-        // 행 shrink 시 위로 사라지는 줄은 scrollback으로 보존
-        if rowOffset > 0 {
+        // 행 shrink 시 위로 사라지는 줄은 scrollback으로 보존.
+        // alt 활성 중엔 alt 스크롤백을 만들지 않고, primary 스크롤백도 건드리지 않음
+        // (저장된 primary는 아래에서 따로 resize 하면서 그쪽 scrollback에 push).
+        if rowOffset > 0 && !isAltScreenActive {
             for r in 0..<rowOffset {
                 pushToScrollback(cells[r])
             }
         }
 
+        cells = Self.resizeCellsArray(
+            cells, fromCols: cols, fromRows: rows,
+            toCols: newCols, toRows: newRows, pen: pen
+        )
+        cursorRow = max(0, min(newRows - 1, cursorRow - rowOffset))
+        cursorCol = max(0, min(newCols - 1, cursorCol))
+
+        // saved primary가 있으면 같이 resize (그쪽도 동일 크기 유지 + shrink 시 자기 scrollback에 push).
+        if var saved = savedPrimary {
+            let savedRows = saved.cells.count
+            let savedCols = saved.cells.first?.count ?? 0
+            let savedRowOffset = newRows < savedRows ? savedRows - newRows : 0
+            if savedRowOffset > 0 {
+                for r in 0..<savedRowOffset {
+                    saved.scrollback.append(saved.cells[r])
+                    saved.scrollbackPushCount &+= 1
+                    if saved.scrollback.count > maxScrollbackLines {
+                        saved.scrollback.removeFirst(saved.scrollback.count - maxScrollbackLines)
+                    }
+                }
+            }
+            saved.cells = Self.resizeCellsArray(
+                saved.cells, fromCols: savedCols, fromRows: savedRows,
+                toCols: newCols, toRows: newRows, pen: saved.pen
+            )
+            saved.cursorRow = max(0, min(newRows - 1, saved.cursorRow - savedRowOffset))
+            saved.cursorCol = max(0, min(newCols - 1, saved.cursorCol))
+            saved.pendingWrap = false
+            savedPrimary = saved
+        }
+
+        cols = newCols
+        rows = newRows
+        pendingWrap = false
+        bumpVersion()
+    }
+
+    private static func resizeCellsArray(
+        _ source: [[Cell]],
+        fromCols: Int, fromRows: Int,
+        toCols: Int, toRows: Int,
+        pen: CellAttrs
+    ) -> [[Cell]] {
+        let rowOffset = toRows < fromRows ? fromRows - toRows : 0
+        let blank = Cell.empty(attrs: pen)
         var newCells: [[Cell]] = []
-        newCells.reserveCapacity(newRows)
-        for r in 0..<newRows {
+        newCells.reserveCapacity(toRows)
+        for r in 0..<toRows {
             var newRow: [Cell] = []
-            newRow.reserveCapacity(newCols)
+            newRow.reserveCapacity(toCols)
             let srcRow = r + rowOffset
-            for c in 0..<newCols {
-                if srcRow >= 0, srcRow < rows, c < cols {
-                    newRow.append(cells[srcRow][c])
+            for c in 0..<toCols {
+                if srcRow >= 0, srcRow < fromRows, c < fromCols {
+                    newRow.append(source[srcRow][c])
                 } else {
                     newRow.append(blank)
                 }
             }
             newCells.append(newRow)
         }
-        cells = newCells
-        cursorRow = max(0, min(newRows - 1, cursorRow - rowOffset))
-        cursorCol = max(0, min(newCols - 1, cursorCol))
-        cols = newCols
-        rows = newRows
+        return newCells
+    }
+
+    // MARK: - Alt screen (CSI ?1049 / ?1047 / ?47)
+
+    /// alt buffer로 swap. 현재 primary 상태(cells/cursor/pen/scrollback/visibility)를 snapshot.
+    /// 알려진 한도: 1049/1047/47 차이를 구분 안 함 — 모두 1049 의미로 처리 (vim/less/htop 호환).
+    public func enterAltScreen() {
+        if isAltScreenActive { return }
+        savedPrimary = PrimarySnapshot(
+            cells: cells,
+            cursorRow: cursorRow,
+            cursorCol: cursorCol,
+            pen: pen,
+            pendingWrap: pendingWrap,
+            scrollback: scrollback,
+            scrollbackPushCount: scrollbackPushCount,
+            cursorVisible: cursorVisible
+        )
+        // 빈 alt buffer로 swap. pen은 그대로 (앱이 곧 SGR로 재설정).
+        cells = Self.makeBlank(rows: rows, cols: cols, attrs: pen)
+        cursorRow = 0
+        cursorCol = 0
         pendingWrap = false
+        scrollback = []
+        scrollbackPushCount = 0
+        isAltScreenActive = true
+        bumpVersion()
+    }
+
+    /// alt에서 빠져나와 primary 복원. snapshot이 없으면 no-op.
+    public func leaveAltScreen() {
+        guard isAltScreenActive, let saved = savedPrimary else {
+            isAltScreenActive = false
+            return
+        }
+        cells = saved.cells
+        cursorRow = saved.cursorRow
+        cursorCol = saved.cursorCol
+        pen = saved.pen
+        pendingWrap = saved.pendingWrap
+        scrollback = saved.scrollback
+        scrollbackPushCount = saved.scrollbackPushCount
+        cursorVisible = saved.cursorVisible
+        savedPrimary = nil
+        isAltScreenActive = false
         bumpVersion()
     }
 
