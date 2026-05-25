@@ -36,7 +36,7 @@ public struct CellAttrs: Equatable {
     }
 }
 
-/// Grid의 한 셀. 글자 하나 + 속성.
+/// Grid의 한 셀. 글자 하나 + 속성 + (옵션) hyperlink.
 public struct Cell: Equatable {
     public var char: Character
     public var attrs: CellAttrs
@@ -45,11 +45,20 @@ public struct Cell: Equatable {
     /// wide glyph가 자연스럽게 두 칸을 점유함). 셸이 보내는 wide-aware backspace
     /// (`\b\b  \b\b`)가 두 cell을 함께 비울 때 정상 동작에 필요.
     public var isContinuation: Bool
+    /// OSC 8 hyperlink URI. 셀이 hyperlink의 일부면 set.
+    /// run-length 그룹핑 시 hyperlink 경계에서 split됨.
+    public var hyperlink: String?
 
-    public init(char: Character, attrs: CellAttrs, isContinuation: Bool = false) {
+    public init(
+        char: Character,
+        attrs: CellAttrs,
+        isContinuation: Bool = false,
+        hyperlink: String? = nil
+    ) {
         self.char = char
         self.attrs = attrs
         self.isContinuation = isContinuation
+        self.hyperlink = hyperlink
     }
 
     /// 빈 셀 (공백 + 펜 속성).

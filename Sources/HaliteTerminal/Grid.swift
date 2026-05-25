@@ -24,6 +24,16 @@ public final class Grid {
     /// 셸이 prompt 그릴 동안 잠깐 숨기는 패턴에 사용.
     public private(set) var cursorVisible: Bool = true
 
+    /// DECSCUSR (`CSI Ps SP q`)로 변경되는 cursor 모양.
+    public enum CursorShape: Int {
+        case block, underline, bar
+    }
+    public private(set) var cursorShape: CursorShape = .block
+
+    /// OSC 8 hyperlink — 현재 활성 URI. nil이면 비활성.
+    /// 다음 `putChar`에 의해 새로 쓰여지는 cell들에 attach됨.
+    public private(set) var currentHyperlink: String? = nil
+
     /// DECSTBM scroll region 상단 (0-based, inclusive). 기본값 0.
     public private(set) var scrollTop: Int = 0
     /// DECSTBM scroll region 하단 (0-based, inclusive). 기본값 rows - 1.
@@ -127,7 +137,9 @@ public final class Grid {
             cursorCol = 0
         }
 
-        cells[cursorRow][cursorCol] = Cell(char: ch, attrs: pen)
+        cells[cursorRow][cursorCol] = Cell(
+            char: ch, attrs: pen, hyperlink: currentHyperlink
+        )
         if wide, cursorCol + 1 < cols {
             cells[cursorRow][cursorCol + 1] = Cell.continuation(attrs: pen)
         }
@@ -619,6 +631,20 @@ public final class Grid {
         if cursorVisible == visible { return }
         cursorVisible = visible
         bumpVersion()
+    }
+
+    /// DECSCUSR 적용. handleCSI에서 호출.
+    public func setCursorShape(_ shape: CursorShape) {
+        if cursorShape == shape { return }
+        cursorShape = shape
+        bumpVersion()
+    }
+
+    /// OSC 8 활성 URI 갱신. nil은 비활성.
+    /// 이후의 `putChar`가 cells의 `hyperlink` 필드에 이 값 attach.
+    public func setHyperlink(_ uri: String?) {
+        currentHyperlink = uri
+        // 이미 그려진 cell은 영향 없음 → version 안 올림.
     }
 
     /// 스크롤백 전체 비우기 (ED mode 3 등이 사용).

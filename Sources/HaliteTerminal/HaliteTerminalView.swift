@@ -82,6 +82,11 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     private var isWarmingUpIME: Bool = false
     private var didWarmupIME: Bool = false
 
+    /// Selection state. 좌표는 (textViewRow, col) — textViewRow는 `scrollback.count + viewportRow`.
+    /// `anchor`는 mouseDown 위치, `head`는 mouseDragged 따라가는 끝점.
+    private var selectionAnchor: (row: Int, col: Int)?
+    private var selectionHead: (row: Int, col: Int)?
+
     public init(session: HaliteSession) {
         self.session = session
 
@@ -210,7 +215,140 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     }
 
     public override func mouseDown(with event: NSEvent) {
+        // 클릭으로 키 입력 되찾기 (혹시 다른 곳에 first responder가 가있을 때 대비)
         window?.makeFirstResponder(self)
+
+        // 선택 시작.
+        let point = convertEventToCell(event)
+        selectionAnchor = point
+        selectionHead = point
+        scheduleRender()
+    }
+
+    public override func mouseDragged(with event: NSEvent) {
+        guard selectionAnchor != nil else { return }
+        selectionHead = convertEventToCell(event)
+        scheduleRender()
+    }
+
+    public override func mouseUp(with event: NSEvent) {
+        // anchor == head 이면 (그냥 클릭이면) 선택 클리어.
+        if let a = selectionAnchor, let h = selectionHead, a == h {
+            selectionAnchor = nil
+            selectionHead = nil
+            scheduleRender()
+        }
+    }
+
+    /// `event.locationInWindow`를 textView 콘텐츠 좌표계의 (row, col)로 변환.
+    /// row는 scrollback과 viewport 통합 인덱스 (= `scrollback.count + viewportRow`).
+    private func convertEventToCell(_ event: NSEvent) -> (row: Int, col: Int) {
+        let pInView = convert(event.locationInWindow, from: nil)
+        let pInTextView = textView.convert(pInView, from: self)
+        let inset = textView.textContainerInset
+        let cellW = max(cellMetrics.width, 1)
+        let cellH = max(cellMetrics.height, 1)
+        let row = max(0, Int(floor((pInTextView.y - inset.height) / cellH)))
+        let col = max(0, Int(floor((pInTextView.x - inset.width) / cellW)))
+        let maxRow = session.grid.scrollback.count + session.grid.rows - 1
+        let maxCol = session.grid.cols
+        return (min(row, maxRow), min(col, maxCol))
+    }
+
+    /// anchor/head를 row-major 순으로 정규화한 (start, end). end는 exclusive.
+    private func normalizedSelection() -> (start: (row: Int, col: Int), end: (row: Int, col: Int))? {
+        guard let a = selectionAnchor, let h = selectionHead else { return nil }
+        if a.row == h.row && a.col == h.col { return nil }
+        if a.row < h.row || (a.row == h.row && a.col < h.col) {
+            return (a, h)
+        }
+        return (h, a)
+    }
+
+    /// 주어진 textViewRow에서 선택된 col 범위 (있으면). end exclusive.
+    private func selectedColumnsForRow(_ textViewRow: Int, cols: Int) -> Range<Int>? {
+        guard let (start, end) = normalizedSelection() else { return nil }
+        if textViewRow < start.row || textViewRow > end.row { return nil }
+        let lo: Int
+        let hi: Int
+        if textViewRow == start.row && textViewRow == end.row {
+            lo = start.col
+            hi = min(end.col, cols)
+        } else if textViewRow == start.row {
+            lo = start.col
+            hi = cols
+        } else if textViewRow == end.row {
+            lo = 0
+            hi = min(end.col, cols)
+        } else {
+            lo = 0
+            hi = cols
+        }
+        guard lo < hi else { return nil }
+        return lo..<hi
+    }
+
+    private func selectionKey() -> String {
+        guard let a = selectionAnchor, let h = selectionHead else { return "" }
+        return "\(a.row),\(a.col)-\(h.row),\(h.col)"
+    }
+
+    private func clearSelectionIfNeeded() {
+        guard selectionAnchor != nil else { return }
+        selectionAnchor = nil
+        selectionHead = nil
+        scheduleRender()
+    }
+
+    private func selectedText() -> String? {
+        guard let (start, end) = normalizedSelection() else { return nil }
+        let grid = session.grid
+        let scrollbackCount = grid.scrollback.count
+        var lines: [String] = []
+        for r in start.row...end.row {
+            let cells: [Cell]
+            if r < scrollbackCount {
+                cells = grid.scrollback[r]
+            } else {
+                let vp = r - scrollbackCount
+                if vp >= grid.rows { break }
+                cells = grid.row(vp)
+            }
+            guard let range = selectedColumnsForRow(r, cols: cells.count) else { continue }
+            var chars = ""
+            for c in range {
+                guard c < cells.count else { break }
+                if cells[c].isContinuation { continue }
+                chars.append(cells[c].char)
+            }
+            while chars.last == " " { chars.removeLast() }
+            lines.append(chars)
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    /// Edit > Copy / Cmd+C가 보내는 셀렉터. 선택 텍스트를 pasteboard에 push.
+    @objc public func copy(_ sender: Any?) {
+        guard let text = selectedText() else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+
+    /// Edit > Paste / Cmd+V. clipboard 텍스트를 PTY로. bracketed paste 모드면 wrap.
+    @objc public func paste(_ sender: Any?) {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        var data = Data()
+        if session.bracketedPasteEnabled {
+            data.append(contentsOf: [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E]) // ESC[200~
+        }
+        if let utf8 = text.data(using: .utf8) {
+            data.append(utf8)
+        }
+        if session.bracketedPasteEnabled {
+            data.append(contentsOf: [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]) // ESC[201~
+        }
+        session.write(data)
     }
 
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -245,6 +383,9 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         if mods.contains(.command) {
             return
         }
+
+        // 사용자 키 입력이 들어오면 selection 클리어 (터미널 관습).
+        clearSelectionIfNeeded()
 
         // Ctrl+letter (다른 modifier 없이) → terminal control byte. IME 우회.
         // Shift+Ctrl도 같은 group (e.g. Ctrl+Shift+C → Ctrl+C와 동일 바이트 → 0x03).
@@ -440,16 +581,20 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         }
     }
 
+    private var lastRenderedSelectionKey: String = ""
+
     private func renderNow() {
         let grid = session.grid
-        // marked text가 직전과 같지 않으면 (조합 시작/갱신/취소) 반드시 재렌더.
-        // 같으면서 grid도 안 변했으면 skip.
-        // 참고: halite Rust의 ImeState도 모든 IME 콜백에 request_redraw=true를 set함.
-        if grid.version == lastRenderedVersion && markedText == lastRenderedMarkedText {
+        // selection state도 render에 영향을 주므로 같이 본다.
+        let selKey = selectionKey()
+        if grid.version == lastRenderedVersion
+            && markedText == lastRenderedMarkedText
+            && selKey == lastRenderedSelectionKey {
             return
         }
         lastRenderedVersion = grid.version
         lastRenderedMarkedText = markedText
+        lastRenderedSelectionKey = selKey
 
         guard let storage = textView.textStorage else { return }
         let baseFont = textView.font
@@ -468,10 +613,13 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         let result = NSMutableAttributedString()
         result.beginEditing()
 
+        let scrollbackCount = grid.scrollback.count
+
         // Scrollback (오래된 → 최근). cursor는 안 그림.
-        for line in grid.scrollback {
+        for (i, line) in grid.scrollback.enumerated() {
+            let sel = selectedColumnsForRow(i, cols: line.count)
             appendLine(
-                line, cols: line.count, cursorCol: nil,
+                line, cols: line.count, cursorCol: nil, selectedCols: sel,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
             result.append(NSAttributedString(string: "\n"))
@@ -481,6 +629,8 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         let cursorRow = grid.cursorVisible ? grid.cursorRow : -1
         let mt = markedText
         for r in 0..<grid.rows {
+            let textViewRow = scrollbackCount + r
+            let sel = selectedColumnsForRow(textViewRow, cols: grid.cols)
             if r == cursorRow && !mt.isEmpty {
                 // 조합 중 텍스트가 있으면 cursor 자리에 overlay
                 appendCursorRowWithMarkedText(
@@ -495,7 +645,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             } else {
                 let cc: Int? = (r == cursorRow) ? grid.cursorCol : nil
                 appendLine(
-                    grid.row(r), cols: grid.cols, cursorCol: cc,
+                    grid.row(r), cols: grid.cols, cursorCol: cc, selectedCols: sel,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
@@ -520,10 +670,12 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
 
     /// 한 줄(Cell 배열)을 run-length attribute 그룹으로 묶어서 attributed string에 append.
     /// `cursorCol`이 주어지면 그 위치의 한 셀은 단독으로 inverse 처리해서 그림.
+    /// `selectedCols`가 주어지면 해당 범위의 셀들은 selection background로 칠함.
     private func appendLine(
         _ line: [Cell],
         cols: Int,
         cursorCol: Int?,
+        selectedCols: Range<Int>?,
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
         into result: NSMutableAttributedString
@@ -533,23 +685,39 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         if cc >= 0 && cc < cols {
             if cc > 0 {
                 appendRunGroup(
-                    line, range: 0..<cc,
+                    line, range: 0..<cc, selectedCols: selectedCols,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
-            var attrs = line[cc].attrs
-            attrs.inverse.toggle()
-            let nsAttrs = makeAttributes(for: attrs, baseFont: baseFont, paragraphStyle: paragraphStyle)
-            result.append(NSAttributedString(string: String(line[cc].char), attributes: nsAttrs))
+            var inverseCell = line[cc]
+            inverseCell.attrs.inverse.toggle()
+            let cursorSelected = selectedCols?.contains(cc) ?? false
+            let cursorIsWide = (cc + 1 < cols && line[cc + 1].isContinuation)
+            if cursorIsWide {
+                appendWideCell(
+                    inverseCell,
+                    isSelected: cursorSelected,
+                    baseFont: baseFont,
+                    paragraphStyle: paragraphStyle,
+                    into: result
+                )
+            } else {
+                let nsAttrs = makeAttributes(
+                    for: inverseCell.attrs, baseFont: baseFont,
+                    paragraphStyle: paragraphStyle,
+                    isSelected: cursorSelected, hyperlink: inverseCell.hyperlink
+                )
+                result.append(NSAttributedString(string: String(inverseCell.char), attributes: nsAttrs))
+            }
             if cc + 1 < cols {
                 appendRunGroup(
-                    line, range: (cc + 1)..<cols,
+                    line, range: (cc + 1)..<cols, selectedCols: selectedCols,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
         } else {
             appendRunGroup(
-                line, range: 0..<cols,
+                line, range: 0..<cols, selectedCols: selectedCols,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -569,7 +737,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         // cursor 이전 셀들 — 평소처럼
         if cursorCol > 0 {
             appendRunGroup(
-                line, range: 0..<cursorCol,
+                line, range: 0..<cursorCol, selectedCols: nil,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -591,7 +759,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         let afterCol = min(cursorCol + overlayCols, cols)
         if afterCol < cols {
             appendRunGroup(
-                line, range: afterCol..<cols,
+                line, range: afterCol..<cols, selectedCols: nil,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -600,6 +768,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     private func appendRunGroup(
         _ line: [Cell],
         range: Range<Int>,
+        selectedCols: Range<Int>?,
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
         into result: NSMutableAttributedString
@@ -612,27 +781,80 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
                 c += 1
                 continue
             }
+
+            // 이 cell이 wide (다음 cell이 continuation)인지 검사.
+            // wide cell은 단독 run으로 emit하면서 `.kern`으로 정확히 2*cellW 차지하도록.
+            let isWide = (c + 1 < line.count && line[c + 1].isContinuation)
+            if isWide {
+                let runSelected = selectedCols?.contains(c) ?? false
+                appendWideCell(
+                    line[c],
+                    isSelected: runSelected,
+                    baseFont: baseFont,
+                    paragraphStyle: paragraphStyle,
+                    into: result
+                )
+                c += 1
+                continue
+            }
+
             let runAttrs = line[c].attrs
+            let runHyperlink = line[c].hyperlink
+            let runSelected = selectedCols?.contains(c) ?? false
             var endC = c + 1
-            // 같은 attrs가 이어지는 한 묶음. continuation은 묶음 경계로 다룸.
+            // 같은 attrs + hyperlink + selection 상태가 이어지는 한 묶음.
+            // wide cell은 묶음에 포함시키지 않음 (단독 emit 필요).
             while endC < range.upperBound,
                   !line[endC].isContinuation,
-                  line[endC].attrs == runAttrs {
+                  !(endC + 1 < line.count && line[endC + 1].isContinuation),
+                  line[endC].attrs == runAttrs,
+                  line[endC].hyperlink == runHyperlink,
+                  (selectedCols?.contains(endC) ?? false) == runSelected {
                 endC += 1
             }
             var runChars = ""
             runChars.reserveCapacity(endC - c)
             for i in c..<endC { runChars.append(line[i].char) }
-            let nsAttrs = makeAttributes(for: runAttrs, baseFont: baseFont, paragraphStyle: paragraphStyle)
+            let nsAttrs = makeAttributes(
+                for: runAttrs, baseFont: baseFont,
+                paragraphStyle: paragraphStyle,
+                isSelected: runSelected, hyperlink: runHyperlink
+            )
             result.append(NSAttributedString(string: runChars, attributes: nsAttrs))
             c = endC
         }
     }
 
+    /// Wide cell 한 개를 단독 NSAttributedString run으로 emit + kern으로 2*cellW 강제.
+    private func appendWideCell(
+        _ cell: Cell,
+        isSelected: Bool,
+        baseFont: NSFont,
+        paragraphStyle: NSParagraphStyle,
+        into result: NSMutableAttributedString
+    ) {
+        var nsAttrs = makeAttributes(
+            for: cell.attrs, baseFont: baseFont,
+            paragraphStyle: paragraphStyle,
+            isSelected: isSelected, hyperlink: cell.hyperlink
+        )
+        let font = (nsAttrs[.font] as? NSFont) ?? baseFont
+        let char = String(cell.char) as NSString
+        let naturalW = char.size(withAttributes: [.font: font]).width
+        let targetW = cellMetrics.width * 2
+        let kern = targetW - naturalW
+        if kern > 0.01 {
+            nsAttrs[.kern] = kern
+        }
+        result.append(NSAttributedString(string: String(cell.char), attributes: nsAttrs))
+    }
+
     private func makeAttributes(
         for cellAttrs: CellAttrs,
         baseFont: NSFont,
-        paragraphStyle: NSParagraphStyle
+        paragraphStyle: NSParagraphStyle,
+        isSelected: Bool = false,
+        hyperlink: String? = nil
     ) -> [NSAttributedString.Key: Any] {
         let (fg, bg) = cellAttrs.resolvedColors(defaultBG: session.config.backgroundColor)
         let font: NSFont
@@ -646,11 +868,19 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             .foregroundColor: fg,
             .paragraphStyle: paragraphStyle,
         ]
-        if let bg = bg {
+        if isSelected {
+            attrs[.backgroundColor] = NSColor.selectedTextBackgroundColor
+        } else if let bg = bg {
             attrs[.backgroundColor] = bg
         }
         if cellAttrs.underline {
             attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
+        // OSC 8 hyperlink — underline + 약간 옅은 색으로 시각 단서. (클릭 핸들링은 후속.)
+        if let uri = hyperlink, let url = URL(string: uri) {
+            attrs[.link] = url
+            attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            attrs[.underlineColor] = fg.withAlphaComponent(0.5)
         }
         return attrs
     }

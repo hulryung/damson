@@ -16,6 +16,10 @@ public final class HaliteSession: ObservableObject {
     /// 화면 렌더링은 더 이상 이걸 통하지 않고 `grid` + `gridChanged`를 본다.
     public let outputEvents = PassthroughSubject<HaliteOutputEvent, Never>()
 
+    /// Bracketed paste 모드. CSI ?2004h/l로 토글. 켜져 있으면 Cmd+V 시 호스트가
+    /// pasted 텍스트를 ESC[200~ ... ESC[201~로 wrap해서 보냄.
+    public private(set) var bracketedPasteEnabled: Bool = false
+
     /// 셀 grid (현재 viewport).
     public let grid: Grid
 
@@ -105,16 +109,23 @@ public final class HaliteSession: ObservableObject {
         onExit?(code)
     }
 
-    /// OSC 0/2 → window title.
-    fileprivate func dispatchTitleIfNeeded(_ oscParams: [String]) {
-        guard oscParams.count >= 2 else { return }
-        switch oscParams[0] {
+    /// OSC dispatch — 0/2(title), 8(hyperlink), 그 외 무시.
+    fileprivate func dispatchOSCIfNeeded(_ oscParams: [String]) {
+        guard let kind = oscParams.first else { return }
+        switch kind {
         case "0", "2":
+            guard oscParams.count >= 2 else { return }
             let newTitle = oscParams[1]
             if newTitle != title {
                 title = newTitle
                 onTitleChanged?(newTitle)
             }
+        case "8":
+            // OSC 8 ; params ; URI ST
+            //   start: params 보통 "id=xxx" 또는 빈 문자열, URI 비어있지 않음
+            //   end: URI 빈 문자열
+            let uri = oscParams.count >= 3 ? oscParams[2] : ""
+            grid.setHyperlink(uri.isEmpty ? nil : uri)
         default:
             break
         }
@@ -167,6 +178,26 @@ public final class HaliteSession: ObservableObject {
                 let bot = (params.count > 1 && params[1] > 0) ? params[1] : grid.rows
                 grid.setScrollRegion(top: top - 1, bottom: bot - 1)
             }
+        case 0x63:                          // c — DA1 / DA2
+            if privateMarker == nil && intermediates.isEmpty {
+                // Primary DA → VT102 identification: ESC [ ? 6 c
+                pty.write(Data([0x1B, 0x5B, 0x3F, 0x36, 0x63]))
+            } else if privateMarker == 0x3E && intermediates.isEmpty {
+                // Secondary DA → ESC [ > 0 ; 0 ; 0 c (generic)
+                pty.write(Data([0x1B, 0x5B, 0x3E, 0x30, 0x3B, 0x30, 0x3B, 0x30, 0x63]))
+            }
+        case 0x71:                          // q — DECSCUSR (intermediate=SP)
+            if privateMarker == nil && intermediates == [0x20] {
+                let ps = (params.first ?? -1) <= 0 ? 1 : params[0]
+                let shape: Grid.CursorShape
+                switch ps {
+                case 1, 2: shape = .block
+                case 3, 4: shape = .underline
+                case 5, 6: shape = .bar
+                default: shape = .block
+                }
+                grid.setCursorShape(shape)
+            }
         case 0x6D:                          // m — SGR
             // SGR은 `CSI ... m`에 private marker도 intermediate도 **없을 때**만.
             // `CSI > 4 ; 2 m` (xterm modifyOtherKeys / Kitty keyboard protocol)나
@@ -201,6 +232,9 @@ public final class HaliteSession: ObservableObject {
                 } else {
                     grid.leaveAltScreen()
                 }
+            case 2004:
+                // Bracketed paste mode toggle. 호스트(view)가 read.
+                bracketedPasteEnabled = set
             default:
                 break
             }
@@ -251,7 +285,7 @@ extension HaliteSession: VTParserDelegate {
     }
 
     public func vtParser(_ parser: VTParser, didEmitOSC params: [String]) {
-        dispatchTitleIfNeeded(params)
+        dispatchOSCIfNeeded(params)
         outputEvents.send(.osc(params))
     }
 
