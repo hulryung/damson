@@ -636,6 +636,59 @@ final class GridTests: XCTestCase {
         XCTAssertEqual(g.cursorCol, 2)
     }
 
+    // MARK: M5 slice — East Asian Wide
+
+    func testWideCharOccupiesTwoCells() {
+        let g = makeGrid(cols: 6, rows: 2)
+        g.putChar("한")
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, "한")
+        XCTAssertFalse(g.cell(row: 0, col: 0).isContinuation)
+        XCTAssertTrue(g.cell(row: 0, col: 1).isContinuation)
+        XCTAssertEqual(g.cursorCol, 2)
+    }
+
+    func testWideCharThenNarrowCharLayout() {
+        let g = makeGrid(cols: 6, rows: 2)
+        g.putChar("한")
+        g.putChar("x")
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, "한")
+        XCTAssertTrue(g.cell(row: 0, col: 1).isContinuation)
+        XCTAssertEqual(g.cell(row: 0, col: 2).char, "x")
+        XCTAssertEqual(g.cursorCol, 3)
+    }
+
+    func testWideCharBackspaceSequenceClearsBoth() {
+        // 셸이 wide char 삭제용으로 보내는 \b\b  \b\b 시퀀스를 시뮬레이션.
+        let g = makeGrid(cols: 6, rows: 2)
+        g.putChar("한")
+        g.putChar("국")
+        XCTAssertEqual(g.cursorCol, 4)
+        // 셸 시퀀스: \b\b  \b\b
+        g.backspace(); g.backspace()                  // cursor: 4 → 3 → 2
+        XCTAssertEqual(g.cursorCol, 2)
+        g.putChar(" "); g.putChar(" ")                // cell[2]=' ', cell[3]=' '
+        g.backspace(); g.backspace()                  // cursor: 4 → 3 → 2
+        // "국"이 차지했던 cell 2, 3 둘 다 비워졌고, "한"은 그대로 cell 0, 1.
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, "한")
+        XCTAssertTrue(g.cell(row: 0, col: 1).isContinuation)
+        XCTAssertEqual(g.cell(row: 0, col: 2).char, " ")
+        XCTAssertEqual(g.cell(row: 0, col: 3).char, " ")
+        XCTAssertEqual(g.cursorCol, 2)
+    }
+
+    func testWideCharWrapsAtLastColumn() {
+        // 마지막 열에 wide char 들어오면, 그 열은 비우고 다음 줄로 wrap.
+        let g = makeGrid(cols: 3, rows: 2)
+        g.putChar("a")  // col 0
+        g.putChar("b")  // col 1
+        // col 2 (마지막)에 wide char "한"이 들어오려 하면 → wrap
+        g.putChar("한")
+        XCTAssertEqual(g.cell(row: 1, col: 0).char, "한")
+        XCTAssertTrue(g.cell(row: 1, col: 1).isContinuation)
+        XCTAssertEqual(g.cursorRow, 1)
+        XCTAssertEqual(g.cursorCol, 2)
+    }
+
     func testSavedCursorIsolatedAcrossAltScreen() {
         let g = makeGrid(cols: 4, rows: 4)
         g.setCursor(row: 4, col: 4) // (3, 3)

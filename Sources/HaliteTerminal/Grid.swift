@@ -102,22 +102,42 @@ public final class Grid {
 
     // MARK: - 기본 mutation
 
-    /// 한 글자를 현재 cursor 위치에 쓰고 cursor를 한 칸 진행.
-    /// xterm-style: 마지막 열에서는 wrap을 다음 평문까지 미룬다.
+    /// 한 글자를 현재 cursor 위치에 쓰고 cursor를 진행.
+    /// xterm-style deferred wrap: 마지막 열에서는 wrap을 다음 평문까지 미룸.
+    /// East Asian Wide char는 2 cell 점유 (선행 cell + continuation marker).
     public func putChar(_ ch: Character) {
         if pendingWrap {
-            // 직전 putChar로 마지막 열에 도달했음 → 지금 wrap 실행.
             pendingWrap = false
             lineFeed()
             cursorCol = 0
         }
         guard cursorRow >= 0, cursorRow < rows,
               cursorCol >= 0, cursorCol < cols else { return }
+
+        let wide = Cell.isWide(ch)
+
+        // wide char가 마지막 열에 걸리면 그 cell은 비우고 다음 줄로 wrap.
+        if wide && cursorCol == cols - 1 {
+            cells[cursorRow][cursorCol] = Cell.empty(attrs: pen)
+            if cursorRow >= rows - 1 {
+                scrollUp(count: 1)
+            } else {
+                cursorRow += 1
+            }
+            cursorCol = 0
+        }
+
         cells[cursorRow][cursorCol] = Cell(char: ch, attrs: pen)
-        if cursorCol == cols - 1 {
+        if wide, cursorCol + 1 < cols {
+            cells[cursorRow][cursorCol + 1] = Cell.continuation(attrs: pen)
+        }
+
+        let advance = wide ? 2 : 1
+        if cursorCol + advance >= cols {
             pendingWrap = true
+            cursorCol = cols - 1
         } else {
-            cursorCol += 1
+            cursorCol += advance
         }
         bumpVersion()
     }

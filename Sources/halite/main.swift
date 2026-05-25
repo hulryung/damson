@@ -7,6 +7,10 @@ import SwiftUI
 // SwiftPM 실행: `swift run halite`
 // 추후 정식 .app 배포는 별도 Xcode 프로젝트로 그래듀에이션.
 
+// raw binary로 실행됐다면 .app으로 wrap + relaunch.
+// 한글 IME 첫 자모 race를 잡기 위해 필수 (LaunchServices 등록).
+AppBundleTrampoline.relaunchInAppBundleIfNeeded()
+
 final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
     let session: HaliteSession
     private var titleSubscription: AnyCancellable?

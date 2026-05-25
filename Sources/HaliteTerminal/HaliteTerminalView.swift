@@ -42,7 +42,7 @@ private final class PassiveTextView: NSTextView {
 /// 한 번에 textStorage 전체를 갈아끼움 (run-length attrs 그룹핑).
 /// 키 이벤트는 이쪽에서 잡아 `session.write(_:)`로 전달.
 /// M4 이후 `CAMetalLayer` + 자체 렌더러로 교체.
-public final class HaliteSurfaceView: NSView {
+public final class HaliteSurfaceView: NSView, NSTextInputClient {
     public let session: HaliteSession
 
     public var isActive: Bool = true {
@@ -57,8 +57,30 @@ public final class HaliteSurfaceView: NSView {
     private var lastReportedSize: (cols: Int, rows: Int)? = nil
     private var renderScheduled = false
     private var lastRenderedVersion: UInt64 = .max
+    /// 마지막 렌더 시점의 marked text. grid 변화 없이 marked text만 비워질 때
+    /// (BS-cancel 등) 강제 재렌더링하기 위한 비교용.
+    private var lastRenderedMarkedText: String = ""
     /// 캐시된 cell metrics. `reportSizeIfChanged`가 갱신, render가 paragraph style에 사용.
     private var cellMetrics: (width: CGFloat, height: CGFloat) = (1, 1)
+
+    /// IME 조합 중인 텍스트. 비어있지 않으면 cursor 자리에 시각적 overlay.
+    /// 실제 PTY 전송은 `insertText`(commit)이 올 때만 일어남.
+    private var markedText: String = ""
+
+    /// 현재 처리 중인 `NSEvent`. `keyDown`이 set, IME 콜백(setMarkedText/insertText)에서
+    /// "이 commit/preedit을 일으킨 키가 무엇인가" 판단에 사용. BS-cancel spurious commit 감지용.
+    private var currentKeyEvent: NSEvent?
+
+    /// 이 keyDown 사이클의 doCommand(deleteBackward:)를 1회 swallow. BS-cancel 처리 시,
+    /// IME 콜백이 이미 marked text를 비웠고 PTY에 BS를 또 보내면 안 될 때 use.
+    private var swallowNextDeleteCommand: Bool = false
+
+    /// startup IME warmup 진행 중 플래그. `.app` 등록만으로는 TSM↔IMK 첫 IPC 핸드셰이크가
+    /// 사용자의 첫 keystroke 시점에야 일어나서 첫 자모가 leak되는 잔존 race가 있음.
+    /// view가 first responder가 되자마자 합성 dummy event를 inputContext로 흘려서
+    /// IPC를 미리 wake up 시킨다. 그동안 콜백되는 insertText/doCommand는 PTY로 안 보냄.
+    private var isWarmingUpIME: Bool = false
+    private var didWarmupIME: Bool = false
 
     public init(session: HaliteSession) {
         self.session = session
@@ -153,11 +175,37 @@ public final class HaliteSurfaceView: NSView {
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if let window = window {
-            DispatchQueue.main.async { [weak self, weak window] in
-                guard let self = self, let window = window else { return }
-                window.makeFirstResponder(self)
-            }
+        guard let window = window else { return }
+        window.makeFirstResponder(self)
+        inputContext?.activate()
+        warmupIMEIfNeeded()
+    }
+
+    /// 사용자가 첫 키를 누르기 전에 TSM↔IMK IPC 핸드셰이크를 강제로 트리거.
+    /// `.app` 등록만으로는 launch 후 첫 자모가 leak되는 잔존 race가 남아있는 환경 대응.
+    private func warmupIMEIfNeeded() {
+        guard !didWarmupIME else { return }
+        didWarmupIME = true
+        guard let window = window else { return }
+
+        // 다음 runloop tick에 실행 — window가 fully key 된 다음에 IMK가 받도록.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber,
+                context: nil,
+                characters: "a",
+                charactersIgnoringModifiers: "a",
+                isARepeat: false,
+                keyCode: 0
+            ) else { return }
+            self.isWarmingUpIME = true
+            self.inputContext?.handleEvent(event)
+            self.isWarmingUpIME = false
         }
     }
 
@@ -182,47 +230,202 @@ public final class HaliteSurfaceView: NSView {
         }
     }
 
-    // MARK: - Input
+    // MARK: - Input (IME-aware)
 
     public override func keyDown(with event: NSEvent) {
-        guard let bytes = ptyBytes(for: event) else {
-            super.keyDown(with: event)
+        // 새 keyDown 사이클 시작 — IME 콜백들이 참조할 컨텍스트 set.
+        currentKeyEvent = event
+        swallowNextDeleteCommand = false
+        defer { currentKeyEvent = nil }
+
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        // Cmd는 performKeyEquivalent에서 처리. 여기에 도달했다는 건 어떤 메뉴/단축키도
+        // 안 잡았다는 뜻이고, IME에 보내거나 PTY로 보내면 의도와 다른 동작이 생김 → 무시.
+        if mods.contains(.command) {
             return
         }
-        session.write(bytes)
+
+        // Ctrl+letter (다른 modifier 없이) → terminal control byte. IME 우회.
+        // Shift+Ctrl도 같은 group (e.g. Ctrl+Shift+C → Ctrl+C와 동일 바이트 → 0x03).
+        if mods.subtracting(.shift) == .control,
+           let chars = event.charactersIgnoringModifiers,
+           chars.count == 1,
+           let scalar = chars.unicodeScalars.first?.value,
+           (0x41...0x5A).contains(scalar) || (0x61...0x7A).contains(scalar) {
+            let lower = scalar | 0x20
+            session.write(Data([UInt8(lower - 0x60)]))
+            return
+        }
+
+        // 나머지: NSTextInputContext로 보냄. 한글/일어/중어 IME composition,
+        // 평문 입력, Enter/Tab/화살표 (doCommand 경로), Backspace (doCommand) 등을
+        // 일관되게 처리.
+        inputContext?.handleEvent(event)
     }
 
-    private func ptyBytes(for event: NSEvent) -> Data? {
-        let modifiers = event.modifierFlags
-        if modifiers.contains(.command) { return nil }
-
-        if let chars = event.charactersIgnoringModifiers, chars.count == 1 {
-            switch chars.unicodeScalars.first?.value {
-            case 0xF700: return Data([0x1B, 0x5B, 0x41]) // Up
-            case 0xF701: return Data([0x1B, 0x5B, 0x42]) // Down
-            case 0xF702: return Data([0x1B, 0x5B, 0x44]) // Left
-            case 0xF703: return Data([0x1B, 0x5B, 0x43]) // Right
-            case 0x7F: return Data([0x7F])
-            case 0x1B: return Data([0x1B])
-            case 0x0D: return Data([0x0D])
-            case 0x09: return Data([0x09])
-            default: break
+    public override func doCommand(by selector: Selector) {
+        if isWarmingUpIME {
+            return
+        }
+        // AppKit selector → terminal escape byte 시퀀스. NSTextInputClient의 핵심 contract:
+        // IME가 처리하지 않은 키, 또는 IME가 commit하고 추가로 처리해야 할 키들이
+        // 여기로 dispatched 됨.
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            session.write(Data([0x0D])) // CR
+        case #selector(NSResponder.insertTab(_:)):
+            session.write(Data([0x09]))
+        case #selector(NSResponder.insertBacktab(_:)):
+            session.write(Data([0x1B, 0x5B, 0x5A])) // CSI Z
+        case #selector(NSResponder.deleteBackward(_:)):
+            // BS-cancel spurious commit이 이미 IME 콜백에서 처리됐다면 PTY로는 BS 안 보냄.
+            if swallowNextDeleteCommand {
+                swallowNextDeleteCommand = false
+                return
             }
+            session.write(Data([0x7F])) // DEL (대부분의 셸이 erase에 mapping)
+        case #selector(NSResponder.deleteForward(_:)):
+            session.write(Data([0x1B, 0x5B, 0x33, 0x7E])) // CSI 3 ~
+        case #selector(NSResponder.cancelOperation(_:)):
+            session.write(Data([0x1B])) // ESC
+        case #selector(NSResponder.moveUp(_:)),
+             #selector(NSResponder.moveUpAndModifySelection(_:)):
+            session.write(Data([0x1B, 0x5B, 0x41]))
+        case #selector(NSResponder.moveDown(_:)),
+             #selector(NSResponder.moveDownAndModifySelection(_:)):
+            session.write(Data([0x1B, 0x5B, 0x42]))
+        case #selector(NSResponder.moveLeft(_:)),
+             #selector(NSResponder.moveLeftAndModifySelection(_:)):
+            session.write(Data([0x1B, 0x5B, 0x44]))
+        case #selector(NSResponder.moveRight(_:)),
+             #selector(NSResponder.moveRightAndModifySelection(_:)):
+            session.write(Data([0x1B, 0x5B, 0x43]))
+        case #selector(NSResponder.scrollPageUp(_:)),
+             #selector(NSResponder.pageUp(_:)):
+            session.write(Data([0x1B, 0x5B, 0x35, 0x7E])) // PageUp
+        case #selector(NSResponder.scrollPageDown(_:)),
+             #selector(NSResponder.pageDown(_:)):
+            session.write(Data([0x1B, 0x5B, 0x36, 0x7E])) // PageDown
+        case #selector(NSResponder.moveToBeginningOfLine(_:)):
+            session.write(Data([0x1B, 0x5B, 0x48])) // Home
+        case #selector(NSResponder.moveToEndOfLine(_:)):
+            session.write(Data([0x1B, 0x5B, 0x46])) // End
+        default:
+            break // 알 수 없는 command — 무시
+        }
+    }
+
+    // MARK: - NSTextInputClient
+
+    public func insertText(_ string: Any, replacementRange: NSRange) {
+        let text = Self.unwrapString(string)
+
+        // startup warmup 중에는 콜백된 텍스트를 PTY로 보내지 않는다.
+        if isWarmingUpIME {
+            return
         }
 
-        if modifiers.contains(.control), let chars = event.charactersIgnoringModifiers, chars.count == 1 {
-            if let scalar = chars.unicodeScalars.first?.value,
-               (0x61...0x7A).contains(scalar) || (0x41...0x5A).contains(scalar) {
-                let lower = scalar | 0x20
-                let ctrl = UInt8(lower - 0x60)
-                return Data([ctrl])
-            }
+        // BS-cancel spurious commit 감지.
+        // macOS Hangul IME가 마지막 자모를 BS로 취소할 때, 같은 자모를 insertText로
+        // emit하는 버그가 있음. 트리거 키가 BS이고 markedText와 동일한 글자가 commit
+        // 되려 하면 spurious로 판단하고 drop. 동일 keyDown 사이클의 doCommand
+        // (deleteBackward:)도 swallow.
+        if let event = currentKeyEvent,
+           event.keyCode == 51,
+           !markedText.isEmpty,
+           text == markedText {
+            markedText = ""
+            swallowNextDeleteCommand = true
+            scheduleRender()
+            return
         }
 
-        if let chars = event.characters, !chars.isEmpty {
-            return chars.data(using: .utf8)
+        // 알려진 한계: 한영키 직후 첫 자모는 setMarkedText를 거치지 않고 직접 insertText로
+        // 들어옴 (raw binary 실행 시 TSM↔IMK IPC가 첫 keystroke 도착 전에 set up 안 됨).
+        // 해법은 `.app` bundle 등록 (halite Rust 문서 참조). state machine 트릭은 IMK 내부
+        // 상태와 어긋나서 lossy. 현재는 그대로 PTY로 commit — 사용자가 BS+재입력으로 복원 가능.
+
+        // 일반 commit: marked text 비우고 PTY로.
+        if !markedText.isEmpty {
+            markedText = ""
+            scheduleRender()
         }
-        return nil
+        guard !text.isEmpty, let data = text.data(using: .utf8) else { return }
+        session.write(data)
+    }
+
+    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let text = Self.unwrapString(string)
+        if markedText != text {
+            markedText = text
+            scheduleRender()
+        }
+    }
+
+    public func unmarkText() {
+        if !markedText.isEmpty {
+            markedText = ""
+            scheduleRender()
+        }
+    }
+
+    public func hasMarkedText() -> Bool {
+        !markedText.isEmpty
+    }
+
+    public func markedRange() -> NSRange {
+        if markedText.isEmpty {
+            return NSRange(location: NSNotFound, length: 0)
+        }
+        return NSRange(location: 0, length: markedText.utf16.count)
+    }
+
+    public func selectedRange() -> NSRange {
+        NSRange(location: NSNotFound, length: 0)
+    }
+
+    public func attributedSubstring(
+        forProposedRange range: NSRange,
+        actualRange: NSRangePointer?
+    ) -> NSAttributedString? {
+        nil
+    }
+
+    public func validAttributesForMarkedText() -> [NSAttributedString.Key] {
+        []
+    }
+
+    public func characterIndex(for point: NSPoint) -> Int { 0 }
+
+    /// IME 후보창이 뜰 위치 — cursor 셀의 화면 좌표 반환.
+    public func firstRect(
+        forCharacterRange range: NSRange,
+        actualRange: NSRangePointer?
+    ) -> NSRect {
+        guard let window = window else { return .zero }
+        let grid = session.grid
+        let cellW = cellMetrics.width
+        let cellH = cellMetrics.height
+        let inset = textView.textContainerInset
+
+        // textView 좌표계에서 cursor 셀의 origin
+        let rowInTextView = grid.scrollback.count + grid.cursorRow
+        let cellOrigin = CGPoint(
+            x: inset.width + CGFloat(grid.cursorCol) * cellW,
+            y: inset.height + CGFloat(rowInTextView) * cellH
+        )
+        let cellRectInTextView = NSRect(origin: cellOrigin, size: NSSize(width: cellW, height: cellH))
+
+        // textView → window → screen
+        let cellRectInWindow = textView.convert(cellRectInTextView, to: nil)
+        return window.convertToScreen(cellRectInWindow)
+    }
+
+    private static func unwrapString(_ value: Any) -> String {
+        if let s = value as? String { return s }
+        if let attr = value as? NSAttributedString { return attr.string }
+        return ""
     }
 
     // MARK: - Render
@@ -239,10 +442,14 @@ public final class HaliteSurfaceView: NSView {
 
     private func renderNow() {
         let grid = session.grid
-        if grid.version == lastRenderedVersion { return }
-        let priorWasAlt = (lastRenderedVersion != .max) && grid.isAltScreenActive
-        _ = priorWasAlt
+        // marked text가 직전과 같지 않으면 (조합 시작/갱신/취소) 반드시 재렌더.
+        // 같으면서 grid도 안 변했으면 skip.
+        // 참고: halite Rust의 ImeState도 모든 IME 콜백에 request_redraw=true를 set함.
+        if grid.version == lastRenderedVersion && markedText == lastRenderedMarkedText {
+            return
+        }
         lastRenderedVersion = grid.version
+        lastRenderedMarkedText = markedText
 
         guard let storage = textView.textStorage else { return }
         let baseFont = textView.font
@@ -272,12 +479,26 @@ public final class HaliteSurfaceView: NSView {
 
         // 현재 viewport. 커서가 있는 줄에서만 cursorCol 전달.
         let cursorRow = grid.cursorVisible ? grid.cursorRow : -1
+        let mt = markedText
         for r in 0..<grid.rows {
-            let cc: Int? = (r == cursorRow) ? grid.cursorCol : nil
-            appendLine(
-                grid.row(r), cols: grid.cols, cursorCol: cc,
-                baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
-            )
+            if r == cursorRow && !mt.isEmpty {
+                // 조합 중 텍스트가 있으면 cursor 자리에 overlay
+                appendCursorRowWithMarkedText(
+                    grid.row(r),
+                    cols: grid.cols,
+                    cursorCol: grid.cursorCol,
+                    markedText: mt,
+                    baseFont: baseFont,
+                    paragraphStyle: paragraphStyle,
+                    into: result
+                )
+            } else {
+                let cc: Int? = (r == cursorRow) ? grid.cursorCol : nil
+                appendLine(
+                    grid.row(r), cols: grid.cols, cursorCol: cc,
+                    baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
+                )
+            }
             if r < grid.rows - 1 {
                 result.append(NSAttributedString(string: "\n"))
             }
@@ -334,6 +555,48 @@ public final class HaliteSurfaceView: NSView {
         }
     }
 
+    /// cursor 자리에 IME 조합 중 텍스트를 시각적 overlay로 그림.
+    /// grid 자체는 mutate 안 함 (commit이 오면 PTY echo로 grid 갱신).
+    private func appendCursorRowWithMarkedText(
+        _ line: [Cell],
+        cols: Int,
+        cursorCol: Int,
+        markedText: String,
+        baseFont: NSFont,
+        paragraphStyle: NSParagraphStyle,
+        into result: NSMutableAttributedString
+    ) {
+        // cursor 이전 셀들 — 평소처럼
+        if cursorCol > 0 {
+            appendRunGroup(
+                line, range: 0..<cursorCol,
+                baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
+            )
+        }
+
+        // 조합 텍스트 — 진한 파란 배경 + 두꺼운 underline. "조합 중" 명확한 시각 단서.
+        // (M11.x에서 config 옵션으로 underline/background/both 선택지 추가 가능)
+        let imeAttrs: [NSAttributedString.Key: Any] = [
+            .font: baseFont,
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraphStyle,
+            .underlineStyle: NSUnderlineStyle.thick.rawValue,
+            .backgroundColor: NSColor.systemBlue.withAlphaComponent(0.65),
+        ]
+        result.append(NSAttributedString(string: markedText, attributes: imeAttrs))
+
+        // 조합 텍스트가 가린 만큼 row의 나머지 셀을 건너뜀.
+        // markedText.count로 대략의 cell 폭 산정 (CJK wide는 M5에서 처리).
+        let overlayCols = markedText.count
+        let afterCol = min(cursorCol + overlayCols, cols)
+        if afterCol < cols {
+            appendRunGroup(
+                line, range: afterCol..<cols,
+                baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
+            )
+        }
+    }
+
     private func appendRunGroup(
         _ line: [Cell],
         range: Range<Int>,
@@ -343,9 +606,18 @@ public final class HaliteSurfaceView: NSView {
     ) {
         var c = range.lowerBound
         while c < range.upperBound {
+            // Continuation cell은 NSAttributedString에 추가하지 않음 —
+            // 직전 wide glyph가 두 칸을 자연스럽게 차지함.
+            if line[c].isContinuation {
+                c += 1
+                continue
+            }
             let runAttrs = line[c].attrs
             var endC = c + 1
-            while endC < range.upperBound && line[endC].attrs == runAttrs {
+            // 같은 attrs가 이어지는 한 묶음. continuation은 묶음 경계로 다룸.
+            while endC < range.upperBound,
+                  !line[endC].isContinuation,
+                  line[endC].attrs == runAttrs {
                 endC += 1
             }
             var runChars = ""
