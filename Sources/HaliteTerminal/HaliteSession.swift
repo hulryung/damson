@@ -123,6 +123,7 @@ public final class HaliteSession: ObservableObject {
     /// 파서가 발행한 CSI를 grid mutation으로 변환.
     fileprivate func handleCSI(
         params: [Int],
+        intermediates: [UInt8],
         finalByte: UInt8,
         privateMarker: UInt8?
     ) {
@@ -167,7 +168,15 @@ public final class HaliteSession: ObservableObject {
                 grid.setScrollRegion(top: top - 1, bottom: bot - 1)
             }
         case 0x6D:                          // m — SGR
-            grid.applySGR(params)
+            // SGR은 `CSI ... m`에 private marker도 intermediate도 **없을 때**만.
+            // `CSI > 4 ; 2 m` (xterm modifyOtherKeys / Kitty keyboard protocol)나
+            // `CSI ? Pn m` (DEC private SGR) 등은 SGR이 아님.
+            // Claude Code가 시작 시 `\x1b[>4;2m`을 보내는데, 이걸 SGR로 처리하면
+            // param 4 → underline ON → 이후 reset이 안 와서 세션 전체에 밑줄 leak됨.
+            // 미러: anthropics/claude-code#23698, halite Rust 40bd82f.
+            if privateMarker == nil && intermediates.isEmpty {
+                grid.applySGR(params)
+            }
         case 0x68:                          // h — SET MODE
             applyModeChange(params: params, privateMarker: privateMarker, set: true)
         case 0x6C:                          // l — RESET MODE
@@ -232,7 +241,7 @@ extension HaliteSession: VTParserDelegate {
         finalByte: UInt8,
         privateMarker: UInt8?
     ) {
-        handleCSI(params: params, finalByte: finalByte, privateMarker: privateMarker)
+        handleCSI(params: params, intermediates: intermediates, finalByte: finalByte, privateMarker: privateMarker)
         outputEvents.send(.csi(
             params: params,
             intermediates: intermediates,

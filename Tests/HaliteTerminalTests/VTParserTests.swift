@@ -111,4 +111,15 @@ final class VTParserTests: XCTestCase {
             .text("c"),
         ])
     }
+
+    func testCSIWithGTIntermediateCapturesPrivateMarker() {
+        // Claude Code 시작 시 보내는 \x1b[>4;2m (xterm modifyOtherKeys /
+        // Kitty 키보드 프로토콜). privateMarker '>' (0x3E)가 정확히 captured
+        // 되어야 HaliteSession이 SGR로 오인하지 않음.
+        // 미러: anthropics/claude-code#23698, halite Rust 40bd82f.
+        let events = parse("\u{1B}[>4;2m")
+        XCTAssertEqual(events, [
+            .csi(params: [4, 2], finalByte: 0x6D, privateMarker: 0x3E),
+        ])
+    }
 }
