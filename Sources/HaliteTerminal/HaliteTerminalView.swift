@@ -136,7 +136,11 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         tv.isSelectable = false
         tv.isRichText = true
         tv.allowsUndo = false
-        tv.font = NSFont.userFixedPitchFont(ofSize: session.config.fontSize)
+        // 초기 폰트도 config.fontFamily 사용. userFixedPitchFont만 쓰면 Menlo/SF Mono로
+        // 고정되어 Nerd Font 디폴트가 무시되는 회귀가 있었음.
+        tv.font = NSFont(name: session.config.fontFamily, size: session.config.fontSize)
+            ?? NSFont.userFixedPitchFont(ofSize: session.config.fontSize)
+            ?? NSFont.systemFont(ofSize: session.config.fontSize)
         tv.textColor = session.config.foregroundColor
         tv.backgroundColor = session.config.backgroundColor
         tv.drawsBackground = true
@@ -209,11 +213,17 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             ?? NSFont.systemFont(ofSize: config.fontSize)
         textView.font = font
         textView.backgroundColor = config.backgroundColor
-        textView.textColor = config.foregroundColor
+        // ⚠️ textView.textColor = ... 는 rich-text 모드에서 textStorage 전체의
+        // .foregroundColor 어트리뷰트를 flat하게 덮어쓴다 → per-cell SGR 색이
+        // 다 흰색으로 사라지는 회귀가 발생함. 우리 render는 per-cell .foregroundColor
+        // 를 명시적으로 set 하므로 default textColor를 건드릴 필요 자체가 없음.
         layer?.backgroundColor = config.backgroundColor.cgColor
         lastReportedSize = nil
+        // dedupe key 무력화 후 동기 re-render — grid.version 변화 없이도 새 폰트/색이
+        // textStorage에 즉시 반영되도록.
+        lastRenderedVersion = .max
         needsLayout = true
-        scheduleRender()
+        renderNow()
     }
 
     @available(*, unavailable)
@@ -297,13 +307,19 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         let usableH = max(stableContentHeight - inset.height * 2, 1)
         let cols = max(Int(floor(usableW / cellW)), 1)
         let rows = max(Int(floor(usableH / cellH)), 1)
-        if lastReportedSize?.cols == cols && lastReportedSize?.rows == rows {
+        // dedupe: lastReportedSize 또는 현재 grid 차원과 일치하면 no-op.
+        // (zoom으로 lastReportedSize를 nil로 reset 했더라도 실제 cols/rows가 안 바뀌면
+        //  redundant SIGWINCH 발사 안 됨.)
+        let prevCols = lastReportedSize?.cols ?? session.grid.cols
+        let prevRows = lastReportedSize?.rows ?? session.grid.rows
+        if prevCols == cols && prevRows == rows {
+            lastReportedSize = (cols, rows)
             return
         }
         // 모드 전환 / appearance 변경 / styleMask 변경 등으로 짧은 시간 내에 layout이
-        // 여러 번 fire 될 때, 그 cascade 중간의 transient size까지 매번 PTY로
-        // 보내면 셸이 매번 SIGWINCH를 받고 prompt가 폭발적으로 누적된다. 짧은
-        // debounce로 마지막 stable size만 한 번 전달.
+        // 여러 번 fire 될 때, 그 cascade 중간의 transient size까지 매번 PTY로 보내면
+        // 셸이 매번 SIGWINCH를 받고 prompt가 폭발적으로 누적됨. 짧은 debounce로 마지막
+        // stable size만 한 번 전달. (zoom은 이제 시각만 변경하므로 이 path를 안 거침.)
         pendingResize = (cols, rows)
         resizeDebounceItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -922,11 +938,26 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         fontSizeMultiplier = max(0.5, min(4.0, multiplier))
         let baseSize = session.config.fontSize
         let newSize = max(6, baseSize * fontSizeMultiplier)
-        textView.font = NSFont.userFixedPitchFont(ofSize: newSize)
+        // zoom도 config.fontFamily(Nerd Font 등) 유지 — userFixedPitchFont만 쓰면
+        // Menlo로 갈아끼워져서 powerline 글리프가 사라짐.
+        let font = NSFont(name: session.config.fontFamily, size: newSize)
+            ?? NSFont.userFixedPitchFont(ofSize: newSize)
             ?? NSFont.systemFont(ofSize: newSize)
-        lastReportedSize = nil // 다음 layout에서 cols/rows 재산정 강제.
-        needsLayout = true
-        scheduleRender()
+        textView.font = font
+        // zoom은 **순수 시각 변경**으로 취급. session.grid 차원은 그대로 두고
+        // cellMetrics만 새 폰트 기준으로 갱신 — SIGWINCH 안 발사 → 셸이 prompt를
+        // 재출력하지 않음 (이전엔 매 Cmd+= 마다 새 prompt 라인이 추가돼서
+        // "Enter 친 것처럼" 보였음). 극단적 확대 시 오른쪽 일부 클립될 수 있지만
+        // 일반 사용 범위에선 OK. 실제 grid resize는 사용자가 윈도우 사이즈 바꿀 때.
+        let glyphSize = ("M" as NSString).size(withAttributes: [.font: font])
+        let newCellW = max(glyphSize.width, 1)
+        let newCellH = max(measuredLineHeight(font: font), 1)
+        cellMetrics = (newCellW, newCellH)
+        // dedupe 무력화 후 새 cellMetrics로 textStorage 재구성.
+        lastRenderedVersion = .max
+        renderNow()
+        followingBottom = true
+        scrollViewportToBottom()
     }
 
     /// Edit > Copy / Cmd+C가 보내는 셀렉터. 선택 텍스트를 pasteboard에 push.
