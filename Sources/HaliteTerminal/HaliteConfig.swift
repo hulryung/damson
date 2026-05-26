@@ -1,6 +1,21 @@
 import AppKit
 import Foundation
 
+/// IME 조합 중인 텍스트(한글 / 일본어 / 중국어 등)의 시각적 표시 방식.
+/// `HaliteConfig.imeStyle`로 설정.
+public enum IMECompositionStyle: String, Codable, CaseIterable, Sendable {
+    /// 얇은 underline만 (가장 subtle, 디폴트).
+    case underline
+    /// 두꺼운 underline. macOS 기본 IME 표시와 비슷.
+    case thickUnderline
+    /// 배경 하이라이트만.
+    case background
+    /// 배경 + 두꺼운 underline (이전 동작).
+    case both
+    /// 표시 없음 — 텍스트만 다른 색으로.
+    case none
+}
+
 /// 한 `HaliteSession`에 주입되는 설정 스냅샷.
 /// 값 타입. 변경하려면 새 값을 만들어 `HaliteSession.updateConfig(_:)` 호출.
 public struct HaliteConfig {
@@ -11,6 +26,7 @@ public struct HaliteConfig {
     public var palette: [Int: NSColor]
     public var scrollbackBytes: Int
     public var scrollbackLines: Int
+    public var imeStyle: IMECompositionStyle
 
     // PTY spawn
     public var argv: [String]
@@ -25,6 +41,7 @@ public struct HaliteConfig {
         palette: [Int: NSColor] = [:],
         scrollbackBytes: Int = 10_000_000,
         scrollbackLines: Int = 10_000,
+        imeStyle: IMECompositionStyle = .none,
         argv: [String] = HaliteConfig.defaultArgv(),
         env: [String: String] = ProcessInfo.processInfo.environment,
         cwd: String? = nil
@@ -36,6 +53,7 @@ public struct HaliteConfig {
         self.palette = palette
         self.scrollbackBytes = scrollbackBytes
         self.scrollbackLines = scrollbackLines
+        self.imeStyle = imeStyle
         self.argv = argv
         self.env = env
         self.cwd = cwd

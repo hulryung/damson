@@ -1273,7 +1273,11 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             result.append(NSAttributedString(string: "\n"))
         }
 
-        let cursorRow = grid.cursorVisible ? grid.cursorRow : -1
+        // block-cursor inverse 렌더링은 cursorVisible 따라가지만,
+        // IME 조합 overlay는 cursor가 숨김 처리되어 있어도(TUI 앱들이 DECTCEM ?25l로
+        // 흔히 함, 예: claude code, vim 일부 모드, htop) 사용자가 입력 중이면 보여야 함.
+        let blockCursorRow = grid.cursorVisible ? grid.cursorRow : -1
+        let imeOverlayRow = grid.cursorRow   // cursor 가시성과 무관하게 항상 그 자리
         let blockCursorActive = (grid.cursorShape == .block) && markedText.isEmpty
         let mt = markedText
         for r in 0..<grid.rows {
@@ -1281,7 +1285,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             let sel = selectedColumnsForRow(textViewRow, cols: grid.cols)
             let finds = findRangesForRow(textViewRow)
             let hover = hoveredURLRangeForRow(textViewRow)
-            if r == cursorRow && !mt.isEmpty {
+            if r == imeOverlayRow && !mt.isEmpty {
                 appendCursorRowWithMarkedText(
                     grid.row(r),
                     cols: grid.cols,
@@ -1292,7 +1296,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
                     into: result
                 )
             } else {
-                let cc: Int? = (r == cursorRow && blockCursorActive) ? grid.cursorCol : nil
+                let cc: Int? = (r == blockCursorRow && blockCursorActive) ? grid.cursorCol : nil
                 appendLine(
                     grid.row(r), cols: grid.cols, cursorCol: cc,
                     selectedCols: sel, findRanges: finds, hoveredURLRange: hover,
@@ -1510,15 +1514,30 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             )
         }
 
-        // 조합 텍스트 — 진한 파란 배경 + 두꺼운 underline. "조합 중" 명확한 시각 단서.
-        // (M11.x에서 config 옵션으로 underline/background/both 선택지 추가 가능)
-        let imeAttrs: [NSAttributedString.Key: Any] = [
+        // 조합 텍스트 — config.imeStyle에 따라 시각 단서 결정.
+        var imeAttrs: [NSAttributedString.Key: Any] = [
             .font: baseFont,
-            .foregroundColor: NSColor.white,
+            .foregroundColor: session.config.foregroundColor,
             .paragraphStyle: paragraphStyle,
-            .underlineStyle: NSUnderlineStyle.thick.rawValue,
-            .backgroundColor: NSColor.systemBlue.withAlphaComponent(0.65),
         ]
+        switch session.config.imeStyle {
+        case .underline:
+            imeAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            imeAttrs[.underlineColor] = session.config.foregroundColor
+                .withAlphaComponent(0.7)
+        case .thickUnderline:
+            imeAttrs[.underlineStyle] = NSUnderlineStyle.thick.rawValue
+            imeAttrs[.underlineColor] = session.config.foregroundColor
+        case .background:
+            imeAttrs[.backgroundColor] = NSColor.systemBlue.withAlphaComponent(0.45)
+            imeAttrs[.foregroundColor] = NSColor.white
+        case .both:
+            imeAttrs[.underlineStyle] = NSUnderlineStyle.thick.rawValue
+            imeAttrs[.backgroundColor] = NSColor.systemBlue.withAlphaComponent(0.65)
+            imeAttrs[.foregroundColor] = NSColor.white
+        case .none:
+            break // 텍스트만 출력
+        }
         result.append(NSAttributedString(string: markedText, attributes: imeAttrs))
 
         // 조합 텍스트가 가린 만큼 row의 나머지 셀을 건너뜀.

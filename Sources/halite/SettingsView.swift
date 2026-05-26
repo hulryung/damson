@@ -8,6 +8,7 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.fontFamily") private var fontFamily: String = FontDiscovery.defaultFamily()
     @AppStorage("halite.scrollbackLines") private var scrollbackLines: Int = 10_000
     @AppStorage("halite.tabBarStyle") private var tabBarStyleRaw: String = TabBarStyle.compact.rawValue
+    @AppStorage("halite.imeStyle") private var imeStyleRaw: String = IMECompositionStyle.none.rawValue
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
@@ -61,6 +62,13 @@ struct HaliteSettingsView: View {
                     }
                 }
             }
+            Section("IME Composition (한글/일본어/중국어 조합 표시)") {
+                Picker("Style", selection: $imeStyleRaw) {
+                    ForEach(IMECompositionStyle.allCases, id: \.rawValue) { style in
+                        Text(style.displayName).tag(style.rawValue)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -69,6 +77,7 @@ struct HaliteSettingsView: View {
         .onChange(of: fontFamily) { _ in postChanged() }
         .onChange(of: scrollbackLines) { _ in postChanged() }
         .onChange(of: tabBarStyleRaw) { _ in postChanged() }
+        .onChange(of: imeStyleRaw) { _ in postChanged() }
     }
 
     private func postChanged() {
@@ -95,10 +104,26 @@ extension HaliteConfig {
         }
         let sb = d.integer(forKey: "halite.scrollbackLines")
         if sb > 0 { config.scrollbackLines = sb }
+        if let raw = d.string(forKey: "halite.imeStyle"),
+           let style = IMECompositionStyle(rawValue: raw) {
+            config.imeStyle = style
+        }
         // 새 터미널의 시작 디렉토리는 사용자의 홈 디렉토리. 그렇지 않으면 halite를 띄운
         // working directory(예: Xcode 빌드, /tmp, 어딘가에서 cmd 실행)가 그대로 상속되어
         // 매번 cd를 쳐야 함.
         config.cwd = NSHomeDirectory()
         return config
+    }
+}
+
+extension IMECompositionStyle {
+    var displayName: String {
+        switch self {
+        case .none: return "None (표시 없음, 디폴트)"
+        case .underline: return "Underline (얇게)"
+        case .thickUnderline: return "Thick Underline (두껍게)"
+        case .background: return "Background (배경)"
+        case .both: return "Background + Underline"
+        }
     }
 }
