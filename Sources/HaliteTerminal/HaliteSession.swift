@@ -20,6 +20,11 @@ public final class HaliteSession: ObservableObject {
     /// pasted 텍스트를 ESC[200~ ... ESC[201~로 wrap해서 보냄.
     public private(set) var bracketedPasteEnabled: Bool = false
 
+    /// Mouse reporting mode. 0 = off, 1000 = press/release, 1002 = + drag, 1003 = any motion.
+    public private(set) var mouseReportingMode: Int = 0
+    /// SGR mouse encoding (CSI ?1006h). true면 SGR format, false면 X10 classic.
+    public private(set) var mouseSGREncoding: Bool = false
+
     /// 셀 grid (현재 viewport).
     public let grid: Grid
 
@@ -109,7 +114,7 @@ public final class HaliteSession: ObservableObject {
         onExit?(code)
     }
 
-    /// OSC dispatch — 0/2(title), 8(hyperlink), 그 외 무시.
+    /// OSC dispatch — 0/2(title), 4/10/11(color query), 8(hyperlink), 그 외 무시.
     fileprivate func dispatchOSCIfNeeded(_ oscParams: [String]) {
         guard let kind = oscParams.first else { return }
         switch kind {
@@ -120,6 +125,20 @@ public final class HaliteSession: ObservableObject {
                 title = newTitle
                 onTitleChanged?(newTitle)
             }
+        case "4":
+            // OSC 4 ; index ; spec — query if spec == "?"
+            guard oscParams.count >= 3, oscParams[2] == "?",
+                  let index = Int(oscParams[1]), (0...15).contains(index) else { return }
+            let color = index < 8 ? Palette.normal16[index] : Palette.bright16[index - 8]
+            respondToOSCColorQuery(kind: "4", index: index, color: color)
+        case "10":
+            // OSC 10 ; ? — query default fg
+            guard oscParams.count >= 2, oscParams[1] == "?" else { return }
+            respondToOSCColorQuery(kind: "10", index: nil, color: config.foregroundColor)
+        case "11":
+            // OSC 11 ; ? — query default bg
+            guard oscParams.count >= 2, oscParams[1] == "?" else { return }
+            respondToOSCColorQuery(kind: "11", index: nil, color: config.backgroundColor)
         case "8":
             // OSC 8 ; params ; URI ST
             //   start: params 보통 "id=xxx" 또는 빈 문자열, URI 비어있지 않음
@@ -128,6 +147,24 @@ public final class HaliteSession: ObservableObject {
             grid.setHyperlink(uri.isEmpty ? nil : uri)
         default:
             break
+        }
+    }
+
+    private func respondToOSCColorQuery(kind: String, index: Int?, color: NSColor) {
+        let srgb = color.usingColorSpace(.sRGB) ?? color
+        let r = UInt16(max(0, min(1, srgb.redComponent)) * 65535)
+        let g = UInt16(max(0, min(1, srgb.greenComponent)) * 65535)
+        let b = UInt16(max(0, min(1, srgb.blueComponent)) * 65535)
+        let rgbSpec = String(format: "rgb:%04x/%04x/%04x", r, g, b)
+        let payload: String
+        if let index = index {
+            payload = "\(kind);\(index);\(rgbSpec)"
+        } else {
+            payload = "\(kind);\(rgbSpec)"
+        }
+        let response = "\u{1B}]\(payload)\u{1B}\\"
+        if let data = response.data(using: .utf8) {
+            pty.write(data)
         }
     }
 
@@ -162,6 +199,14 @@ public final class HaliteSession: ObservableObject {
             grid.setCursorRow(p1)
         case 0x58:                          // X — ECH: cursor부터 n셀 erase
             grid.eraseChars(p1)
+        case 0x4C:                          // L — IL: 빈 줄 n개 삽입
+            grid.insertLines(p1)
+        case 0x4D:                          // M — DL: n줄 삭제
+            grid.deleteLines(p1)
+        case 0x40:                          // @ — ICH: 빈 셀 n개 삽입
+            grid.insertChars(p1)
+        case 0x50:                          // P — DCH: n셀 삭제
+            grid.deleteChars(p1)
         case 0x73:                          // s — SC (DECSC ANSI variant)
             if privateMarker == nil {
                 grid.saveCursor()
@@ -235,6 +280,12 @@ public final class HaliteSession: ObservableObject {
             case 2004:
                 // Bracketed paste mode toggle. 호스트(view)가 read.
                 bracketedPasteEnabled = set
+            case 1000, 1002, 1003:
+                // 마우스 reporting 활성화 — 가장 강한 모드만 keep.
+                mouseReportingMode = set ? p : 0
+            case 1006:
+                // SGR mouse encoding
+                mouseSGREncoding = set
             default:
                 break
             }

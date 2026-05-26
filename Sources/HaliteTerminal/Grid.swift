@@ -350,6 +350,83 @@ public final class Grid {
         bumpVersion()
     }
 
+    /// IL — cursor 위치에 n개의 빈 줄 삽입. cursor row와 그 아래(scrollBottom까지)가 아래로 밀림.
+    /// scroll region 밖에선 no-op.
+    public func insertLines(_ n: Int) {
+        guard cursorRow >= scrollTop, cursorRow <= scrollBottom else { return }
+        let count = max(1, n)
+        let regionRemain = scrollBottom - cursorRow + 1
+        let actual = min(count, regionRemain)
+        let blank = Array(repeating: Cell.empty(attrs: pen), count: cols)
+        // cursorRow~scrollBottom 사이에서 아래쪽 actual개 잘림, 위에 actual개 빈 줄 삽입.
+        for r in stride(from: scrollBottom, through: cursorRow + actual, by: -1) {
+            cells[r] = cells[r - actual]
+        }
+        for r in cursorRow..<(cursorRow + actual) {
+            cells[r] = blank
+        }
+        cursorCol = 0
+        pendingWrap = false
+        bumpVersion()
+    }
+
+    /// DL — cursor row부터 n개 줄 삭제. 아래쪽이 위로 당겨짐. region 바닥은 blank로 채움.
+    public func deleteLines(_ n: Int) {
+        guard cursorRow >= scrollTop, cursorRow <= scrollBottom else { return }
+        let count = max(1, n)
+        let regionRemain = scrollBottom - cursorRow + 1
+        let actual = min(count, regionRemain)
+        let blank = Array(repeating: Cell.empty(attrs: pen), count: cols)
+        for r in cursorRow...(scrollBottom - actual) {
+            cells[r] = cells[r + actual]
+        }
+        for r in (scrollBottom - actual + 1)...scrollBottom {
+            cells[r] = blank
+        }
+        cursorCol = 0
+        pendingWrap = false
+        bumpVersion()
+    }
+
+    /// ICH — cursor 위치에 n개 빈 셀 삽입. 그 줄의 오른쪽 셀들이 우로 밀림 (마지막은 잘림).
+    public func insertChars(_ n: Int) {
+        guard cursorRow >= 0, cursorRow < rows else { return }
+        guard cursorCol >= 0, cursorCol < cols else { return }
+        let count = max(1, n)
+        let actual = min(count, cols - cursorCol)
+        var row = cells[cursorRow]
+        let blank = Cell.empty(attrs: pen)
+        // 끝에서부터 shift right
+        for c in stride(from: cols - 1, through: cursorCol + actual, by: -1) {
+            row[c] = row[c - actual]
+        }
+        for c in cursorCol..<(cursorCol + actual) {
+            row[c] = blank
+        }
+        cells[cursorRow] = row
+        pendingWrap = false
+        bumpVersion()
+    }
+
+    /// DCH — cursor 위치 셀부터 n개 삭제. 오른쪽 셀들이 왼쪽으로 당겨짐. 줄 끝은 blank로.
+    public func deleteChars(_ n: Int) {
+        guard cursorRow >= 0, cursorRow < rows else { return }
+        guard cursorCol >= 0, cursorCol < cols else { return }
+        let count = max(1, n)
+        let actual = min(count, cols - cursorCol)
+        var row = cells[cursorRow]
+        let blank = Cell.empty(attrs: pen)
+        for c in cursorCol..<(cols - actual) {
+            row[c] = row[c + actual]
+        }
+        for c in (cols - actual)..<cols {
+            row[c] = blank
+        }
+        cells[cursorRow] = row
+        pendingWrap = false
+        bumpVersion()
+    }
+
     /// ECH — cursor 위치부터 같은 줄에서 n개 셀을 blank로 (cursor는 그대로).
     public func eraseChars(_ n: Int) {
         let count = max(1, n)

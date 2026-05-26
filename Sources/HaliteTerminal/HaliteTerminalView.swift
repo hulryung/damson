@@ -87,6 +87,11 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     private var selectionAnchor: (row: Int, col: Int)?
     private var selectionHead: (row: Int, col: Int)?
 
+    /// DECSCUSR underline/bar 모양용 cursor overlay.
+    /// block 모양은 inverse-cell 렌더링으로 유지 (NSAttributedString 한 번에 처리, 더 contrast 좋음).
+    /// underline/bar는 CALayer로 그려서 cell 글자를 가리지 않음.
+    private let cursorLayer = CALayer()
+
     public init(session: HaliteSession) {
         self.session = session
 
@@ -135,6 +140,27 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
 
         addSubview(scroll)
         scroll.frame = bounds
+
+        // Cursor overlay layer — underline/bar 모양용. block은 별도 처리.
+        cursorLayer.zPosition = 100
+        cursorLayer.isHidden = true
+        cursorLayer.backgroundColor = session.config.foregroundColor.cgColor
+        layer?.addSublayer(cursorLayer)
+
+        // 사용자 스크롤 시 cursor 위치 추적 (auto-scroll 외에도 변동될 수 있음).
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(scrollViewDidScroll(_:)),
+            name: NSScrollView.didLiveScrollNotification,
+            object: scroll
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(scrollViewDidScroll(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scroll.contentView
+        )
+        scroll.contentView.postsBoundsChangedNotifications = true
 
         gridSubscription = session.gridChanged
             .receive(on: RunLoop.main)
@@ -241,6 +267,12 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         // 클릭으로 키 입력 되찾기 (혹시 다른 곳에 first responder가 가있을 때 대비)
         window?.makeFirstResponder(self)
 
+        // Mouse reporting 활성 + Shift 안 누름이면 PTY로 forward (selection 안 함).
+        if isMouseReportingEvent(event) {
+            sendMouseEventToPTY(event: event, button: 0, pressed: true)
+            return
+        }
+
         // 선택 시작.
         let point = convertEventToCell(event)
         selectionAnchor = point
@@ -249,18 +281,105 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        // Cell motion / any motion 모드에서 drag도 PTY로 forward.
+        if isMouseReportingEvent(event), session.mouseReportingMode >= 1002 {
+            // 같은 cell 안에선 보내지 않도록 (1003 모드에선 보냄)
+            sendMouseEventToPTY(event: event, button: 32, pressed: true) // 32 = motion bit
+            return
+        }
         guard selectionAnchor != nil else { return }
         selectionHead = convertEventToCell(event)
         scheduleRender()
     }
 
     public override func mouseUp(with event: NSEvent) {
-        // anchor == head 이면 (그냥 클릭이면) 선택 클리어.
+        if isMouseReportingEvent(event) {
+            sendMouseEventToPTY(event: event, button: 0, pressed: false)
+            return
+        }
+        // anchor == head 이면 (그냥 클릭이면)
         if let a = selectionAnchor, let h = selectionHead, a == h {
+            // 클릭한 셀에 OSC 8 hyperlink 또는 자동 검출된 URL이 있으면 열기.
+            if let url = urlAtCell(a) {
+                NSWorkspace.shared.open(url)
+            }
             selectionAnchor = nil
             selectionHead = nil
             scheduleRender()
         }
+    }
+
+    public override func scrollWheel(with event: NSEvent) {
+        // Mouse reporting 활성 시 휠은 button 64/65 코드로 PTY 전달 (tmux 등이 사용).
+        if isMouseReportingEvent(event) {
+            let delta = event.scrollingDeltaY
+            guard abs(delta) > 0.1 else { return }
+            let btn = delta > 0 ? 64 : 65
+            sendMouseEventToPTY(event: event, button: btn, pressed: true)
+            return
+        }
+        super.scrollWheel(with: event)
+    }
+
+    /// 마우스 이벤트를 PTY reporting으로 forward해야 하는지 판단.
+    /// 활성 모드 + Shift 미보유 = report. Shift 누르면 selection 등 네이티브 동작 우선.
+    private func isMouseReportingEvent(_ event: NSEvent) -> Bool {
+        session.mouseReportingMode != 0 && !event.modifierFlags.contains(.shift)
+    }
+
+    /// 마우스 이벤트를 적절한 mouse-reporting encoding(SGR 또는 X10)으로 PTY에 송신.
+    private func sendMouseEventToPTY(event: NSEvent, button: Int, pressed: Bool) {
+        let pos = convertEventToCell(event)
+        let viewportRow = pos.row - session.grid.scrollback.count
+        guard viewportRow >= 0, viewportRow < session.grid.rows else { return }
+        guard pos.col >= 0, pos.col < session.grid.cols else { return }
+
+        let mods = event.modifierFlags
+        var modBits = 0
+        if mods.contains(.shift) { modBits |= 4 }
+        if mods.contains(.option) { modBits |= 8 }
+        if mods.contains(.control) { modBits |= 16 }
+
+        let cb = button + modBits
+        let row = viewportRow + 1 // 1-based
+        let col = pos.col + 1
+
+        let bytes: Data
+        if session.mouseSGREncoding {
+            let term: Character = pressed ? "M" : "m"
+            let s = "\u{1B}[<\(cb);\(col);\(row)\(term)"
+            bytes = s.data(using: .utf8) ?? Data()
+        } else {
+            // X10/X11 — press: 실제 cb, release: 3 (universal release marker)
+            let cbLegacy = pressed ? cb : (3 + modBits)
+            let cbByte = UInt8(min(cbLegacy + 32, 255))
+            let cxByte = UInt8(min(col + 32, 255))
+            let cyByte = UInt8(min(row + 32, 255))
+            bytes = Data([0x1B, 0x5B, 0x4D, cbByte, cxByte, cyByte])
+        }
+        session.write(bytes)
+    }
+
+    /// 특정 (row, col)에서 클릭 가능한 URL을 반환. OSC 8 hyperlink 우선,
+    /// 없으면 plain text URL 자동 검출.
+    private func urlAtCell(_ pos: (row: Int, col: Int)) -> URL? {
+        let grid = session.grid
+        let scrollbackCount = grid.scrollback.count
+        let cells: [Cell]
+        if pos.row < scrollbackCount {
+            cells = grid.scrollback[pos.row]
+        } else {
+            let vp = pos.row - scrollbackCount
+            guard vp < grid.rows else { return nil }
+            cells = grid.row(vp)
+        }
+        guard pos.col >= 0, pos.col < cells.count else { return nil }
+        // OSC 8 hyperlink가 set이면 그 URI
+        if let uri = cells[pos.col].hyperlink, let url = URL(string: uri) {
+            return url
+        }
+        // TODO(B1): NSDataDetector로 plain URL 검출
+        return nil
     }
 
     /// `event.locationInWindow`를 textView 콘텐츠 좌표계의 (row, col)로 변환.
@@ -648,14 +767,14 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             result.append(NSAttributedString(string: "\n"))
         }
 
-        // 현재 viewport. 커서가 있는 줄에서만 cursorCol 전달.
+        // 현재 viewport. block cursor만 inverse-cell로, underline/bar는 CALayer가 그림.
         let cursorRow = grid.cursorVisible ? grid.cursorRow : -1
+        let blockCursorActive = (grid.cursorShape == .block) && markedText.isEmpty
         let mt = markedText
         for r in 0..<grid.rows {
             let textViewRow = scrollbackCount + r
             let sel = selectedColumnsForRow(textViewRow, cols: grid.cols)
             if r == cursorRow && !mt.isEmpty {
-                // 조합 중 텍스트가 있으면 cursor 자리에 overlay
                 appendCursorRowWithMarkedText(
                     grid.row(r),
                     cols: grid.cols,
@@ -666,7 +785,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
                     into: result
                 )
             } else {
-                let cc: Int? = (r == cursorRow) ? grid.cursorCol : nil
+                let cc: Int? = (r == cursorRow && blockCursorActive) ? grid.cursorCol : nil
                 appendLine(
                     grid.row(r), cols: grid.cols, cursorCol: cc, selectedCols: sel,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
@@ -700,6 +819,88 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             scrollView.contentView.scroll(to: NSPoint(x: 0, y: yMax))
             scrollView.reflectScrolledClipView(scrollView.contentView)
         }
+
+        updateCursorLayer()
+    }
+
+    /// underline/bar 모양 cursor를 CALayer로 위치/크기 갱신. block은 inverse-cell로 처리.
+    @objc private func scrollViewDidScroll(_ note: Notification) {
+        updateCursorLayer()
+    }
+
+    private func updateCursorLayer() {
+        let grid = session.grid
+        let shape = grid.cursorShape
+
+        // 숨겨야 할 조건들:
+        // - cursor invisible (DECTCEM ?25l)
+        // - block 모양 (inverse-cell이 처리)
+        // - IME 조합 중 (marked text overlay가 cursor 자리를 대체)
+        guard grid.cursorVisible, shape != .block, markedText.isEmpty else {
+            cursorLayer.isHidden = true
+            return
+        }
+
+        let cellW = max(cellMetrics.width, 1)
+        let cellH = max(cellMetrics.height, 1)
+        let inset = textView.textContainerInset
+
+        // textView 콘텐츠 좌표계의 cursor cell origin
+        let textViewRow = grid.scrollback.count + grid.cursorRow
+        let tvX = inset.width + CGFloat(grid.cursorCol) * cellW
+        let tvY = inset.height + CGFloat(textViewRow) * cellH
+
+        // textView 좌표 → HaliteSurfaceView 좌표 (scroll offset 자동 반영됨)
+        let originInSelf = textView.convert(NSPoint(x: tvX, y: tvY), to: self)
+
+        // wide cell이면 2 cols 폭
+        var cursorW = cellW
+        if grid.cursorCol + 1 < grid.cols
+            && grid.cursorRow < grid.rows {
+            let row = grid.row(grid.cursorRow)
+            if grid.cursorCol + 1 < row.count && row[grid.cursorCol + 1].isContinuation {
+                cursorW = cellW * 2
+            }
+        }
+
+        // 가시 영역 밖이면 숨김 (사용자가 history 위로 스크롤한 상태 등)
+        let visibleRect = bounds
+        let cursorRectInSelf = NSRect(x: originInSelf.x, y: originInSelf.y, width: cursorW, height: cellH)
+        if !visibleRect.intersects(cursorRectInSelf) {
+            cursorLayer.isHidden = true
+            return
+        }
+
+        let frame: NSRect
+        switch shape {
+        case .underline:
+            let thickness = max(1.5, cellH * 0.1)
+            frame = NSRect(
+                x: originInSelf.x,
+                y: originInSelf.y + cellH - thickness,
+                width: cursorW,
+                height: thickness
+            )
+        case .bar:
+            let thickness = max(1.5, cellW * 0.15)
+            frame = NSRect(
+                x: originInSelf.x,
+                y: originInSelf.y,
+                width: thickness,
+                height: cellH
+            )
+        case .block:
+            // 도달 안 함 (위에서 guard로 빠짐)
+            cursorLayer.isHidden = true
+            return
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true) // animation 끔
+        cursorLayer.frame = frame
+        cursorLayer.backgroundColor = session.config.foregroundColor.cgColor
+        cursorLayer.isHidden = false
+        CATransaction.commit()
     }
 
     /// 한 줄(Cell 배열)을 run-length attribute 그룹으로 묶어서 attributed string에 append.
