@@ -54,6 +54,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     private let scrollView: NSScrollView
     private let textView: PassiveTextView
     private var gridSubscription: AnyCancellable?
+    private var configSubscription: AnyCancellable?
     private var lastReportedSize: (cols: Int, rows: Int)? = nil
     private var renderScheduled = false
     private var lastRenderedVersion: UInt64 = .max
@@ -177,7 +178,28 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
                 self?.scheduleRender()
             }
 
+        configSubscription = session.$config
+            .dropFirst() // 초기 값은 init 시 이미 반영됨
+            .receive(on: RunLoop.main)
+            .sink { [weak self] cfg in
+                self?.applyConfig(cfg)
+            }
+
         // 초기 1회 렌더.
+        scheduleRender()
+    }
+
+    /// Settings 변경 → session.updateConfig → 여기로 들어와서 textView/색상/스크롤백 적용.
+    private func applyConfig(_ config: HaliteConfig) {
+        let font = NSFont(name: config.fontFamily, size: config.fontSize)
+            ?? NSFont.userFixedPitchFont(ofSize: config.fontSize)
+            ?? NSFont.systemFont(ofSize: config.fontSize)
+        textView.font = font
+        textView.backgroundColor = config.backgroundColor
+        textView.textColor = config.foregroundColor
+        layer?.backgroundColor = config.backgroundColor.cgColor
+        lastReportedSize = nil
+        needsLayout = true
         scheduleRender()
     }
 

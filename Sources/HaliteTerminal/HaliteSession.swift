@@ -5,7 +5,7 @@ import Foundation
 /// 터미널 인스턴스 1개. PTY + 파서 + Grid를 묶음.
 /// 호스트(cmux / halite.app)가 생성·소유하고 `HaliteTerminalView`에 주입.
 public final class HaliteSession: ObservableObject {
-    public private(set) var config: HaliteConfig
+    @Published public private(set) var config: HaliteConfig
 
     @Published public private(set) var title: String = ""
     @Published public private(set) var workingDirectory: String? = nil
@@ -90,9 +90,10 @@ public final class HaliteSession: ObservableObject {
     }
 
     /// 폰트/색상/팔레트 변경 등 hot-reload 시 호출.
+    /// `config`이 `@Published`이므로 subscribers(view)가 자동 react.
     public func updateConfig(_ config: HaliteConfig) {
         self.config = config
-        // TODO: 렌더러/아틀라스/파서로 전파
+        grid.maxScrollbackLines = config.scrollbackLines
     }
 
     public func terminate() {

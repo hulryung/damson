@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import HaliteTerminal
+import SwiftUI
 
 // 독립 halite.app의 진입점.
 // SwiftPM 실행: `swift run halite`
@@ -33,6 +34,10 @@ final class HaliteWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = surface
         window.contentMinSize = NSSize(width: 320, height: 200)
         window.center()
+        // 같은 식별자를 갖는 윈도우들이 macOS 네이티브 탭 그룹으로 자동 묶임.
+        // Cmd+T로 새 탭 생성, Cmd+Shift+] / Cmd+Shift+[ 가 next/prev (AppKit 자동).
+        window.tabbingMode = .preferred
+        window.tabbingIdentifier = "halite.terminal"
         super.init(window: window)
         window.delegate = self
         titleSubscription = session.$title
@@ -54,10 +59,43 @@ final class HaliteWindowController: NSWindowController, NSWindowDelegate {
 
 final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
     /// 살아있는 윈도우 컨트롤러들. windowWillClose가 자기 자신을 빼서 release되도록.
-    private var controllers: [HaliteWindowController] = []
+    fileprivate var controllers: [HaliteWindowController] = []
+    private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         spawnWindow()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(settingsChanged(_:)),
+            name: .haliteSettingsChanged,
+            object: nil
+        )
+    }
+
+    @objc func showSettings(_ sender: Any?) {
+        if let win = settingsWindow {
+            win.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let view = HaliteSettingsView()
+        let host = NSHostingController(rootView: view)
+        let win = NSWindow(contentViewController: host)
+        win.title = "halite Settings"
+        win.styleMask = [.titled, .closable, .resizable]
+        win.setContentSize(NSSize(width: 420, height: 280))
+        win.isReleasedWhenClosed = false
+        settingsWindow = win
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func settingsChanged(_ note: Notification) {
+        // 활성 세션 전체에 새 config 푸시.
+        let newConfig = HaliteConfig.fromUserDefaults()
+        for c in controllers {
+            c.session.updateConfig(newConfig)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -73,7 +111,7 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func spawnWindow() {
-        let session = HaliteSession(config: HaliteConfig())
+        let session = HaliteSession(config: HaliteConfig.fromUserDefaults())
         let controller = HaliteWindowController(session: session)
         // 닫힐 때 array에서 제거 — strong ref 해제.
         NotificationCenter.default.addObserver(
@@ -99,6 +137,12 @@ func installMainMenu() {
     let appMenu = NSMenu()
     appItem.submenu = appMenu
     appMenu.addItem(
+        withTitle: "Settings…",
+        action: #selector(HaliteAppDelegate.showSettings(_:)),
+        keyEquivalent: ","
+    )
+    appMenu.addItem(NSMenuItem.separator())
+    appMenu.addItem(
         withTitle: "Quit halite",
         action: #selector(NSApplication.terminate(_:)),
         keyEquivalent: "q"
@@ -113,6 +157,12 @@ func installMainMenu() {
         withTitle: "New Window",
         action: #selector(HaliteAppDelegate.newWindow(_:)),
         keyEquivalent: "n"
+    )
+    // Cmd+T 도 동일 새 윈도우 — tabbingMode=.preferred 라서 기존 윈도우와 같은 탭 그룹으로 자동 join.
+    fileMenu.addItem(
+        withTitle: "New Tab",
+        action: #selector(HaliteAppDelegate.newWindow(_:)),
+        keyEquivalent: "t"
     )
     fileMenu.addItem(
         withTitle: "Close Window",
