@@ -102,6 +102,13 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     /// 검색 매치 — `[textViewRow: [colRange...]]`. render 시 highlight 표시용.
     private var findMatchesByRow: [Int: [Range<Int>]] = [:]
 
+    /// Cmd-hover URL 표시 상태. Cmd 누른 채로 URL 위에 마우스를 올렸을 때
+    /// 해당 URL을 밝게 underline 표시 + pointing-hand cursor.
+    /// 클릭은 Cmd 누른 상태에서만 URL 오픈.
+    private var cmdKeyDown: Bool = false
+    private var hoveredURL: (row: Int, colRange: Range<Int>, url: URL)?
+    private var mouseTrackingArea: NSTrackingArea?
+
     public init(session: HaliteSession) {
         self.session = session
 
@@ -378,14 +385,165 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         }
         // anchor == head 이면 (그냥 클릭이면)
         if let a = selectionAnchor, let h = selectionHead, a == h {
-            // 클릭한 셀에 OSC 8 hyperlink 또는 자동 검출된 URL이 있으면 열기.
-            if let url = urlAtCell(a) {
+            // URL은 Cmd 누른 상태에서만 열기 — Cmd 없는 클릭은 cursor 옮기는 일반 행위.
+            // (iTerm2 / Terminal.app / VS Code 다 동일 UX.)
+            if event.modifierFlags.contains(.command), let url = urlAtCell(a) {
                 NSWorkspace.shared.open(url)
             }
             selectionAnchor = nil
             selectionHead = nil
             scheduleRender()
         }
+    }
+
+    // MARK: - Cmd-hover URL 강조 (iTerm2 / Terminal.app 와 동일 UX)
+    //
+    // Cmd가 눌리지 않은 상태에선 plain text URL은 그냥 평범한 텍스트로 보이고,
+    // Cmd를 누르고 URL 위에 마우스를 올리면 그 글자들만 파란색 + underline + pointing hand cursor.
+    // Cmd 떼거나 URL 밖으로 나가면 즉시 해제.
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area = mouseTrackingArea { removeTrackingArea(area) }
+        let opts: NSTrackingArea.Options = [
+            .mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect,
+        ]
+        let area = NSTrackingArea(rect: bounds, options: opts, owner: self, userInfo: nil)
+        addTrackingArea(area)
+        mouseTrackingArea = area
+    }
+
+    public override func flagsChanged(with event: NSEvent) {
+        let nowDown = event.modifierFlags.contains(.command)
+        if nowDown != cmdKeyDown {
+            cmdKeyDown = nowDown
+            if nowDown {
+                updateHoverFromCurrentMouse()
+            } else {
+                clearHoveredURL()
+            }
+        }
+        super.flagsChanged(with: event)
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        if cmdKeyDown {
+            updateHoverFromCell(convertEventToCell(event))
+        }
+        super.mouseMoved(with: event)
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        clearHoveredURL()
+        super.mouseExited(with: event)
+    }
+
+    private func updateHoverFromCurrentMouse() {
+        guard let win = window else { return }
+        let winPt = win.mouseLocationOutsideOfEventStream
+        let inSelf = convert(winPt, from: nil)
+        guard bounds.contains(inSelf) else {
+            clearHoveredURL()
+            return
+        }
+        let inTV = textView.convert(inSelf, from: self)
+        let inset = textView.textContainerInset
+        let cellW = max(cellMetrics.width, 1)
+        let cellH = max(cellMetrics.height, 1)
+        let row = max(0, Int(floor((inTV.y - inset.height) / cellH)))
+        let col = max(0, Int(floor((inTV.x - inset.width) / cellW)))
+        let maxRow = session.grid.scrollback.count + session.grid.rows - 1
+        updateHoverFromCell((min(row, maxRow), min(col, session.grid.cols)))
+    }
+
+    private func updateHoverFromCell(_ pos: (row: Int, col: Int)) {
+        if let info = urlInfoAtCell(pos) {
+            let changed: Bool = {
+                guard let cur = hoveredURL else { return true }
+                return cur.row != pos.row || cur.colRange != info.range
+            }()
+            if changed {
+                hoveredURL = (row: pos.row, colRange: info.range, url: info.url)
+                NSCursor.pointingHand.set()
+                scheduleRender()
+            }
+        } else {
+            clearHoveredURL()
+        }
+    }
+
+    private func clearHoveredURL() {
+        if hoveredURL != nil {
+            hoveredURL = nil
+            NSCursor.iBeam.set()
+            scheduleRender()
+        }
+    }
+
+    /// 특정 (row, col) 셀이 URL 영역 안이면 URL과 셀 col range를 반환.
+    /// OSC 8 hyperlink이면 같은 URI를 가진 인접 셀들의 범위.
+    /// plain text URL이면 NSDataDetector 매치의 셀 범위.
+    private func urlInfoAtCell(
+        _ pos: (row: Int, col: Int)
+    ) -> (url: URL, range: Range<Int>)? {
+        let cells = cellsForTextViewRow(pos.row)
+        guard pos.col >= 0, pos.col < cells.count else { return nil }
+        if let uri = cells[pos.col].hyperlink, let url = URL(string: uri) {
+            var s = pos.col
+            while s > 0 && cells[s - 1].hyperlink == uri { s -= 1 }
+            var e = pos.col + 1
+            while e < cells.count && cells[e].hyperlink == uri { e += 1 }
+            return (url, s..<e)
+        }
+        return detectURLRangeAtColumn(pos.col, in: cells)
+    }
+
+    private func detectURLRangeAtColumn(
+        _ col: Int, in cells: [Cell]
+    ) -> (url: URL, range: Range<Int>)? {
+        var rowText = ""
+        var colToCharIndex: [Int] = []
+        var charIndexToCol: [Int] = []
+        colToCharIndex.reserveCapacity(cells.count)
+        for (i, cell) in cells.enumerated() {
+            if cell.isContinuation {
+                colToCharIndex.append(max(0, rowText.count - 1))
+                continue
+            }
+            colToCharIndex.append(rowText.count)
+            charIndexToCol.append(i)
+            rowText.append(cell.char)
+        }
+        guard col < colToCharIndex.count else { return nil }
+        let charIndex = colToCharIndex[col]
+        guard let detector = try? NSDataDetector(
+            types: NSTextCheckingResult.CheckingType.link.rawValue
+        ) else { return nil }
+        let nsRange = NSRange(rowText.startIndex..<rowText.endIndex, in: rowText)
+        let matches = detector.matches(in: rowText, options: [], range: nsRange)
+        for match in matches where NSLocationInRange(charIndex, match.range) {
+            guard let url = match.url else { continue }
+            guard match.range.location < charIndexToCol.count else { continue }
+            let startCol = charIndexToCol[match.range.location]
+            let lastCharIdx = min(
+                match.range.location + match.range.length - 1,
+                charIndexToCol.count - 1
+            )
+            var endColExclusive = charIndexToCol[lastCharIdx] + 1
+            // wide-char URL의 trailing continuation cell까지 포함.
+            while endColExclusive < cells.count
+                && cells[endColExclusive].isContinuation {
+                endColExclusive += 1
+            }
+            return (url, startCol..<endColExclusive)
+        }
+        return nil
+    }
+
+    /// 렌더 시 사용 — 주어진 textViewRow에 hovered URL이 있으면 그 col range.
+    private func hoveredURLRangeForRow(_ textViewRow: Int) -> Range<Int>? {
+        guard let h = hoveredURL, h.row == textViewRow else { return nil }
+        return h.colRange
     }
 
     public override func scrollWheel(with event: NSEvent) {
@@ -954,21 +1112,28 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
 
     private var lastRenderedSelectionKey: String = ""
     private var lastRenderedFindKey: String = ""
+    private var lastRenderedHoverKey: String = ""
 
     private func renderNow() {
         let grid = session.grid
         let selKey = selectionKey()
         let findKey = "\(findQuery)|\(findMatchesByRow.count)"
+        let hoverKey: String = {
+            guard let h = hoveredURL else { return "" }
+            return "\(h.row)|\(h.colRange.lowerBound)|\(h.colRange.upperBound)"
+        }()
         if grid.version == lastRenderedVersion
             && markedText == lastRenderedMarkedText
             && selKey == lastRenderedSelectionKey
-            && findKey == lastRenderedFindKey {
+            && findKey == lastRenderedFindKey
+            && hoverKey == lastRenderedHoverKey {
             return
         }
         lastRenderedVersion = grid.version
         lastRenderedMarkedText = markedText
         lastRenderedSelectionKey = selKey
         lastRenderedFindKey = findKey
+        lastRenderedHoverKey = hoverKey
 
         guard let storage = textView.textStorage else { return }
         let baseFont = textView.font
@@ -993,9 +1158,10 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         for (i, line) in grid.scrollback.enumerated() {
             let sel = selectedColumnsForRow(i, cols: line.count)
             let finds = findRangesForRow(i)
+            let hover = hoveredURLRangeForRow(i)
             appendLine(
                 line, cols: line.count, cursorCol: nil,
-                selectedCols: sel, findRanges: finds,
+                selectedCols: sel, findRanges: finds, hoveredURLRange: hover,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
             result.append(NSAttributedString(string: "\n"))
@@ -1008,6 +1174,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             let textViewRow = scrollbackCount + r
             let sel = selectedColumnsForRow(textViewRow, cols: grid.cols)
             let finds = findRangesForRow(textViewRow)
+            let hover = hoveredURLRangeForRow(textViewRow)
             if r == cursorRow && !mt.isEmpty {
                 appendCursorRowWithMarkedText(
                     grid.row(r),
@@ -1022,7 +1189,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
                 let cc: Int? = (r == cursorRow && blockCursorActive) ? grid.cursorCol : nil
                 appendLine(
                     grid.row(r), cols: grid.cols, cursorCol: cc,
-                    selectedCols: sel, findRanges: finds,
+                    selectedCols: sel, findRanges: finds, hoveredURLRange: hover,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
@@ -1098,9 +1265,14 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             }
         }
 
+        // self는 non-flipped(bottom-left origin), textView는 flipped(top-left origin).
+        // convert(_:to:)는 셀의 시각적 top-left를 self 좌표로 돌려주므로,
+        // 셀 박스의 rect.origin(bottom-left) y = originInSelf.y - cellH.
+        let cellBottomY = originInSelf.y - cellH
+
         // 가시 영역 밖이면 숨김 (사용자가 history 위로 스크롤한 상태 등)
         let visibleRect = bounds
-        let cursorRectInSelf = NSRect(x: originInSelf.x, y: originInSelf.y, width: cursorW, height: cellH)
+        let cursorRectInSelf = NSRect(x: originInSelf.x, y: cellBottomY, width: cursorW, height: cellH)
         if !visibleRect.intersects(cursorRectInSelf) {
             cursorLayer.isHidden = true
             return
@@ -1109,18 +1281,20 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         let frame: NSRect
         switch shape {
         case .underline:
+            // 셀 시각적 바닥에 얇은 strip — non-flipped이므로 rect의 y가 바닥.
             let thickness = max(1.5, cellH * 0.1)
             frame = NSRect(
                 x: originInSelf.x,
-                y: originInSelf.y + cellH - thickness,
+                y: cellBottomY,
                 width: cursorW,
                 height: thickness
             )
         case .bar:
+            // 셀 시각적 좌측 변에 얇은 column — 셀 전체 높이.
             let thickness = max(1.5, cellW * 0.15)
             frame = NSRect(
                 x: originInSelf.x,
-                y: originInSelf.y,
+                y: cellBottomY,
                 width: thickness,
                 height: cellH
             )
@@ -1148,6 +1322,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         cursorCol: Int?,
         selectedCols: Range<Int>?,
         findRanges: [Range<Int>],
+        hoveredURLRange: Range<Int>?,
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
         into result: NSMutableAttributedString
@@ -1158,6 +1333,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             if cc > 0 {
                 appendRunGroup(
                     line, range: 0..<cc, selectedCols: selectedCols, findRanges: findRanges,
+                    hoveredURLRange: hoveredURLRange,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
@@ -1184,12 +1360,14 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             if cc + 1 < cols {
                 appendRunGroup(
                     line, range: (cc + 1)..<cols, selectedCols: selectedCols, findRanges: findRanges,
+                    hoveredURLRange: hoveredURLRange,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
         } else {
             appendRunGroup(
                 line, range: 0..<cols, selectedCols: selectedCols, findRanges: findRanges,
+                hoveredURLRange: hoveredURLRange,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -1210,6 +1388,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         if cursorCol > 0 {
             appendRunGroup(
                 line, range: 0..<cursorCol, selectedCols: nil, findRanges: [],
+                hoveredURLRange: nil,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -1232,6 +1411,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         if afterCol < cols {
             appendRunGroup(
                 line, range: afterCol..<cols, selectedCols: nil, findRanges: [],
+                hoveredURLRange: nil,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -1242,12 +1422,16 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         range: Range<Int>,
         selectedCols: Range<Int>?,
         findRanges: [Range<Int>],
+        hoveredURLRange: Range<Int>?,
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
         into result: NSMutableAttributedString
     ) {
         func isFindMatch(_ col: Int) -> Bool {
             findRanges.contains { $0.contains(col) }
+        }
+        func isHovered(_ col: Int) -> Bool {
+            hoveredURLRange?.contains(col) ?? false
         }
 
         var c = range.lowerBound
@@ -1260,10 +1444,12 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             if isWide {
                 let runSelected = selectedCols?.contains(c) ?? false
                 let runFind = isFindMatch(c)
+                let runHover = isHovered(c)
                 appendWideCell(
                     line[c],
                     isSelected: runSelected,
                     isFindMatch: runFind,
+                    isHoveredURL: runHover,
                     baseFont: baseFont,
                     paragraphStyle: paragraphStyle,
                     into: result
@@ -1276,6 +1462,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             let runHyperlink = line[c].hyperlink
             let runSelected = selectedCols?.contains(c) ?? false
             let runFind = isFindMatch(c)
+            let runHover = isHovered(c)
             var endC = c + 1
             while endC < range.upperBound,
                   !line[endC].isContinuation,
@@ -1283,7 +1470,8 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
                   line[endC].attrs == runAttrs,
                   line[endC].hyperlink == runHyperlink,
                   (selectedCols?.contains(endC) ?? false) == runSelected,
-                  isFindMatch(endC) == runFind {
+                  isFindMatch(endC) == runFind,
+                  isHovered(endC) == runHover {
                 endC += 1
             }
             var runChars = ""
@@ -1292,7 +1480,8 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             let nsAttrs = makeAttributes(
                 for: runAttrs, baseFont: baseFont,
                 paragraphStyle: paragraphStyle,
-                isSelected: runSelected, isFindMatch: runFind, hyperlink: runHyperlink
+                isSelected: runSelected, isFindMatch: runFind,
+                isHoveredURL: runHover, hyperlink: runHyperlink
             )
             result.append(NSAttributedString(string: runChars, attributes: nsAttrs))
             c = endC
@@ -1304,6 +1493,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         _ cell: Cell,
         isSelected: Bool,
         isFindMatch: Bool = false,
+        isHoveredURL: Bool = false,
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
         into result: NSMutableAttributedString
@@ -1311,7 +1501,8 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         var nsAttrs = makeAttributes(
             for: cell.attrs, baseFont: baseFont,
             paragraphStyle: paragraphStyle,
-            isSelected: isSelected, isFindMatch: isFindMatch, hyperlink: cell.hyperlink
+            isSelected: isSelected, isFindMatch: isFindMatch,
+            isHoveredURL: isHoveredURL, hyperlink: cell.hyperlink
         )
         let font = (nsAttrs[.font] as? NSFont) ?? baseFont
         let char = String(cell.char) as NSString
@@ -1330,6 +1521,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         paragraphStyle: NSParagraphStyle,
         isSelected: Bool = false,
         isFindMatch: Bool = false,
+        isHoveredURL: Bool = false,
         hyperlink: String? = nil
     ) -> [NSAttributedString.Key: Any] {
         let (fg, bg) = cellAttrs.resolvedColors(defaultBG: session.config.backgroundColor)
@@ -1361,6 +1553,13 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             attrs[.link] = url
             attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
             attrs[.underlineColor] = fg.withAlphaComponent(0.5)
+        }
+        // Cmd-hover 표시 — 평소엔 plain text URL에 아무 표시 없다가 Cmd 누르고
+        // URL 위에 마우스 올리면 그 글자들만 밝은 파란색 + 또렷한 underline.
+        if isHoveredURL {
+            attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            attrs[.underlineColor] = NSColor.systemBlue
+            attrs[.foregroundColor] = NSColor.systemBlue
         }
         return attrs
     }
