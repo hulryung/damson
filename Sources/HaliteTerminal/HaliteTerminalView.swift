@@ -136,11 +136,13 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         tv.isSelectable = false
         tv.isRichText = true
         tv.allowsUndo = false
-        // 초기 폰트도 config.fontFamily 사용. userFixedPitchFont만 쓰면 Menlo/SF Mono로
-        // 고정되어 Nerd Font 디폴트가 무시되는 회귀가 있었음.
-        tv.font = NSFont(name: session.config.fontFamily, size: session.config.fontSize)
-            ?? NSFont.userFixedPitchFont(ofSize: session.config.fontSize)
-            ?? NSFont.systemFont(ofSize: session.config.fontSize)
+        // 초기 폰트 — config.fontFamily 우선 + cascadeList에 Nerd Font fallback
+        // 추가. Menlo 같은 일반 monospace를 선택해도 Powerline 글리프가 ?로 깨지지
+        // 않도록.
+        tv.font = fontWithNerdFallback(
+            family: session.config.fontFamily,
+            size: session.config.fontSize
+        )
         tv.textColor = session.config.foregroundColor
         tv.backgroundColor = session.config.backgroundColor
         tv.drawsBackground = true
@@ -208,9 +210,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
 
     /// Settings 변경 → session.updateConfig → 여기로 들어와서 textView/색상/스크롤백 적용.
     private func applyConfig(_ config: HaliteConfig) {
-        let font = NSFont(name: config.fontFamily, size: config.fontSize)
-            ?? NSFont.userFixedPitchFont(ofSize: config.fontSize)
-            ?? NSFont.systemFont(ofSize: config.fontSize)
+        let font = fontWithNerdFallback(family: config.fontFamily, size: config.fontSize)
         textView.font = font
         textView.backgroundColor = config.backgroundColor
         // ⚠️ textView.textColor = ... 는 rich-text 모드에서 textStorage 전체의
@@ -938,11 +938,8 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         fontSizeMultiplier = max(0.5, min(4.0, multiplier))
         let baseSize = session.config.fontSize
         let newSize = max(6, baseSize * fontSizeMultiplier)
-        // zoom도 config.fontFamily(Nerd Font 등) 유지 — userFixedPitchFont만 쓰면
-        // Menlo로 갈아끼워져서 powerline 글리프가 사라짐.
-        let font = NSFont(name: session.config.fontFamily, size: newSize)
-            ?? NSFont.userFixedPitchFont(ofSize: newSize)
-            ?? NSFont.systemFont(ofSize: newSize)
+        // zoom도 cascade 포함된 폰트 사용 — Menlo 등에서도 Nerd glyph fallback 유지.
+        let font = fontWithNerdFallback(family: session.config.fontFamily, size: newSize)
         textView.font = font
         // zoom은 **순수 시각 변경**으로 취급. session.grid 차원은 그대로 두고
         // cellMetrics만 새 폰트 기준으로 갱신 — SIGWINCH 안 발사 → 셸이 prompt를
@@ -1337,11 +1334,16 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     /// underline/bar 모양 cursor를 CALayer로 위치/크기 갱신. block은 inverse-cell로 처리.
     @objc private func scrollViewDidScroll(_ note: Notification) {
         updateCursorLayer()
-        // followingBottom 플래그 갱신. async로 미루는 이유는 programmatic scroll
-        // (scrollViewportToBottom) 도중에 이 notification이 발생할 수 있어서, 그
-        // 변화의 최종 결과를 기준으로 판단하기 위함.
-        DispatchQueue.main.async { [weak self] in
-            self?.refreshFollowingBottomFlag()
+        // followingBottom 갱신은 **사용자 인터랙션 scroll** (`didLiveScrollNotification`)
+        // 에만 반응. boundsDidChangeNotification은 programmatic scroll
+        // (scrollViewportToBottom)이나 윈도우 리사이즈로 인한 transient도 발사하는데,
+        // 그때 isScrolledToBottom이 stale 값으로 잘못 false를 돌려 followingBottom이
+        // 깨지고 → 이후 layout이 bottom anchor를 안 해서 마지막 줄이 뷰포트 밖으로
+        // 밀리는 회귀를 만들었음.
+        if note.name == NSScrollView.didLiveScrollNotification {
+            DispatchQueue.main.async { [weak self] in
+                self?.refreshFollowingBottomFlag()
+            }
         }
     }
 

@@ -36,37 +36,12 @@ enum FontDiscovery {
             || family.contains(" NFP")
     }
 
-    /// halite의 디폴트 폰트 가족. 선호 순 (halite-swift 공식 디폴트는 MesloLGL NFM):
-    ///   1. MesloLGL Nerd Font Mono  (L = large line-height — 한글 + 라인 간격 여유)
-    ///   2. MesloLGM Nerd Font Mono
-    ///   3. MesloLGS Nerd Font Mono / MesloLGS NF (Powerlevel10k 권장)
-    ///   4. JetBrainsMono Nerd Font Mono
-    ///   5. Hack Nerd Font Mono / FiraCode Nerd Font Mono
-    ///   6. 시스템에 있는 첫 Nerd Font Mono
-    ///   7. Menlo (Nerd Font 미설치 시)
+    /// halite의 디폴트 폰트 가족 = **Menlo** (macOS 모든 시스템 기본 monospace).
+    /// Powerline glyph는 HaliteTerminal의 `fontWithNerdFallback` cascade에서 시스템
+    /// 설치된 Nerd Font로 자동 fallback 처리되므로 디폴트가 Nerd Font일 필요 없음.
+    /// 한글도 같은 cascade에서 Apple SD Gothic Neo로 처리.
     static func defaultFamily() -> String {
-        let installed = Set(NSFontManager.shared.availableFontFamilies)
-        let preferred = [
-            "MesloLGL Nerd Font Mono",
-            "MesloLGM Nerd Font Mono",
-            "MesloLGS Nerd Font Mono",
-            "MesloLGS NF",
-            "JetBrainsMono Nerd Font Mono",
-            "JetBrainsMonoNL Nerd Font Mono",
-            "Hack Nerd Font Mono",
-            "FiraCode Nerd Font Mono",
-        ]
-        for p in preferred where installed.contains(p) {
-            return p
-        }
-        // 위 목록에 없지만 NFM/NF Mono 같은 거 있으면 시도.
-        if let any = nerdFontFamilies().first(where: { isMonoVariant($0) }) {
-            return any
-        }
-        if let any = nerdFontFamilies().first {
-            return any
-        }
-        return "Menlo"
+        "Menlo"
     }
 
     /// Nerd Font의 "Mono" 변형 (글리프가 1셀 폭으로 강제). 터미널엔 보통 이게 정렬됨.
