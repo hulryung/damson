@@ -89,11 +89,9 @@ sed -e "s|__MARKETING_VERSION__|$MARKETING_VERSION|g" \
     -e "s|__SPARKLE_PUBLIC_KEY__|$SPARKLE_KEY|g" \
     "$TEMPLATE" > "$CONTENTS/Info.plist"
 
-# 향후 아이콘: $REPO/Resources/Halite.icns가 있으면 복사.
+# 아이콘 — template의 CFBundleIconFile=Halite를 만족시키도록 Halite.icns 복사.
 if [[ -f "$REPO_ROOT/Resources/Halite.icns" ]]; then
     cp "$REPO_ROOT/Resources/Halite.icns" "$RESOURCES_DIR/Halite.icns"
-    # Info.plist에 CFBundleIconFile 추가 필요 (template에서 처리하거나 plutil로).
-    plutil -insert CFBundleIconFile -string "Halite" "$CONTENTS/Info.plist"
 fi
 
 # Entitlements는 sign 단계에서 codesign --entitlements로 적용 — 번들에는 안 들어감.

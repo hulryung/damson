@@ -51,7 +51,8 @@ let package = Package(
                 "HaliteControl",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
-            path: "Sources/halite"
+            path: "Sources/halite",
+            resources: [.copy("Resources/Halite.icns")]
         ),
         .executableTarget(
             name: "halite-cli",

@@ -86,6 +86,19 @@ enum AppBundleTrampoline {
                 try? fm.copyItem(at: entry, to: dst)
             }
         }
+
+        // 아이콘 — SwiftPM이 Bundle.module의 Halite.icns로 노출. Info.plist의
+        // CFBundleIconFile=Halite와 짝이 되도록 Contents/Resources/Halite.icns에
+        // 복사. 없으면 무시 (dock에 generic 아이콘).
+        if let iconURL = Bundle.module.url(forResource: "Halite", withExtension: "icns") {
+            let resourcesDir = contentsDir.appendingPathComponent("Resources")
+            try? fm.createDirectory(at: resourcesDir, withIntermediateDirectories: true)
+            let dstIcon = resourcesDir.appendingPathComponent("Halite.icns")
+            if fm.fileExists(atPath: dstIcon.path) {
+                try? fm.removeItem(at: dstIcon)
+            }
+            try? fm.copyItem(at: iconURL, to: dstIcon)
+        }
     }
 
     private static func infoPlist() -> String {
@@ -106,6 +119,8 @@ enum AppBundleTrampoline {
             <string>0.0.1</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
+            <key>CFBundleIconFile</key>
+            <string>Halite</string>
             <key>NSHighResolutionCapable</key>
             <true/>
         </dict>

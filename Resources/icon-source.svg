@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  halite-swift app icon — halite Rust 아이콘 기반에서 prompt ">_" 색만 검정 +
+  흰색 outline으로 바꿔서 구분. 1024×1024 master.
+  build: scripts/build-icon.sh
+-->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Tokyo Night background. -->
+  <rect width="1024" height="1024" rx="180" ry="180" fill="#1a1b26"/>
+
+  <!-- Isometric cube — halite Rust와 동일 좌표/색. -->
+  <g stroke="#1a1b26" stroke-width="6" stroke-linejoin="round" stroke-linecap="round">
+    <polygon points="682,342 822,202 822,682 682,822" fill="#3d59a1"/>
+    <polygon points="202,342 342,202 822,202 682,342" fill="#7dcfff"/>
+    <polygon points="202,342 682,342 682,822 202,822" fill="#7aa2f7"/>
+  </g>
+
+  <!-- ">_" prompt — halite-swift 변형. 흰색 outline(56pt) + 검정 코어(40pt).
+       두 겹 stroke으로 outline 효과. 1024px에서 (56-40)/2 = 8pt 흰 테두리. -->
+  <g stroke="#ffffff" stroke-width="56" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <polyline points="310,515 445,605 310,695"/>
+    <line x1="485" y1="695" x2="650" y2="695"/>
+  </g>
+  <g stroke="#0a0a14" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <polyline points="310,515 445,605 310,695"/>
+    <line x1="485" y1="695" x2="650" y2="695"/>
+  </g>
+</svg>

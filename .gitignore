@@ -6,3 +6,5 @@ DerivedData/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 Package.resolved
 dist/
+# build artifact from scripts/build-icon.sh; regenerated from icon-source.svg.
+Resources/Halite-1024.png
