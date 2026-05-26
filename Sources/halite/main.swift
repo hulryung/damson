@@ -135,6 +135,12 @@ func installMainMenu() {
         action: #selector(NSText.paste(_:)),
         keyEquivalent: "v"
     )
+    editMenu.addItem(NSMenuItem.separator())
+    editMenu.addItem(
+        withTitle: "Find…",
+        action: Selector(("performFindPanelAction:")),
+        keyEquivalent: "f"
+    )
 
     // View menu — font zoom
     let viewItem = NSMenuItem()

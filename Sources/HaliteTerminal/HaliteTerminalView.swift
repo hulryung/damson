@@ -95,6 +95,12 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     /// 현재 적용된 폰트 zoom multiplier. 1.0이 기본. Cmd+= / Cmd+- / Cmd+0로 변경.
     private var fontSizeMultiplier: CGFloat = 1.0
 
+    /// 활성화된 find 오버레이 + 현재 검색어 + 매치 위치.
+    private var findOverlay: FindOverlayView?
+    private var findQuery: String = ""
+    /// 검색 매치 — `[textViewRow: [colRange...]]`. render 시 highlight 표시용.
+    private var findMatchesByRow: [Int: [Range<Int>]] = [:]
+
     public init(session: HaliteSession) {
         self.session = session
 
@@ -548,6 +554,105 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
+    /// Cmd+F (NSResponder/NSTextFinderClient 표준) — find 오버레이 토글.
+    @objc public func performFindPanelAction(_ sender: Any?) {
+        if let overlay = findOverlay {
+            overlay.focus()
+            return
+        }
+        showFindOverlay()
+    }
+
+    private func showFindOverlay() {
+        let overlay = FindOverlayView(
+            initialQuery: findQuery,
+            onQueryChange: { [weak self] q in self?.applyFindQuery(q) },
+            onDismiss: { [weak self] in self?.hideFindOverlay() }
+        )
+        overlay.autoresizingMask = [.minXMargin, .minYMargin]
+        let pad: CGFloat = 8
+        overlay.frame = NSRect(
+            x: bounds.width - overlay.frame.width - pad,
+            y: bounds.height - overlay.frame.height - pad,
+            width: overlay.frame.width,
+            height: overlay.frame.height
+        )
+        addSubview(overlay)
+        findOverlay = overlay
+        overlay.focus()
+        applyFindQuery(findQuery)
+    }
+
+    private func hideFindOverlay() {
+        findOverlay?.removeFromSuperview()
+        findOverlay = nil
+        findMatchesByRow.removeAll()
+        window?.makeFirstResponder(self)
+        scheduleRender()
+    }
+
+    private func applyFindQuery(_ query: String) {
+        findQuery = query
+        findMatchesByRow.removeAll()
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            findOverlay?.updateCount(matched: 0)
+            scheduleRender()
+            return
+        }
+        let needle = trimmed.lowercased()
+        var total = 0
+        let grid = session.grid
+        let scrollbackCount = grid.scrollback.count
+
+        func scan(_ cells: [Cell], row: Int) {
+            // cell → text 매핑 (continuation은 직전 글자 가리킴).
+            var rowText = ""
+            var colToCharIdx: [Int] = []
+            colToCharIdx.reserveCapacity(cells.count)
+            for cell in cells {
+                if cell.isContinuation {
+                    colToCharIdx.append(max(0, rowText.count - 1))
+                    continue
+                }
+                colToCharIdx.append(rowText.count)
+                rowText.append(cell.char)
+            }
+            guard !rowText.isEmpty else { return }
+            let lower = rowText.lowercased()
+            var ranges: [Range<Int>] = []
+            var search = lower.startIndex
+            while let m = lower.range(of: needle, range: search..<lower.endIndex) {
+                let startChar = lower.distance(from: lower.startIndex, to: m.lowerBound)
+                let endChar = lower.distance(from: lower.startIndex, to: m.upperBound)
+                // char idx → col 매핑
+                let startCol = colToCharIdx.firstIndex { $0 >= startChar } ?? colToCharIdx.count
+                var endCol = startCol
+                while endCol < colToCharIdx.count && colToCharIdx[endCol] < endChar {
+                    endCol += 1
+                }
+                if startCol < endCol {
+                    ranges.append(startCol..<endCol)
+                    total += 1
+                }
+                search = m.upperBound
+            }
+            if !ranges.isEmpty {
+                findMatchesByRow[row] = ranges
+            }
+        }
+
+        for (i, line) in grid.scrollback.enumerated() { scan(line, row: i) }
+        for r in 0..<grid.rows { scan(grid.row(r), row: scrollbackCount + r) }
+        findOverlay?.updateCount(matched: total)
+        scheduleRender()
+    }
+
+    /// 한 줄에서 find 매치가 차지하는 col 범위들.
+    private func findRangesForRow(_ row: Int) -> [Range<Int>] {
+        findMatchesByRow[row] ?? []
+    }
+
     @objc public func zoomIn(_ sender: Any?) {
         setZoom(fontSizeMultiplier * 1.1)
     }
@@ -826,19 +931,22 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     }
 
     private var lastRenderedSelectionKey: String = ""
+    private var lastRenderedFindKey: String = ""
 
     private func renderNow() {
         let grid = session.grid
-        // selection state도 render에 영향을 주므로 같이 본다.
         let selKey = selectionKey()
+        let findKey = "\(findQuery)|\(findMatchesByRow.count)"
         if grid.version == lastRenderedVersion
             && markedText == lastRenderedMarkedText
-            && selKey == lastRenderedSelectionKey {
+            && selKey == lastRenderedSelectionKey
+            && findKey == lastRenderedFindKey {
             return
         }
         lastRenderedVersion = grid.version
         lastRenderedMarkedText = markedText
         lastRenderedSelectionKey = selKey
+        lastRenderedFindKey = findKey
 
         guard let storage = textView.textStorage else { return }
         let baseFont = textView.font
@@ -859,23 +967,25 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
 
         let scrollbackCount = grid.scrollback.count
 
-        // Scrollback (오래된 → 최근). cursor는 안 그림.
+        // Scrollback. cursor는 안 그림.
         for (i, line) in grid.scrollback.enumerated() {
             let sel = selectedColumnsForRow(i, cols: line.count)
+            let finds = findRangesForRow(i)
             appendLine(
-                line, cols: line.count, cursorCol: nil, selectedCols: sel,
+                line, cols: line.count, cursorCol: nil,
+                selectedCols: sel, findRanges: finds,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
             result.append(NSAttributedString(string: "\n"))
         }
 
-        // 현재 viewport. block cursor만 inverse-cell로, underline/bar는 CALayer가 그림.
         let cursorRow = grid.cursorVisible ? grid.cursorRow : -1
         let blockCursorActive = (grid.cursorShape == .block) && markedText.isEmpty
         let mt = markedText
         for r in 0..<grid.rows {
             let textViewRow = scrollbackCount + r
             let sel = selectedColumnsForRow(textViewRow, cols: grid.cols)
+            let finds = findRangesForRow(textViewRow)
             if r == cursorRow && !mt.isEmpty {
                 appendCursorRowWithMarkedText(
                     grid.row(r),
@@ -889,7 +999,8 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             } else {
                 let cc: Int? = (r == cursorRow && blockCursorActive) ? grid.cursorCol : nil
                 appendLine(
-                    grid.row(r), cols: grid.cols, cursorCol: cc, selectedCols: sel,
+                    grid.row(r), cols: grid.cols, cursorCol: cc,
+                    selectedCols: sel, findRanges: finds,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
@@ -1008,11 +1119,13 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     /// 한 줄(Cell 배열)을 run-length attribute 그룹으로 묶어서 attributed string에 append.
     /// `cursorCol`이 주어지면 그 위치의 한 셀은 단독으로 inverse 처리해서 그림.
     /// `selectedCols`가 주어지면 해당 범위의 셀들은 selection background로 칠함.
+    /// `findRanges`가 주어지면 그 범위들의 셀은 find-highlight 색으로 칠함.
     private func appendLine(
         _ line: [Cell],
         cols: Int,
         cursorCol: Int?,
         selectedCols: Range<Int>?,
+        findRanges: [Range<Int>],
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
         into result: NSMutableAttributedString
@@ -1022,7 +1135,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         if cc >= 0 && cc < cols {
             if cc > 0 {
                 appendRunGroup(
-                    line, range: 0..<cc, selectedCols: selectedCols,
+                    line, range: 0..<cc, selectedCols: selectedCols, findRanges: findRanges,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
@@ -1048,13 +1161,13 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             }
             if cc + 1 < cols {
                 appendRunGroup(
-                    line, range: (cc + 1)..<cols, selectedCols: selectedCols,
+                    line, range: (cc + 1)..<cols, selectedCols: selectedCols, findRanges: findRanges,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
         } else {
             appendRunGroup(
-                line, range: 0..<cols, selectedCols: selectedCols,
+                line, range: 0..<cols, selectedCols: selectedCols, findRanges: findRanges,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -1074,7 +1187,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         // cursor 이전 셀들 — 평소처럼
         if cursorCol > 0 {
             appendRunGroup(
-                line, range: 0..<cursorCol, selectedCols: nil,
+                line, range: 0..<cursorCol, selectedCols: nil, findRanges: [],
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -1096,7 +1209,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         let afterCol = min(cursorCol + overlayCols, cols)
         if afterCol < cols {
             appendRunGroup(
-                line, range: afterCol..<cols, selectedCols: nil,
+                line, range: afterCol..<cols, selectedCols: nil, findRanges: [],
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -1106,27 +1219,29 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         _ line: [Cell],
         range: Range<Int>,
         selectedCols: Range<Int>?,
+        findRanges: [Range<Int>],
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
         into result: NSMutableAttributedString
     ) {
+        func isFindMatch(_ col: Int) -> Bool {
+            findRanges.contains { $0.contains(col) }
+        }
+
         var c = range.lowerBound
         while c < range.upperBound {
-            // Continuation cell은 NSAttributedString에 추가하지 않음 —
-            // 직전 wide glyph가 두 칸을 자연스럽게 차지함.
             if line[c].isContinuation {
                 c += 1
                 continue
             }
-
-            // 이 cell이 wide (다음 cell이 continuation)인지 검사.
-            // wide cell은 단독 run으로 emit하면서 `.kern`으로 정확히 2*cellW 차지하도록.
             let isWide = (c + 1 < line.count && line[c + 1].isContinuation)
             if isWide {
                 let runSelected = selectedCols?.contains(c) ?? false
+                let runFind = isFindMatch(c)
                 appendWideCell(
                     line[c],
                     isSelected: runSelected,
+                    isFindMatch: runFind,
                     baseFont: baseFont,
                     paragraphStyle: paragraphStyle,
                     into: result
@@ -1138,15 +1253,15 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             let runAttrs = line[c].attrs
             let runHyperlink = line[c].hyperlink
             let runSelected = selectedCols?.contains(c) ?? false
+            let runFind = isFindMatch(c)
             var endC = c + 1
-            // 같은 attrs + hyperlink + selection 상태가 이어지는 한 묶음.
-            // wide cell은 묶음에 포함시키지 않음 (단독 emit 필요).
             while endC < range.upperBound,
                   !line[endC].isContinuation,
                   !(endC + 1 < line.count && line[endC + 1].isContinuation),
                   line[endC].attrs == runAttrs,
                   line[endC].hyperlink == runHyperlink,
-                  (selectedCols?.contains(endC) ?? false) == runSelected {
+                  (selectedCols?.contains(endC) ?? false) == runSelected,
+                  isFindMatch(endC) == runFind {
                 endC += 1
             }
             var runChars = ""
@@ -1155,7 +1270,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             let nsAttrs = makeAttributes(
                 for: runAttrs, baseFont: baseFont,
                 paragraphStyle: paragraphStyle,
-                isSelected: runSelected, hyperlink: runHyperlink
+                isSelected: runSelected, isFindMatch: runFind, hyperlink: runHyperlink
             )
             result.append(NSAttributedString(string: runChars, attributes: nsAttrs))
             c = endC
@@ -1166,6 +1281,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     private func appendWideCell(
         _ cell: Cell,
         isSelected: Bool,
+        isFindMatch: Bool = false,
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
         into result: NSMutableAttributedString
@@ -1173,7 +1289,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         var nsAttrs = makeAttributes(
             for: cell.attrs, baseFont: baseFont,
             paragraphStyle: paragraphStyle,
-            isSelected: isSelected, hyperlink: cell.hyperlink
+            isSelected: isSelected, isFindMatch: isFindMatch, hyperlink: cell.hyperlink
         )
         let font = (nsAttrs[.font] as? NSFont) ?? baseFont
         let char = String(cell.char) as NSString
@@ -1191,6 +1307,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
         isSelected: Bool = false,
+        isFindMatch: Bool = false,
         hyperlink: String? = nil
     ) -> [NSAttributedString.Key: Any] {
         let (fg, bg) = cellAttrs.resolvedColors(defaultBG: session.config.backgroundColor)
@@ -1205,8 +1322,12 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             .foregroundColor: fg,
             .paragraphStyle: paragraphStyle,
         ]
+        // 우선순위: selection > findMatch > cell bg
         if isSelected {
             attrs[.backgroundColor] = NSColor.selectedTextBackgroundColor
+        } else if isFindMatch {
+            attrs[.backgroundColor] = NSColor.systemYellow.withAlphaComponent(0.6)
+            attrs[.foregroundColor] = NSColor.black
         } else if let bg = bg {
             attrs[.backgroundColor] = bg
         }
