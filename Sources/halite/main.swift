@@ -31,9 +31,22 @@ final class HaliteWindowController: NSWindowController, NSWindowDelegate {
         // 미세한 inset을 추가해서 cell-grid 첫 column이 가려지는 문제가 있음.
         // halite.app은 cmux integration용 SwiftUI API를 안 거치고 직접 NSView 사용.
         let surface = HaliteSurfaceView(session: session)
-        surface.translatesAutoresizingMaskIntoConstraints = true
-        surface.autoresizingMask = [.width, .height]
-        window.contentView = surface
+        surface.translatesAutoresizingMaskIntoConstraints = false
+        // contentView를 container로 감싸서 titlebar 영역에 NSVisualEffectView를
+        // 깔 수 있는 자리를 만든다. Compact 모드에선 fullSizeContentView로 컨테이너가
+        // 윈도우 전체에 펼쳐지고, VFX가 위쪽 titlebarHeight만큼 점유 + surface는
+        // 그 아래로 inset됨. 다른 모드에선 VFX 숨기고 surface가 컨테이너 전체.
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(surface)
+        let surfaceTop = surface.topAnchor.constraint(equalTo: container.topAnchor)
+        NSLayoutConstraint.activate([
+            surface.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            surface.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            surface.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            surfaceTop,
+        ])
+        window.contentView = container
         window.contentMinSize = NSSize(width: 320, height: 200)
         window.center()
         // 같은 식별자를 갖는 윈도우들이 macOS 네이티브 탭 그룹으로 자동 묶임.
@@ -49,7 +62,12 @@ final class HaliteWindowController: NSWindowController, NSWindowDelegate {
                 self?.window?.title = display
             }
         // 사용자가 Settings에서 고른 탭 스타일 적용. 초기값은 TabBarStyle.current.
-        let applier = TabBarStyleApplier(window: window)
+        let applier = TabBarStyleApplier(
+            window: window,
+            container: container,
+            surface: surface,
+            surfaceTopConstraint: surfaceTop
+        )
         applier.apply(TabBarStyle.current)
         self.tabStyleApplier = applier
     }
