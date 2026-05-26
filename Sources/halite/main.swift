@@ -86,8 +86,10 @@ final class HaliteWindowController: NSWindowController, NSWindowDelegate {
 }
 
 final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
-    /// 살아있는 윈도우 컨트롤러들. windowWillClose가 자기 자신을 빼서 release되도록.
+    /// 살아있는 single-session 컨트롤러들 (Standard/Auto 모드).
     fileprivate var controllers: [HaliteWindowController] = []
+    /// 살아있는 multi-session 컨트롤러들 (Compact 모드).
+    fileprivate var compactControllers: [CompactWindowController] = []
     private var settingsWindow: NSWindow?
     /// halite-cli 와의 IPC. 첫 윈도우 생성 후 bind.
     private var controlSocket: ControlSocketServer?
@@ -137,26 +139,43 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
     private func dispatch(controlCommand cmd: ControlCommand) -> ControlResponse {
         switch cmd.kind {
         case .newTab:
-            spawnWindow()
+            newTabOrWindow()
             return .ok()
         case .split:
-            // halite-swift는 single-pane 단계. 의미 있는 동작이 없으므로 명시적 에러.
             return .err("split is not supported in halite-swift (single-pane only)")
         case .closeTab:
+            // Compact controller가 키 윈도우면 활성 탭 닫음. 아니면 윈도우 닫음.
+            if let active = activeCompact() {
+                active.closeCurrentTab()
+                return .ok()
+            }
             if let win = NSApp.keyWindow ?? controllers.last?.window {
                 win.performClose(nil)
                 return .ok()
             }
             return .err("no active window to close")
         case .switchTab(let index):
-            let tabs = currentTabbedWindows()
+            if let active = activeCompact() {
+                guard index >= 0, index < active.sessions.count else {
+                    return .err("tab index \(index) out of range (have \(active.sessions.count) tabs)")
+                }
+                active.selectTab(index)
+                return .ok()
+            }
+            let tabs = currentNativeTabs()
             guard index >= 0, index < tabs.count else {
                 return .err("tab index \(index) out of range (have \(tabs.count) tabs)")
             }
             tabs[index].makeKeyAndOrderFront(nil)
             return .ok()
         case .listTabs:
-            let tabs = currentTabbedWindows()
+            if let active = activeCompact() {
+                let list = active.sessions.enumerated().map { (i, _) in
+                    TabInfo(index: i, pane_count: 1)
+                }
+                return .tabs(list)
+            }
+            let tabs = currentNativeTabs()
             let list = tabs.enumerated().map { (i, _) in
                 TabInfo(index: i, pane_count: 1)
             }
@@ -164,9 +183,18 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 현재 활성 탭 그룹의 윈도우 목록. 단일 윈도우면 [그 윈도우], 탭 그룹이면 .tabbedWindows.
+    /// 현재 키 윈도우가 CompactWindowController가 소유한 윈도우면 그 controller.
     @MainActor
-    private func currentTabbedWindows() -> [NSWindow] {
+    private func activeCompact() -> CompactWindowController? {
+        guard let keyWindow = NSApp.keyWindow else {
+            return compactControllers.first
+        }
+        return compactControllers.first(where: { $0.window === keyWindow })
+    }
+
+    /// 네이티브 탭 그룹 윈도우 목록 (Standard/Auto 모드).
+    @MainActor
+    private func currentNativeTabs() -> [NSWindow] {
         if let key = NSApp.keyWindow {
             if let group = key.tabbedWindows { return group }
             return [key]
@@ -197,12 +225,16 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func settingsChanged(_ note: Notification) {
-        // 활성 세션 전체에 새 config 푸시.
+        // 활성 세션 전체에 새 config 푸시. 스타일 변경은 single-session controller만
+        // hot-reload — compact controller는 구조 자체가 달라서 새 윈도우부터 적용됨.
         let newConfig = HaliteConfig.fromUserDefaults()
         let newTabStyle = TabBarStyle.current
         for c in controllers {
             c.session.updateConfig(newConfig)
             c.applyTabBarStyle(newTabStyle)
+        }
+        for cc in compactControllers {
+            for s in cc.sessions { s.updateConfig(newConfig) }
         }
     }
 
@@ -212,25 +244,62 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         for c in controllers { c.session.terminate() }
+        for cc in compactControllers { for s in cc.sessions { s.terminate() } }
     }
 
+    /// Cmd+N — 항상 새 윈도우.
     @objc func newWindow(_ sender: Any?) {
         spawnWindow()
     }
 
+    /// Cmd+T — 활성 윈도우가 Compact면 거기에 탭 추가, 아니면 새 윈도우.
+    @MainActor
+    @objc func newTab(_ sender: Any?) {
+        newTabOrWindow()
+    }
+
+    @MainActor
+    private func newTabOrWindow() {
+        if let active = activeCompact() {
+            active.addNewTab()
+            return
+        }
+        spawnWindow()
+    }
+
     private func spawnWindow() {
+        let style = TabBarStyle.current
+        if style == .compact {
+            spawnCompactWindow()
+        } else {
+            spawnSingleSessionWindow()
+        }
+    }
+
+    private func spawnSingleSessionWindow() {
         let session = HaliteSession(config: HaliteConfig.fromUserDefaults())
         let controller = HaliteWindowController(session: session)
-        // 닫힐 때 array에서 제거 — strong ref 해제.
         NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
-            object: controller.window,
-            queue: .main
+            object: controller.window, queue: .main
         ) { [weak self, weak controller] _ in
             guard let self = self, let controller = controller else { return }
             self.controllers.removeAll { $0 === controller }
         }
         controllers.append(controller)
+        controller.showWindow(nil)
+    }
+
+    private func spawnCompactWindow() {
+        let controller = CompactWindowController()
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: controller.window, queue: .main
+        ) { [weak self, weak controller] _ in
+            guard let self = self, let controller = controller else { return }
+            self.compactControllers.removeAll { $0 === controller }
+        }
+        compactControllers.append(controller)
         controller.showWindow(nil)
     }
 }
@@ -275,10 +344,10 @@ func installMainMenu() {
         action: #selector(HaliteAppDelegate.newWindow(_:)),
         keyEquivalent: "n"
     )
-    // Cmd+T 도 동일 새 윈도우 — tabbingMode=.preferred 라서 기존 윈도우와 같은 탭 그룹으로 자동 join.
+    // Cmd+T — Compact 모드면 활성 윈도우에 탭 추가, 그 외엔 새 윈도우 (native tab group join).
     fileMenu.addItem(
         withTitle: "New Tab",
-        action: #selector(HaliteAppDelegate.newWindow(_:)),
+        action: #selector(HaliteAppDelegate.newTab(_:)),
         keyEquivalent: "t"
     )
     fileMenu.addItem(

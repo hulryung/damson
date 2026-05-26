@@ -963,6 +963,11 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             NSApp.terminate(nil)
             return true
         case "w":
+            // responder chain에 closeTab 액션을 먼저 보냄 — CompactWindowController가
+            // 활성 탭만 닫는 구현을 가지고 있을 수 있음. 아무도 안 받으면 일반 윈도우 닫기.
+            if NSApp.sendAction(Selector(("performCloseTab:")), to: nil, from: self) {
+                return true
+            }
             window?.performClose(nil)
             return true
         default:
