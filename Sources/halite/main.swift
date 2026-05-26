@@ -136,6 +136,27 @@ func installMainMenu() {
         keyEquivalent: "v"
     )
 
+    // View menu — font zoom
+    let viewItem = NSMenuItem()
+    mainMenu.addItem(viewItem)
+    let viewMenu = NSMenu(title: "View")
+    viewItem.submenu = viewMenu
+    viewMenu.addItem(
+        withTitle: "Zoom In",
+        action: #selector(HaliteSurfaceView.zoomIn(_:)),
+        keyEquivalent: "="
+    )
+    viewMenu.addItem(
+        withTitle: "Zoom Out",
+        action: #selector(HaliteSurfaceView.zoomOut(_:)),
+        keyEquivalent: "-"
+    )
+    viewMenu.addItem(
+        withTitle: "Actual Size",
+        action: #selector(HaliteSurfaceView.resetZoom(_:)),
+        keyEquivalent: "0"
+    )
+
     NSApp.mainMenu = mainMenu
 }
 

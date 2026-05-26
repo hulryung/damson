@@ -92,6 +92,9 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     /// underline/bar는 CALayer로 그려서 cell 글자를 가리지 않음.
     private let cursorLayer = CALayer()
 
+    /// 현재 적용된 폰트 zoom multiplier. 1.0이 기본. Cmd+= / Cmd+- / Cmd+0로 변경.
+    private var fontSizeMultiplier: CGFloat = 1.0
+
     public init(session: HaliteSession) {
         self.session = session
 
@@ -273,11 +276,59 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             return
         }
 
-        // 선택 시작.
         let point = convertEventToCell(event)
-        selectionAnchor = point
-        selectionHead = point
+        switch event.clickCount {
+        case 2:
+            // 더블 클릭 — 단어 선택 (space로 끊김).
+            if let (start, end) = wordBoundsAround(point) {
+                selectionAnchor = start
+                selectionHead = end
+            } else {
+                selectionAnchor = point
+                selectionHead = point
+            }
+        case 3:
+            // 트리플 클릭 — 줄 전체 선택.
+            let cells = cellsForTextViewRow(point.row)
+            selectionAnchor = (point.row, 0)
+            selectionHead = (point.row, cells.count)
+        default:
+            // 일반 클릭 — drag selection 시작.
+            selectionAnchor = point
+            selectionHead = point
+        }
         scheduleRender()
+    }
+
+    private func cellsForTextViewRow(_ row: Int) -> [Cell] {
+        let scrollbackCount = session.grid.scrollback.count
+        if row < scrollbackCount { return session.grid.scrollback[row] }
+        let vp = row - scrollbackCount
+        if vp >= 0 && vp < session.grid.rows { return session.grid.row(vp) }
+        return []
+    }
+
+    private func wordBoundsAround(
+        _ pos: (row: Int, col: Int)
+    ) -> ((row: Int, col: Int), (row: Int, col: Int))? {
+        let cells = cellsForTextViewRow(pos.row)
+        guard pos.col < cells.count else { return nil }
+        // 클릭한 자리가 공백이면 단어 아님 — nil 반환 (그냥 점선 선택)
+        if isWordBreak(cells[pos.col].char) { return nil }
+        var start = pos.col
+        while start > 0 && !isWordBreak(cells[start - 1].char) {
+            start -= 1
+        }
+        var end = pos.col + 1
+        while end < cells.count && !isWordBreak(cells[end].char) {
+            end += 1
+        }
+        return ((pos.row, start), (pos.row, end))
+    }
+
+    private func isWordBreak(_ c: Character) -> Bool {
+        // 단어 경계 — 공백/탭만. CJK는 단어 단위 아니지만 일단 공백 기준.
+        c == " " || c == "\t"
     }
 
     public override func mouseDragged(with event: NSEvent) {
@@ -361,7 +412,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     }
 
     /// 특정 (row, col)에서 클릭 가능한 URL을 반환. OSC 8 hyperlink 우선,
-    /// 없으면 plain text URL 자동 검출.
+    /// 없으면 NSDataDetector로 plain text URL 자동 검출.
     private func urlAtCell(_ pos: (row: Int, col: Int)) -> URL? {
         let grid = session.grid
         let scrollbackCount = grid.scrollback.count
@@ -374,11 +425,39 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             cells = grid.row(vp)
         }
         guard pos.col >= 0, pos.col < cells.count else { return nil }
-        // OSC 8 hyperlink가 set이면 그 URI
+        // 1. OSC 8 hyperlink가 set이면 그 URI
         if let uri = cells[pos.col].hyperlink, let url = URL(string: uri) {
             return url
         }
-        // TODO(B1): NSDataDetector로 plain URL 검출
+        // 2. NSDataDetector로 plain URL 검출
+        return detectURLAtColumn(pos.col, in: cells)
+    }
+
+    /// row 내의 cell 시퀀스에서 NSDataDetector로 URL 패턴을 찾고, 주어진 col이
+    /// 어느 매치 안에 들어가면 그 URL 반환.
+    private func detectURLAtColumn(_ col: Int, in cells: [Cell]) -> URL? {
+        // cell → char 인덱스 매핑. continuation cell은 직전 글자를 가리킴 (wide char의 2번째 column).
+        var rowText = ""
+        var colToCharIndex: [Int] = []
+        colToCharIndex.reserveCapacity(cells.count)
+        for cell in cells {
+            if cell.isContinuation {
+                colToCharIndex.append(max(0, rowText.count - 1))
+                continue
+            }
+            colToCharIndex.append(rowText.count)
+            rowText.append(cell.char)
+        }
+        guard col < colToCharIndex.count else { return nil }
+        let charIndex = colToCharIndex[col]
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return nil
+        }
+        let nsRange = NSRange(rowText.startIndex..<rowText.endIndex, in: rowText)
+        let matches = detector.matches(in: rowText, options: [], range: nsRange)
+        for match in matches where NSLocationInRange(charIndex, match.range) {
+            if let url = match.url { return url }
+        }
         return nil
     }
 
@@ -467,6 +546,29 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             lines.append(chars)
         }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    @objc public func zoomIn(_ sender: Any?) {
+        setZoom(fontSizeMultiplier * 1.1)
+    }
+
+    @objc public func zoomOut(_ sender: Any?) {
+        setZoom(fontSizeMultiplier / 1.1)
+    }
+
+    @objc public func resetZoom(_ sender: Any?) {
+        setZoom(1.0)
+    }
+
+    private func setZoom(_ multiplier: CGFloat) {
+        fontSizeMultiplier = max(0.5, min(4.0, multiplier))
+        let baseSize = session.config.fontSize
+        let newSize = max(6, baseSize * fontSizeMultiplier)
+        textView.font = NSFont.userFixedPitchFont(ofSize: newSize)
+            ?? NSFont.systemFont(ofSize: newSize)
+        lastReportedSize = nil // 다음 layout에서 cols/rows 재산정 강제.
+        needsLayout = true
+        scheduleRender()
     }
 
     /// Edit > Copy / Cmd+C가 보내는 셀렉터. 선택 텍스트를 pasteboard에 push.
