@@ -105,7 +105,6 @@ public final class HaliteSession: ObservableObject {
     private func handlePTYData(_ data: Data) {
         onOutput?(data)
         parser.feed(data)
-        // parser delegate가 grid를 mutate 했으므로 호스트에 한 번 알림.
         gridChanged.send()
     }
 
@@ -287,6 +286,17 @@ public final class HaliteSession: ObservableObject {
             case 1006:
                 // SGR mouse encoding
                 mouseSGREncoding = set
+            case 2026:
+                // Synchronized Output Mode (DECSET 2026) — Claude Code, Ink 기반 TUI
+                // 등 alt-screen 안 쓰고 primary에 cursor positioning으로 redraw 하는
+                // 앱이 사용.
+                //   - hasUsedSyncOutput: 한 번이라도 set 되면 sticky-true. resize 시
+                //     viewport-top anchoring 등 TUI-friendly 정책 활성화.
+                //   - inSyncOutputMode: transient (set ⇔ true, clear ⇔ false).
+                //     redraw burst 중 line-feed로 발생하는 scrollUp이 옛 라인을
+                //     scrollback으로 push하지 않도록 막는 데 사용.
+                if set { grid.hasUsedSyncOutput = true }
+                grid.inSyncOutputMode = set
             default:
                 break
             }

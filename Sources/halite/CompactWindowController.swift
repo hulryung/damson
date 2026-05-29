@@ -8,22 +8,34 @@ import HaliteTerminal
 ///
 /// hiterm(`~/dev/hiterm`)의 MainWindowController 구조 차용.
 final class CompactWindowController: NSWindowController, NSWindowDelegate {
-    private(set) var sessions: [HaliteSession] = []
-    private var surfaces: [HaliteSurfaceView] = []
+    /// 탭 = (PaneTreeView, 그 트리의 첫 leaf 세션의 title 구독).
+    /// 한 탭 안에서 Cmd+D / Cmd+Shift+D 로 split하면 그 탭의 트리에 leaf 추가됨.
+    private struct Tab {
+        let tree: PaneTreeView
+        var titleSub: AnyCancellable
+    }
+    private var tabs: [Tab] = []
     private(set) var currentIndex: Int = 0
+
+    /// 외부에서 list-tabs / switch-tab 등을 위한 session 표현.
+    /// 각 탭의 root pane(첫 leaf) 세션 — 탭 제목 추적용.
+    var sessions: [HaliteSession] {
+        tabs.compactMap { $0.tree.root.leaves().first?.session }
+    }
+
+    /// 현재 active 탭의 active pane (split 했을 때 포커스된 쪽).
+    var activeSession: HaliteSession? {
+        guard currentIndex < tabs.count else { return nil }
+        let tree = tabs[currentIndex].tree
+        if case .leaf(let s, _) = tree.activeLeaf.kind { return s }
+        return nil
+    }
 
     private var tabBar: CompactTabBarView!
     private var tabBarBackground: NSVisualEffectView!
     private var contentContainer: NSView!
 
-    /// 각 세션의 $title을 구독해서 탭 이름 갱신.
-    private var titleSubscriptions: [AnyCancellable] = []
-
-    /// `gridChanged`를 구독해서 inactive 탭의 텍스트 update에도 반응
-    /// (현재 visible 탭만 surface가 렌더되므로 그대로 작동).
-    private var gridSubscriptions: [AnyCancellable] = []
-
-    var hasTabs: Bool { !sessions.isEmpty }
+    var hasTabs: Bool { !tabs.isEmpty }
 
     init() {
         let window = NSWindow(
@@ -107,51 +119,56 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func addNewTab() -> HaliteSession {
         let session = HaliteSession(config: HaliteConfig.fromUserDefaults())
-        let surface = HaliteSurfaceView(session: session)
-        surface.translatesAutoresizingMaskIntoConstraints = false
-        sessions.append(session)
-        surfaces.append(surface)
+        let tree = PaneTreeView(rootSession: session)
+        tree.translatesAutoresizingMaskIntoConstraints = false
+        // 마지막 leaf까지 닫혔으면 이 탭 자체를 닫음.
+        let tabIndex = tabs.count
+        tree.onAllPanesClosed = { [weak self] in
+            self?.closeTab(tabIndex)
+        }
 
         let titleSub = session.$title.receive(on: RunLoop.main).sink { [weak self] _ in
             self?.refreshTabBar()
         }
-        titleSubscriptions.append(titleSub)
+        tabs.append(Tab(tree: tree, titleSub: titleSub))
 
-        selectTab(sessions.count - 1)
+        selectTab(tabs.count - 1)
         refreshTabBar()
         return session
     }
 
     func selectTab(_ index: Int) {
-        guard index >= 0, index < surfaces.count else { return }
+        guard index >= 0, index < tabs.count else { return }
         currentIndex = index
-        for s in surfaces { s.removeFromSuperview() }
-        let surface = surfaces[index]
-        contentContainer.addSubview(surface)
+        for t in tabs { t.tree.removeFromSuperview() }
+        let tree = tabs[index].tree
+        contentContainer.addSubview(tree)
         NSLayoutConstraint.activate([
-            surface.topAnchor.constraint(equalTo: contentContainer.topAnchor),
-            surface.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
-            surface.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
-            surface.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            tree.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            tree.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+            tree.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            tree.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
         ])
-        window?.makeFirstResponder(surface)
-        let title = sessions[index].title
-        window?.title = title.isEmpty ? "halite" : title
+        if case .leaf(_, let surface) = tree.activeLeaf.kind {
+            window?.makeFirstResponder(surface)
+        }
+        if let firstSession = tree.root.leaves().first?.session {
+            let title = firstSession.title
+            window?.title = title.isEmpty ? "halite" : title
+        }
         refreshTabBar()
     }
 
     func closeTab(_ index: Int) {
-        guard index >= 0, index < sessions.count else { return }
-        sessions[index].terminate()
-        sessions.remove(at: index)
-        surfaces.remove(at: index)
-        titleSubscriptions.remove(at: index)
+        guard index >= 0, index < tabs.count else { return }
+        tabs[index].tree.root.terminateAll()
+        tabs.remove(at: index)
 
-        if sessions.isEmpty {
+        if tabs.isEmpty {
             window?.performClose(nil)
             return
         }
-        if currentIndex >= sessions.count { currentIndex = sessions.count - 1 }
+        if currentIndex >= tabs.count { currentIndex = tabs.count - 1 }
         selectTab(currentIndex)
     }
 
@@ -159,19 +176,36 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
         closeTab(currentIndex)
     }
 
-    /// HaliteSurfaceView가 Cmd+W를 responder chain에 보낼 때 받아서 활성 탭만 닫음.
+    /// HaliteSurfaceView가 Cmd+W를 responder chain에 보낼 때 받음. 활성 탭의 활성
+    /// pane을 닫음 (트리에 마지막 pane이면 PaneTreeView가 onAllPanesClosed로
+    /// 탭/윈도우 종료까지 cascade).
     @objc func performCloseTab(_ sender: Any?) {
-        closeCurrentTab()
+        guard currentIndex < tabs.count else { return }
+        tabs[currentIndex].tree.closeActive()
+    }
+
+    /// Cmd+D — 가로 split (좌/우).
+    @objc func splitPaneHorizontally(_ sender: Any?) {
+        guard currentIndex < tabs.count else { return }
+        tabs[currentIndex].tree.split(direction: .horizontal)
+    }
+
+    /// Cmd+Shift+D — 세로 split (위/아래).
+    @objc func splitPaneVertically(_ sender: Any?) {
+        guard currentIndex < tabs.count else { return }
+        tabs[currentIndex].tree.split(direction: .vertical)
     }
 
     private func refreshTabBar() {
-        let titles = sessions.map { $0.title }
+        let titles = tabs.map { tab in
+            tab.tree.root.leaves().first?.session.title ?? "halite"
+        }
         tabBar.update(titles: titles, selectedIndex: currentIndex)
     }
 
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
-        for s in sessions { s.terminate() }
+        for t in tabs { t.tree.root.terminateAll() }
     }
 }

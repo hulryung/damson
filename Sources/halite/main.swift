@@ -399,6 +399,24 @@ func installMainMenu() {
         keyEquivalent: "0"
     )
 
+    // Split menu — pane splitting. responder chain으로 활성 윈도우 컨트롤러에 도달.
+    let splitItem = NSMenuItem()
+    mainMenu.addItem(splitItem)
+    let splitMenu = NSMenu(title: "Split")
+    splitItem.submenu = splitMenu
+    splitMenu.addItem(
+        withTitle: "Split Horizontally",
+        action: #selector(CompactWindowController.splitPaneHorizontally(_:)),
+        keyEquivalent: "d"
+    )
+    let vsplit = NSMenuItem(
+        title: "Split Vertically",
+        action: #selector(CompactWindowController.splitPaneVertically(_:)),
+        keyEquivalent: "d"
+    )
+    vsplit.keyEquivalentModifierMask = [.command, .shift]
+    splitMenu.addItem(vsplit)
+
     NSApp.mainMenu = mainMenu
 }
 

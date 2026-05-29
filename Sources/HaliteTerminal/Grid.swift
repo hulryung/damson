@@ -68,6 +68,18 @@ public final class Grid {
     /// alt screen 진입 여부. true면 현재 buffer는 alt, 진입 직전의 primary 상태가 `savedPrimary`에 보존.
     public private(set) var isAltScreenActive: Bool = false
 
+    /// Synchronized Output Mode(DECSET 2026)가 이 session에서 사용된 적 있는지.
+    /// 한 번이라도 set 되면 sticky-true. resize 시 viewport-top anchoring + blank cells
+    /// 정책에 사용 — 한 번이라도 TUI를 띄운 적 있으면 그 세션은 TUI-friendly로 운영.
+    public var hasUsedSyncOutput: Bool = false
+
+    /// 현재 2026 sync output mode 안에 있는지 (transient — `\e[?2026h`로 set,
+    /// `\e[?2026l`로 clear). Claude Code 같은 TUI가 redraw burst를 보낼 때 진행 중.
+    /// 이 동안의 scrollUp(line-feed로 화면 끝에서 바닥에 닿음)은 scrollback에 push
+    /// 안 함 — redraw burst의 옛 라인이 scrollback에 누적되어 사용자가 스크롤 시
+    /// 잔재 박스를 보는 회귀 방지.
+    public var inSyncOutputMode: Bool = false
+
     /// alt screen 진입 시 보존되는 primary buffer 스냅샷. alt 도중 resize가 와도 같이 따라감.
     private struct PrimarySnapshot {
         var cells: [[Cell]]
@@ -197,7 +209,10 @@ public final class Grid {
 
         // scrollback에는 region이 화면 최상단(scrollTop == 0)에서 시작하는 경우에만 push.
         // tmux 상태바처럼 region이 중간에 있으면 위로 빠지는 내용을 누적하지 않음 (xterm 동작).
-        if !isAltScreenActive && scrollTop == 0 {
+        // alt-screen 활성 중이거나 sync output burst 중이면 scrollback 누적 안 함.
+        // (xterm 동작과 동일하게 region이 화면 최상단 아닌 경우도 push 안 함.)
+        let suppressForTUI = isAltScreenActive || inSyncOutputMode
+        if !suppressForTUI && scrollTop == 0 {
             for i in 0..<evictCount {
                 pushToScrollback(cells[scrollTop + i])
             }
@@ -541,17 +556,35 @@ public final class Grid {
         precondition(newCols > 0 && newRows > 0)
         if newCols == cols && newRows == rows { return }
 
-        let rowOffset: Int = newRows < rows ? rows - newRows : 0
-
-        // 행 shrink 시 위로 사라지는 줄은 scrollback으로 보존.
-        // alt 활성 중엔 alt 스크롤백을 만들지 않고, primary 스크롤백도 건드리지 않음
-        // (저장된 primary는 아래에서 따로 resize 하면서 그쪽 scrollback에 push).
+        // shrink 시 어느 쪽 행을 잘라낼지 — cursor 기준으로 결정.
+        //   cursor가 새 viewport에 들어가면 (cursorRow < newRows) → 아래쪽을 잘라냄.
+        //     이러면 prompt(cursor 위쪽)는 그대로 유지, 빈 bottom만 사라짐.
+        //     셸이 SIGWINCH 후 reset-prompt를 보낼 때 옛 prompt가 그 자리에 그대로 있어서
+        //     깔끔하게 overwrite됨 → "prompt 누적" 회귀 막음.
+        //   cursor가 새 viewport에 안 들어가면 (예: cursor가 row 40인데 newRows=29) →
+        //     초과분 위쪽을 scrollback으로 push (옛 동작). 이때만 옛 prompt가 scrollback에
+        //     남는 부작용 발생 가능하지만, 그런 시나리오는 출력이 viewport 가득 찬 후의
+        //     리사이즈라 어차피 prompt 위치가 cursor와 무관.
+        // 일반 셸 및 primary-screen TUI(Claude Code/Ink 등) 모두 동일하게 cursor-aware
+        // push/drop. primary-screen TUI도 사용자 입장에선 그냥 셸의 일부로 보이고,
+        // 별도 처리(blank cells, viewport-top anchor 등)는 오히려 scrollback이
+        // 사라지거나 페이지가 점프하는 부작용을 만들었음. Terminal.app과 동일하게
+        // 자연스러운 자동 scroll 처리에 맡김.
+        let rowOffset: Int
+        if newRows < rows {
+            if cursorRow < newRows {
+                rowOffset = 0
+            } else {
+                rowOffset = cursorRow - (newRows - 1)
+            }
+        } else {
+            rowOffset = 0
+        }
         if rowOffset > 0 && !isAltScreenActive {
             for r in 0..<rowOffset {
                 pushToScrollback(cells[r])
             }
         }
-
         cells = Self.resizeCellsArray(
             cells, fromCols: cols, fromRows: rows,
             toCols: newCols, toRows: newRows, pen: pen

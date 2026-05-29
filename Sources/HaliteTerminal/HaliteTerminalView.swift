@@ -232,11 +232,21 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     public override func layout() {
         super.layout()
         scrollView.frame = bounds
+        // 라이브 리사이즈 중에도 textView/textContainer가 새 너비로 즉시 re-layout 되도록
+        // 강제. 이게 없으면 드래그 중엔 옛 layout이 유지되어 사용자가 보는 화면이
+        // 안 갱신되어 보임.
+        if let container = textView.textContainer {
+            textView.layoutManager?.ensureLayout(for: container)
+        }
         reportSizeIfChanged()
-        // layout 시점엔 이미 새 frame이 반영된 후라 isScrolledToBottom 재측정이
-        // 부정확. followingBottom 플래그(사용자 scroll에 의해 갱신)로 결정.
-        if followingBottom && !session.grid.isAltScreenActive {
+        if session.grid.isAltScreenActive || session.grid.hasUsedSyncOutput {
+            scrollViewportToAltTop()
+        } else if followingBottom {
             scrollViewportToBottom()
+        }
+        // resize 직후 새 grid 콘텐츠도 즉시 그리기.
+        if inLiveResize {
+            renderNow()
         }
     }
 
@@ -248,14 +258,41 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         return abs(curY - yMax) <= tolerance
     }
 
+    /// Alt-screen 활성 시 — primary scrollback을 건너뛰고 alt viewport top에 anchor.
+    /// (alt-screen 진입 시 self.scrollback이 primary의 history를 그대로 갖고 있어서
+    ///  안 스크롤하면 textStorage 최상단=primary scrollback이 보이고 alt 콘텐츠는
+    ///  그 아래에 그려져 사용자가 위로 스크롤해야 보는 회귀가 있었음.)
+    private func scrollViewportToAltTop() {
+        if let container = textView.textContainer {
+            textView.layoutManager?.ensureLayout(for: container)
+        }
+        let viewportTop = CGFloat(session.grid.scrollback.count) * cellMetrics.height
+            + textView.textContainerInset.height
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: viewportTop))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
     private func scrollViewportToBottom() {
         if let container = textView.textContainer {
             textView.layoutManager?.ensureLayout(for: container)
         }
-        let docHeight = textView.frame.height
         let visHeight = scrollView.contentView.bounds.height
-        let yMax = max(0, docHeight - visHeight)
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: yMax))
+        // "cursor visible" 정책 — cursor가 가시 영역 밖이면 들어오게만, 안이면 안 건드림.
+        // layout(window resize 등)에서 followingBottom 일 때 호출되므로 사용자가 바닥에
+        // 머물 의도면 그쪽으로 잡아주되, cursor 위 영역이 살아 있다면 그대로 둠.
+        let cursorViewRow = session.grid.scrollback.count + session.grid.cursorRow
+        let cursorY = CGFloat(cursorViewRow) * cellMetrics.height
+            + textView.textContainerInset.height
+        let cursorBottom = cursorY + cellMetrics.height
+        let curScroll = scrollView.contentView.bounds.origin.y
+        let visTop = curScroll
+        let visBottom = curScroll + visHeight
+        if cursorBottom > visBottom {
+            let targetY = cursorBottom - visHeight
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
+        } else if cursorY < visTop {
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: cursorY))
+        }
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
@@ -272,8 +309,22 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         return height / 3.0
     }
 
+    public override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        // 라이브 리사이즈 종료 후 최종 사이즈 보고 (안전망 — 일반적으로 layout()이
+        // 이미 처리하지만 마지막 frame이 layout 호출 없이 결정되는 케이스를 위해).
+        reportSizeIfChanged()
+    }
+
     private func reportSizeIfChanged() {
         guard bounds.width > 0, bounds.height > 0 else { return }
+        // 매 layout마다 즉시 SIGWINCH fire — 드래그 중에도 셸/TUI가 실시간으로
+        // redraw해서 사용자가 보는 화면도 실시간 갱신됨.
+        //
+        // (debounce/throttle 시도했으나: debounce는 연속 드래그가 timer를 reset해서
+        //  드래그가 끝날 때까지 한 번도 fire 안 됨. 일반 셸의 prompt 누적은 SIGWINCH
+        //  자체의 표준 동작이고, TUI 세션은 inSyncOutputMode로 scrollback 누적이 막혀
+        //  있어 잔재 회귀 없음.)
         let font = textView.font ?? NSFont.userFixedPitchFont(ofSize: session.config.fontSize)
             ?? NSFont.systemFont(ofSize: session.config.fontSize)
         let glyphSize = ("M" as NSString).size(withAttributes: [.font: font])
@@ -307,34 +358,16 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         let usableH = max(stableContentHeight - inset.height * 2, 1)
         let cols = max(Int(floor(usableW / cellW)), 1)
         let rows = max(Int(floor(usableH / cellH)), 1)
-        // dedupe: lastReportedSize 또는 현재 grid 차원과 일치하면 no-op.
-        // (zoom으로 lastReportedSize를 nil로 reset 했더라도 실제 cols/rows가 안 바뀌면
-        //  redundant SIGWINCH 발사 안 됨.)
+        // dedupe — 실제 cols/rows가 변화 없으면 SIGWINCH 안 보냄 (no-op layout 등).
         let prevCols = lastReportedSize?.cols ?? session.grid.cols
         let prevRows = lastReportedSize?.rows ?? session.grid.rows
         if prevCols == cols && prevRows == rows {
             lastReportedSize = (cols, rows)
             return
         }
-        // 모드 전환 / appearance 변경 / styleMask 변경 등으로 짧은 시간 내에 layout이
-        // 여러 번 fire 될 때, 그 cascade 중간의 transient size까지 매번 PTY로 보내면
-        // 셸이 매번 SIGWINCH를 받고 prompt가 폭발적으로 누적됨. 짧은 debounce로 마지막
-        // stable size만 한 번 전달. (zoom은 이제 시각만 변경하므로 이 path를 안 거침.)
-        pendingResize = (cols, rows)
-        resizeDebounceItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            guard let self = self, let pending = self.pendingResize else { return }
-            self.pendingResize = nil
-            self.lastReportedSize = pending
-            self.session.resize(cols: pending.cols, rows: pending.rows)
-        }
-        resizeDebounceItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
+        lastReportedSize = (cols, rows)
+        session.resize(cols: cols, rows: rows)
     }
-
-    /// resize debounce 상태.
-    private var pendingResize: (cols: Int, rows: Int)?
-    private var resizeDebounceItem: DispatchWorkItem?
 
     /// macOS 네이티브 윈도우 탭 바가 실제로 차지하는 높이 — 탭이 추가되면 macOS는
     /// `window.frame.height`를 이만큼 줄여서 탭바 공간을 만든다. 측정값: 600 → 564 = 36pt.
@@ -1317,20 +1350,40 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         // alt screen에선 buffer 전체가 viewport에 fit 하도록 우리가 크기를
         // 잡아두므로 스크롤 자체가 발생하면 안 되고, 우리가 강제로 호출하면
         // 매 cursor move마다 화면이 튐.
-        if !grid.isAltScreenActive {
-            // NSTextView는 setAttributedString 직후에도 frame.height 갱신이 비동기적
-            // 일 수 있어서, 그대로 docHeight 읽으면 stale 값으로 yMax가 부족해짐
-            // → 화면 바닥이 가려진 채 그 다음 keystroke의 render에서야 따라잡힘.
-            // ensureLayout으로 강제 동기 layout 후 frame.height 읽음.
-            if let container = textView.textContainer {
-                textView.layoutManager?.ensureLayout(for: container)
-            }
-            let docHeight = textView.frame.height
-            let visHeight = scrollView.contentView.bounds.height
-            let yMax = max(0, docHeight - visHeight)
-            scrollView.contentView.scroll(to: NSPoint(x: 0, y: yMax))
-            scrollView.reflectScrolledClipView(scrollView.contentView)
+        // NSTextView는 setAttributedString 직후에도 frame.height 갱신이 비동기적
+        // 일 수 있어서, 강제 동기 layout 후 frame.height 읽음.
+        if let container = textView.textContainer {
+            textView.layoutManager?.ensureLayout(for: container)
         }
+        let visHeight = scrollView.contentView.bounds.height
+
+        if grid.isAltScreenActive {
+            // Alt-screen TUI (vim/htop) — 전체 viewport가 콘텐츠. viewport top anchor로
+            // alt 영역 전체가 보이도록.
+            let viewportTop = CGFloat(grid.scrollback.count) * cellMetrics.height
+                + textView.textContainerInset.height
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: viewportTop))
+        } else {
+            // 일반 셸 + primary-screen TUI(Claude Code/Ink 등) — "cursor가 viewport
+            // 안에만 보이면 OK" 정책. cursor가 이미 보이면 scroll 안 함 → Claude Code
+            // 처럼 cursor가 UI 중간에 있을 때 cursor 아래 콘텐츠가 잘리는 회귀 방지.
+            // cursor가 viewport 위/아래로 빠지면 그쪽으로만 맞춤.
+            let cursorViewRow = grid.scrollback.count + grid.cursorRow
+            let cursorY = CGFloat(cursorViewRow) * cellMetrics.height
+                + textView.textContainerInset.height
+            let cursorBottom = cursorY + cellMetrics.height
+            let curScroll = scrollView.contentView.bounds.origin.y
+            let visTop = curScroll
+            let visBottom = curScroll + visHeight
+            if cursorBottom > visBottom {
+                let targetY = cursorBottom - visHeight
+                scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
+            } else if cursorY < visTop {
+                scrollView.contentView.scroll(to: NSPoint(x: 0, y: cursorY))
+            }
+            // else: cursor 이미 가시 영역 안 — scroll 안 함.
+        }
+        scrollView.reflectScrolledClipView(scrollView.contentView)
 
         updateCursorLayer()
     }
