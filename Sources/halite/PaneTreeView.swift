@@ -10,12 +10,6 @@ final class PaneTreeView: NSView {
     /// 마지막 leaf가 닫혔을 때 호출 (호스트 — 탭 컨트롤러 — 가 탭/윈도우를 닫음).
     var onAllPanesClosed: (() -> Void)?
 
-    /// PaneTreeView 안의 active pane 가시 표시. 1px border.
-    private let activeBorderColor = NSColor.systemBlue.withAlphaComponent(0.6)
-    private let inactiveBorderColor = NSColor.clear
-
-    private let dividerThickness: CGFloat = 4
-
     init(rootSession: HaliteSession) {
         let leaf = PaneNode.leaf(rootSession)
         self.root = leaf
@@ -120,18 +114,16 @@ final class PaneTreeView: NSView {
                 surface.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -1),
             ])
 
-        case .split(let dir, let first, let second, _):
-            // split — 두 sub-area + divider. SplitContainer의 layout()이 frame 계산.
+        case .split(_, let first, let second, _):
+            // split — 두 sub-area + divider. SplitContainer의 layout()이 frame 계산
+            // (direction/ratio는 node.kind에서 직접 읽으므로 여기선 바인딩 불필요).
             let splitContainer = SplitContainer(node: node, owner: self)
             splitContainer.translatesAutoresizingMaskIntoConstraints = true
             splitContainer.autoresizingMask = [.width, .height]
             splitContainer.frame = container.bounds
             container.addSubview(splitContainer)
-            // 재귀 — split의 firstContainer/secondContainer 자체도 autoresizing OFF
-            // (SplitContainer.layout이 frame을 직접 set).
             addSubviewsForNode(first, into: splitContainer.firstContainer)
             addSubviewsForNode(second, into: splitContainer.secondContainer)
-            _ = dir // suppress unused
         }
     }
 
