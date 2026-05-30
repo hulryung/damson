@@ -1080,6 +1080,13 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         findMatchesByRow[row] ?? []
     }
 
+    /// 그 row에 현재 활성(Cmd+G로 선택된) 매치가 있으면 그 col range. 없으면 nil.
+    private func activeFindRangeForRow(_ row: Int) -> Range<Int>? {
+        guard activeMatchIndex >= 0, activeMatchIndex < findMatchesOrdered.count else { return nil }
+        let m = findMatchesOrdered[activeMatchIndex]
+        return m.row == row ? m.range : nil
+    }
+
     @objc public func zoomIn(_ sender: Any?) {
         setZoom(fontSizeMultiplier * 1.1)
     }
@@ -1381,7 +1388,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     private func renderNow() {
         let grid = session.grid
         let selKey = selectionKey()
-        let findKey = "\(findQuery)|\(findMatchesByRow.count)"
+        let findKey = "\(findQuery)|\(findMatchesByRow.count)|\(activeMatchIndex)"
         let hoverKey: String = {
             guard let h = hoveredURL else { return "" }
             return "\(h.row)|\(h.colRange.lowerBound)|\(h.colRange.upperBound)"
@@ -1423,9 +1430,11 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             let sel = selectedColumnsForRow(i, cols: line.count)
             let finds = findRangesForRow(i)
             let hover = hoveredURLRangeForRow(i)
+            let active = activeFindRangeForRow(i)
             appendLine(
                 line, cols: line.count, cursorCol: nil,
-                selectedCols: sel, findRanges: finds, hoveredURLRange: hover,
+                selectedCols: sel, findRanges: finds, activeFindRange: active,
+                hoveredURLRange: hover,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
             result.append(NSAttributedString(string: "\n"))
@@ -1443,6 +1452,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             let sel = selectedColumnsForRow(textViewRow, cols: grid.cols)
             let finds = findRangesForRow(textViewRow)
             let hover = hoveredURLRangeForRow(textViewRow)
+            let active = activeFindRangeForRow(textViewRow)
             if r == imeOverlayRow && !mt.isEmpty {
                 appendCursorRowWithMarkedText(
                     grid.row(r),
@@ -1457,7 +1467,8 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
                 let cc: Int? = (r == blockCursorRow && blockCursorActive) ? grid.cursorCol : nil
                 appendLine(
                     grid.row(r), cols: grid.cols, cursorCol: cc,
-                    selectedCols: sel, findRanges: finds, hoveredURLRange: hover,
+                    selectedCols: sel, findRanges: finds, activeFindRange: active,
+                    hoveredURLRange: hover,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
@@ -1621,6 +1632,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         cursorCol: Int?,
         selectedCols: Range<Int>?,
         findRanges: [Range<Int>],
+        activeFindRange: Range<Int>?,
         hoveredURLRange: Range<Int>?,
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
@@ -1632,7 +1644,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             if cc > 0 {
                 appendRunGroup(
                     line, range: 0..<cc, selectedCols: selectedCols, findRanges: findRanges,
-                    hoveredURLRange: hoveredURLRange,
+                    activeFindRange: activeFindRange, hoveredURLRange: hoveredURLRange,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
@@ -1659,14 +1671,14 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             if cc + 1 < cols {
                 appendRunGroup(
                     line, range: (cc + 1)..<cols, selectedCols: selectedCols, findRanges: findRanges,
-                    hoveredURLRange: hoveredURLRange,
+                    activeFindRange: activeFindRange, hoveredURLRange: hoveredURLRange,
                     baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
                 )
             }
         } else {
             appendRunGroup(
                 line, range: 0..<cols, selectedCols: selectedCols, findRanges: findRanges,
-                hoveredURLRange: hoveredURLRange,
+                activeFindRange: activeFindRange, hoveredURLRange: hoveredURLRange,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -1687,7 +1699,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         if cursorCol > 0 {
             appendRunGroup(
                 line, range: 0..<cursorCol, selectedCols: nil, findRanges: [],
-                hoveredURLRange: nil,
+                activeFindRange: nil, hoveredURLRange: nil,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -1725,7 +1737,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         if afterCol < cols {
             appendRunGroup(
                 line, range: afterCol..<cols, selectedCols: nil, findRanges: [],
-                hoveredURLRange: nil,
+                activeFindRange: nil, hoveredURLRange: nil,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result
             )
         }
@@ -1736,6 +1748,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         range: Range<Int>,
         selectedCols: Range<Int>?,
         findRanges: [Range<Int>],
+        activeFindRange: Range<Int>?,
         hoveredURLRange: Range<Int>?,
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
@@ -1743,6 +1756,9 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     ) {
         func isFindMatch(_ col: Int) -> Bool {
             findRanges.contains { $0.contains(col) }
+        }
+        func isActiveFind(_ col: Int) -> Bool {
+            activeFindRange?.contains(col) ?? false
         }
         func isHovered(_ col: Int) -> Bool {
             hoveredURLRange?.contains(col) ?? false
@@ -1758,11 +1774,13 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             if isWide {
                 let runSelected = selectedCols?.contains(c) ?? false
                 let runFind = isFindMatch(c)
+                let runActive = isActiveFind(c)
                 let runHover = isHovered(c)
                 appendWideCell(
                     line[c],
                     isSelected: runSelected,
                     isFindMatch: runFind,
+                    isActiveFindMatch: runActive,
                     isHoveredURL: runHover,
                     baseFont: baseFont,
                     paragraphStyle: paragraphStyle,
@@ -1776,6 +1794,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             let runHyperlink = line[c].hyperlink
             let runSelected = selectedCols?.contains(c) ?? false
             let runFind = isFindMatch(c)
+            let runActive = isActiveFind(c)
             let runHover = isHovered(c)
             var endC = c + 1
             while endC < range.upperBound,
@@ -1785,6 +1804,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
                   line[endC].hyperlink == runHyperlink,
                   (selectedCols?.contains(endC) ?? false) == runSelected,
                   isFindMatch(endC) == runFind,
+                  isActiveFind(endC) == runActive,
                   isHovered(endC) == runHover {
                 endC += 1
             }
@@ -1795,6 +1815,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
                 for: runAttrs, baseFont: baseFont,
                 paragraphStyle: paragraphStyle,
                 isSelected: runSelected, isFindMatch: runFind,
+                isActiveFindMatch: runActive,
                 isHoveredURL: runHover, hyperlink: runHyperlink
             )
             result.append(NSAttributedString(string: runChars, attributes: nsAttrs))
@@ -1807,6 +1828,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         _ cell: Cell,
         isSelected: Bool,
         isFindMatch: Bool = false,
+        isActiveFindMatch: Bool = false,
         isHoveredURL: Bool = false,
         baseFont: NSFont,
         paragraphStyle: NSParagraphStyle,
@@ -1816,6 +1838,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             for: cell.attrs, baseFont: baseFont,
             paragraphStyle: paragraphStyle,
             isSelected: isSelected, isFindMatch: isFindMatch,
+            isActiveFindMatch: isActiveFindMatch,
             isHoveredURL: isHoveredURL, hyperlink: cell.hyperlink
         )
         let font = (nsAttrs[.font] as? NSFont) ?? baseFont
@@ -1835,6 +1858,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         paragraphStyle: NSParagraphStyle,
         isSelected: Bool = false,
         isFindMatch: Bool = false,
+        isActiveFindMatch: Bool = false,
         isHoveredURL: Bool = false,
         hyperlink: String? = nil
     ) -> [NSAttributedString.Key: Any] {
@@ -1850,9 +1874,13 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             .foregroundColor: fg,
             .paragraphStyle: paragraphStyle,
         ]
-        // 우선순위: selection > findMatch > cell bg
+        // 우선순위: selection > activeFindMatch > findMatch > cell bg
         if isSelected {
             attrs[.backgroundColor] = NSColor.selectedTextBackgroundColor
+        } else if isActiveFindMatch {
+            // 현재 활성(Cmd+G로 선택된) 매치 — 주황색으로 다른 매치와 구분.
+            attrs[.backgroundColor] = NSColor.systemOrange.withAlphaComponent(0.85)
+            attrs[.foregroundColor] = NSColor.black
         } else if isFindMatch {
             attrs[.backgroundColor] = NSColor.systemYellow.withAlphaComponent(0.6)
             attrs[.foregroundColor] = NSColor.black
