@@ -36,7 +36,18 @@ final class CompactTabBarView: NSView {
         newTabButton.target = self
         newTabButton.action = #selector(newTabClicked)
         addSubview(newTabButton)
+
+        // dev 빌드면 우측에 git hash 표시 (정식과 구분).
+        if BuildInfo.isDevBuild {
+            devLabel = NSTextField(labelWithString: "dev \(BuildInfo.gitHash ?? "")")
+            devLabel?.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+            devLabel?.textColor = NSColor.systemOrange
+            devLabel?.alignment = .right
+            if let l = devLabel { addSubview(l) }
+        }
     }
+
+    private var devLabel: NSTextField?
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
@@ -60,8 +71,17 @@ final class CompactTabBarView: NSView {
     override func layout() {
         super.layout()
         let btnSize: CGFloat = 24
+        // dev 라벨 — 우측 끝. newTabButton은 그 왼쪽.
+        var rightEdge = bounds.width - trailingReservation
+        if let dev = devLabel {
+            dev.sizeToFit()
+            let w = dev.frame.width
+            dev.frame = NSRect(x: rightEdge - w, y: (bounds.height - dev.frame.height) / 2,
+                               width: w, height: dev.frame.height)
+            rightEdge -= w + 8
+        }
         newTabButton.frame = NSRect(
-            x: max(leadingReservation, bounds.width - btnSize - trailingReservation),
+            x: max(leadingReservation, rightEdge - btnSize),
             y: (bounds.height - btnSize) / 2,
             width: btnSize, height: btnSize
         )

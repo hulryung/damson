@@ -71,8 +71,8 @@ final class HaliteWindowController: NSWindowController, NSWindowDelegate {
             titleSubscription = firstSession.$title
                 .receive(on: RunLoop.main)
                 .sink { [weak self] newTitle in
-                    let display = newTitle.isEmpty ? "halite" : newTitle
-                    self?.window?.title = display
+                    let base = newTitle.isEmpty ? "halite" : newTitle
+                    self?.window?.title = base + BuildInfo.titleSuffix
                 }
         }
         // 사용자가 Settings에서 고른 탭 스타일 적용 (이 컨트롤러는 non-compact만).

@@ -86,9 +86,14 @@ fi
 # Sparkle 공개키 — 1회성으로 생성한 EdDSA public key를 env로 받음.
 # 없으면 placeholder 토큰을 그대로 둬서 자동업데이트는 동작 안 함 (dev 빌드 OK).
 SPARKLE_KEY="${SPARKLE_PUBLIC_KEY:-__SPARKLE_PUBLIC_KEY__}"
+# git hash + 빌드 채널 — dev 빌드는 윈도우에 hash를 표시해 정식과 구분.
+GIT_HASH="${GIT_HASH:-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+BUILD_CHANNEL="${BUILD_CHANNEL:-release}"
 sed -e "s|__MARKETING_VERSION__|$MARKETING_VERSION|g" \
     -e "s|__BUILD_NUMBER__|$BUILD_NUMBER|g" \
     -e "s|__SPARKLE_PUBLIC_KEY__|$SPARKLE_KEY|g" \
+    -e "s|__GIT_HASH__|$GIT_HASH|g" \
+    -e "s|__BUILD_CHANNEL__|$BUILD_CHANNEL|g" \
     "$TEMPLATE" > "$CONTENTS/Info.plist"
 
 # 아이콘 — template의 CFBundleIconFile=Halite를 만족시키도록 Halite.icns 복사.
