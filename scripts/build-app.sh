@@ -62,15 +62,17 @@ cp "$CLI_BIN" "$RESOURCES_DIR/halite-cli"
 chmod 0755 "$RESOURCES_DIR/halite-cli"
 
 # Sparkle.framework — SwiftPM이 .app으로 자동 번들 안 하므로 직접 복사.
-# release dir에 SwiftPM이 link 시점에 복사해 둠 (RPATH가 @executable_path/../Frameworks).
+# SwiftPM이 빌드한 binary의 RPATH는 @loader_path(= MacOS 디렉토리, dev 빌드에서
+# framework가 binary와 sibling일 때 동작) 뿐이라, 표준 .app layout(Frameworks/)에
+# 두려면 binary에 @executable_path/../Frameworks RPATH를 추가해야 dyld가 찾음.
 SPARKLE_FW="$BIN_DIR/Sparkle.framework"
 if [[ -d "$SPARKLE_FW" ]]; then
     FRAMEWORKS_DIR="$CONTENTS/Frameworks"
     mkdir -p "$FRAMEWORKS_DIR"
     # -R로 심볼릭 링크(Versions/Current → A, Sparkle → Versions/Current/Sparkle 등) 보존.
     cp -R "$SPARKLE_FW" "$FRAMEWORKS_DIR/Sparkle.framework"
-    # XPC services (autoupdate + installer-launcher) — 이미 .framework 안에 있음.
-    # 추가 작업 필요 없음.
+    # 표준 Frameworks/ 위치를 찾도록 RPATH 추가 (이미 있으면 무시).
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/halite" 2>/dev/null || true
 else
     echo "warning: $SPARKLE_FW 없음 — 자동업데이트 동작 안 함. swift build 결과 확인" >&2
 fi

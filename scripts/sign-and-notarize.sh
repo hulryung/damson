@@ -46,22 +46,34 @@ fi
 
 echo "==> codesign nested executables + frameworks (inner → outer)"
 
-# Sparkle.framework — inner XPC services 먼저, 다음 본체.
+# Sparkle.framework — nested 컴포넌트를 inner → outer 순으로 모두 서명.
+# Sparkle 2.x 구조 (Versions/Current/):
+#   XPCServices/Downloader.xpc, Installer.xpc
+#   Updater.app  (nested app — 그 안의 MacOS/Updater 바이너리 포함)
+#   Autoupdate   (helper 바이너리)
+#   Sparkle      (framework 본체)
+# 하나라도 빠지면 notarization이 "not signed with valid Developer ID" / "no
+# secure timestamp"로 Invalid 처리됨.
 SPARKLE_FW="$APP/Contents/Frameworks/Sparkle.framework"
 if [[ -d "$SPARKLE_FW" ]]; then
-    # XPC services. Sparkle 2.x는 Autoupdate + Installer 2개를 둠.
-    while IFS= read -r -d '' xpc; do
+    SV="$SPARKLE_FW/Versions/Current"
+    for xpc in "$SV/XPCServices/"*.xpc; do
+        [[ -e "$xpc" ]] || continue
         echo "  + $xpc"
         codesign --force --options runtime --timestamp \
             --sign "$APPLE_SIGNING_IDENTITY" "$xpc"
-    done < <(find "$SPARKLE_FW" -name "*.xpc" -type d -print0)
-    # Autoupdate.app(스파클 인스톨러) — 있는 경우.
-    while IFS= read -r -d '' nested; do
-        echo "  + $nested"
+    done
+    if [[ -d "$SV/Updater.app" ]]; then
+        echo "  + $SV/Updater.app"
         codesign --force --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" "$nested"
-    done < <(find "$SPARKLE_FW/Versions/Current/Resources" -name "*.app" -type d -print0 2>/dev/null)
-    # Sparkle.framework 본체.
+            --sign "$APPLE_SIGNING_IDENTITY" "$SV/Updater.app"
+    fi
+    if [[ -f "$SV/Autoupdate" ]]; then
+        echo "  + $SV/Autoupdate"
+        codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$SV/Autoupdate"
+    fi
+    echo "  + $SPARKLE_FW"
     codesign --force --options runtime --timestamp \
         --sign "$APPLE_SIGNING_IDENTITY" "$SPARKLE_FW"
 fi
