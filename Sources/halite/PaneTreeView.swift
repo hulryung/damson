@@ -24,6 +24,22 @@ final class PaneTreeView: NSView {
         rebuild()
     }
 
+    /// 세션 복원 — 이미 구성된 PaneNode 트리로 생성. active는 첫 leaf.
+    init(restoredRoot: PaneNode) {
+        self.root = restoredRoot
+        self.activeLeaf = PaneTreeView.firstLeafStatic(of: restoredRoot)
+        super.init(frame: .zero)
+        wantsLayer = true
+        rebuild()
+    }
+
+    private static func firstLeafStatic(of node: PaneNode) -> PaneNode {
+        switch node.kind {
+        case .leaf: return node
+        case .split(_, let a, _, _): return firstLeafStatic(of: a)
+        }
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 

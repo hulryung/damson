@@ -37,7 +37,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
 
     var hasTabs: Bool { !tabs.isEmpty }
 
-    init() {
+    /// `restoring`이 있으면 그 탭/pane 레이아웃 + cwd로 복원, 없으면 빈 탭 1개.
+    init(restoring: RestorableWindow? = nil) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
@@ -57,11 +58,29 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
 
         setupViews()
-        addNewTab()
+
+        if let restore = restoring, !restore.tabs.isEmpty {
+            for paneRestore in restore.tabs {
+                let root = PaneNode.from(restorable: paneRestore)
+                addTab(tree: PaneTreeView(restoredRoot: root))
+            }
+            let sel = restore.selectedTab
+            if sel >= 0 && sel < tabs.count { selectTab(sel) }
+        } else {
+            addNewTab()
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    /// 현재 윈도우의 탭/pane 레이아웃 + cwd를 직렬화.
+    func toRestorableWindow() -> RestorableWindow {
+        RestorableWindow(
+            tabs: tabs.map { $0.tree.root.toRestorable() },
+            selectedTab: currentIndex
+        )
+    }
 
     deinit {
         for s in sessions { s.terminate() }
@@ -119,22 +138,33 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func addNewTab() -> HaliteSession {
         let session = HaliteSession(config: HaliteConfig.fromUserDefaults())
-        let tree = PaneTreeView(rootSession: session)
-        tree.translatesAutoresizingMaskIntoConstraints = false
-        // 마지막 leaf까지 닫혔으면 이 탭 자체를 닫음.
-        let tabIndex = tabs.count
-        tree.onAllPanesClosed = { [weak self] in
-            self?.closeTab(tabIndex)
-        }
+        addTab(tree: PaneTreeView(rootSession: session))
+        return session
+    }
 
-        let titleSub = session.$title.receive(on: RunLoop.main).sink { [weak self] _ in
-            self?.refreshTabBar()
+    /// 이미 구성된 PaneTreeView를 새 탭으로 추가 (신규 또는 복원된 트리).
+    private func addTab(tree: PaneTreeView) {
+        tree.translatesAutoresizingMaskIntoConstraints = false
+        // 마지막 pane이 닫히면 이 탭을 닫음. tabs 배열의 현재 인덱스가 아니라
+        // tree 참조로 찾아야 함 (탭이 재배열돼도 정확).
+        tree.onAllPanesClosed = { [weak self, weak tree] in
+            guard let self = self, let tree = tree,
+                  let idx = self.tabs.firstIndex(where: { $0.tree === tree })
+            else { return }
+            self.closeTab(idx)
+        }
+        // 탭 제목은 root pane의 첫 leaf 세션 title을 따름.
+        let titleSub: AnyCancellable
+        if let session = tree.root.leaves().first?.session {
+            titleSub = session.$title.receive(on: RunLoop.main).sink { [weak self] _ in
+                self?.refreshTabBar()
+            }
+        } else {
+            titleSub = AnyCancellable {}
         }
         tabs.append(Tab(tree: tree, titleSub: titleSub))
-
         selectTab(tabs.count - 1)
         refreshTabBar()
-        return session
     }
 
     func selectTab(_ index: Int) {

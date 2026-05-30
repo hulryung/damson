@@ -20,6 +20,22 @@ public final class PTYHost {
 
     public init() {}
 
+    /// 자식 셸 프로세스의 현재 작업 디렉토리. proc_pidinfo로 OS에서 직접 조회하므로
+    /// 셸 설정(OSC 7 emit 여부 등)과 무관. 세션 상태 복원 시 사용. 자식이 없거나
+    /// 조회 실패면 nil.
+    public var childWorkingDirectory: String? {
+        guard childPID > 0 else { return nil }
+        var vpi = proc_vnodepathinfo()
+        let sz = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        let r = proc_pidinfo(childPID, PROC_PIDVNODEPATHINFO, 0, &vpi, sz)
+        guard r == sz else { return nil }
+        return withUnsafePointer(to: &vpi.pvi_cdir.vip_path) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) {
+                String(cString: $0)
+            }
+        }
+    }
+
     deinit {
         terminate()
     }

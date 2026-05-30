@@ -79,6 +79,11 @@ public final class HaliteSession: ObservableObject {
         pty.write(bytes)
     }
 
+    /// 자식 셸의 현재 작업 디렉토리 (세션 복원용). 실패 시 nil.
+    public var currentWorkingDirectory: String? {
+        pty.childWorkingDirectory
+    }
+
     public func resize(cols: Int, rows: Int) {
         grid.resize(cols: cols, rows: rows)
         pty.resize(cols: cols, rows: rows)

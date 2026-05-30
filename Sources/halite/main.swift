@@ -95,7 +95,15 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
     private var controlSocket: ControlSocketServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        spawnWindow()
+        // 이전 세션 상태가 있고 Compact 모드면 그 레이아웃 + cwd로 복원, 아니면 새 창.
+        if TabBarStyle.current == .compact,
+           let state = SessionRestore.load(), !state.windows.isEmpty {
+            for restoreWindow in state.windows {
+                spawnCompactWindow(restoring: restoreWindow)
+            }
+        } else {
+            spawnWindow()
+        }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(settingsChanged(_:)),
@@ -105,6 +113,19 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
         bindControlSocket()
         // Sparkle은 lazy init — 첫 access 시점에 자동 시작.
         _ = HaliteUpdater.shared
+    }
+
+    /// 종료 직전 — 현재 Compact 윈도우들의 레이아웃 + cwd 저장.
+    func applicationWillTerminate(_ notification: Notification) {
+        for c in controllers { c.session.terminate() }
+        for cc in compactControllers { for s in cc.sessions { s.terminate() } }
+        // 세션 상태 저장 (Compact 윈도우만 — single-session/native-tab 모드는 복원 안 함).
+        let windows = compactControllers.map { $0.toRestorableWindow() }
+        if windows.isEmpty {
+            SessionRestore.clear()
+        } else {
+            SessionRestore.save(RestorableState(windows: windows))
+        }
     }
 
     // MARK: - halite-cli IPC
@@ -242,11 +263,6 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        for c in controllers { c.session.terminate() }
-        for cc in compactControllers { for s in cc.sessions { s.terminate() } }
-    }
-
     /// Cmd+N — 항상 새 윈도우.
     @objc func newWindow(_ sender: Any?) {
         spawnWindow()
@@ -290,8 +306,8 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
     }
 
-    private func spawnCompactWindow() {
-        let controller = CompactWindowController()
+    private func spawnCompactWindow(restoring: RestorableWindow? = nil) {
+        let controller = CompactWindowController(restoring: restoring)
         NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: controller.window, queue: .main
