@@ -64,6 +64,51 @@ public struct HaliteTheme: Equatable {
     }
 }
 
+// MARK: - hex 직렬화 (커스텀 테마 저장/복원)
+
+public extension NSColor {
+    /// "#RRGGBB" 형식. sRGB 기준.
+    var hexString: String {
+        guard let c = usingColorSpace(.sRGB) else { return "#000000" }
+        let r = Int(round(c.redComponent * 255))
+        let g = Int(round(c.greenComponent * 255))
+        let b = Int(round(c.blueComponent * 255))
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
+
+    /// "#RRGGBB" / "RRGGBB" 파싱.
+    convenience init?(hexString: String) {
+        var s = hexString.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        self.init(srgbRed: CGFloat((v >> 16) & 0xFF) / 255,
+                  green: CGFloat((v >> 8) & 0xFF) / 255,
+                  blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+    }
+}
+
+public extension HaliteTheme {
+    /// 커스텀 테마의 직렬화 이름 (Settings picker + UserDefaults에서 이 이름이면 커스텀).
+    static let customName = "Custom"
+
+    /// 현재 테마의 모든 색을 hex로. 커스텀 편집 시작점(프리셋 복사)용.
+    func toHexColors() -> (bg: String, fg: String, cursor: String, ansi: [String]) {
+        (background.hexString, foreground.hexString, cursor.hexString, ansi.map { $0.hexString })
+    }
+
+    /// hex 색들로 커스텀 테마 생성. 잘못된 hex는 검정으로 폴백, ansi가 16개 미만이면 검정 패딩.
+    static func custom(bg: String, fg: String, cursor: String, ansi: [String]) -> HaliteTheme {
+        func col(_ h: String) -> NSColor { NSColor(hexString: h) ?? .black }
+        var ansiColors = ansi.map(col)
+        while ansiColors.count < 16 { ansiColors.append(.black) }
+        return HaliteTheme(
+            name: customName,
+            background: col(bg), foreground: col(fg), cursor: col(cursor),
+            ansi: Array(ansiColors.prefix(16))
+        )
+    }
+}
+
 // MARK: - 프리셋
 
 public extension HaliteTheme {

@@ -62,18 +62,23 @@ struct HaliteSettingsView: View {
                     ForEach(HaliteTheme.presets, id: \.name) { theme in
                         Text(theme.name).tag(theme.name)
                     }
+                    Text("Custom").tag(HaliteTheme.customName)
                 }
-                // 미리보기 — 선택된 테마의 배경 위에 ANSI 8색 샘플.
-                if let theme = HaliteTheme.preset(named: themeName) {
-                    HStack(spacing: 0) {
-                        ForEach(0..<8, id: \.self) { i in
-                            Color(nsColor: theme.ansi[i])
-                                .frame(width: 22, height: 18)
-                        }
+                // 미리보기 — 현재 선택된 테마의 배경 위에 ANSI 8색 샘플.
+                let previewTheme = themeName == HaliteTheme.customName
+                    ? CustomTheme.load().toTheme()
+                    : (HaliteTheme.preset(named: themeName) ?? .defaultDark)
+                HStack(spacing: 0) {
+                    ForEach(0..<8, id: \.self) { i in
+                        Color(nsColor: previewTheme.ansi[i]).frame(width: 22, height: 18)
                     }
-                    .padding(4)
-                    .background(Color(nsColor: theme.background))
-                    .cornerRadius(4)
+                }
+                .padding(4)
+                .background(Color(nsColor: previewTheme.background))
+                .cornerRadius(4)
+
+                if themeName == HaliteTheme.customName {
+                    CustomThemeEditor(onChange: { postChanged() })
                 }
             }
             Section("Window") {
@@ -121,6 +126,75 @@ extension Notification.Name {
     static let haliteSettingsChanged = Notification.Name("HaliteSettingsChanged")
 }
 
+/// 커스텀 테마 19색(배경/글자/커서 + ANSI 16) ColorPicker 에디터.
+/// 변경 즉시 UserDefaults에 저장 + onChange로 hot-reload 트리거.
+struct CustomThemeEditor: View {
+    let onChange: () -> Void
+    @State private var data: CustomThemeData = CustomTheme.load()
+
+    private static let ansiNames = [
+        "0 Black", "1 Red", "2 Green", "3 Yellow",
+        "4 Blue", "5 Magenta", "6 Cyan", "7 White",
+        "8 Br Black", "9 Br Red", "10 Br Green", "11 Br Yellow",
+        "12 Br Blue", "13 Br Magenta", "14 Br Cyan", "15 Br White",
+    ]
+
+    var body: some View {
+        // 프리셋에서 색 복사 시작점.
+        HStack {
+            Text("Start from")
+            Spacer()
+            Menu("Copy preset…") {
+                ForEach(HaliteTheme.presets, id: \.name) { theme in
+                    Button(theme.name) { copyFrom(theme) }
+                }
+            }
+            .frame(width: 140)
+        }
+
+        ColorPicker("Background", selection: hexBinding(\.background))
+        ColorPicker("Foreground", selection: hexBinding(\.foreground))
+        ColorPicker("Cursor", selection: hexBinding(\.cursor))
+
+        ForEach(0..<16, id: \.self) { i in
+            ColorPicker(Self.ansiNames[i], selection: ansiBinding(i))
+        }
+    }
+
+    private func copyFrom(_ theme: HaliteTheme) {
+        let h = theme.toHexColors()
+        data = CustomThemeData(background: h.bg, foreground: h.fg, cursor: h.cursor, ansi: h.ansi)
+        CustomTheme.save(data)
+        onChange()
+    }
+
+    private func hexBinding(_ kp: WritableKeyPath<CustomThemeData, String>) -> Binding<Color> {
+        Binding(
+            get: { Color(nsColor: NSColor(hexString: data[keyPath: kp]) ?? .black) },
+            set: { c in
+                data[keyPath: kp] = NSColor(c).hexString
+                CustomTheme.save(data)
+                onChange()
+            }
+        )
+    }
+
+    private func ansiBinding(_ i: Int) -> Binding<Color> {
+        Binding(
+            get: {
+                guard i < data.ansi.count else { return .black }
+                return Color(nsColor: NSColor(hexString: data.ansi[i]) ?? .black)
+            },
+            set: { c in
+                while data.ansi.count <= i { data.ansi.append("#000000") }
+                data.ansi[i] = NSColor(c).hexString
+                CustomTheme.save(data)
+                onChange()
+            }
+        )
+    }
+}
+
 extension HaliteConfig {
     /// UserDefaults에 저장된 설정값으로 채워진 HaliteConfig 반환. 미설정 키는 기본값.
     static func fromUserDefaults() -> HaliteConfig {
@@ -140,9 +214,12 @@ extension HaliteConfig {
            let style = IMECompositionStyle(rawValue: raw) {
             config.imeStyle = style
         }
-        if let themeName = d.string(forKey: "halite.theme"),
-           let theme = HaliteTheme.preset(named: themeName) {
-            config.theme = theme
+        if let themeName = d.string(forKey: "halite.theme") {
+            if themeName == HaliteTheme.customName {
+                config.theme = CustomTheme.load().toTheme()
+            } else if let theme = HaliteTheme.preset(named: themeName) {
+                config.theme = theme
+            }
         }
         // 새 터미널의 시작 디렉토리는 사용자의 홈 디렉토리. 그렇지 않으면 halite를 띄운
         // working directory(예: Xcode 빌드, /tmp, 어딘가에서 cmd 실행)가 그대로 상속되어
