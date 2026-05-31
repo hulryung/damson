@@ -11,6 +11,7 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.imeStyle") private var imeStyleRaw: String = IMECompositionStyle.none.rawValue
     @AppStorage("halite.theme") private var themeName: String = HaliteTheme.defaultDark.name
     @AppStorage("halite.autoUpdate") private var autoUpdate: Bool = false
+    @AppStorage("halite.cursorBlink") private var cursorBlink: Bool = false
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
@@ -88,6 +89,9 @@ struct HaliteSettingsView: View {
                     }
                 }
             }
+            Section("Cursor") {
+                Toggle("Blink", isOn: $cursorBlink)
+            }
             Section("IME Composition (한글/일본어/중국어 조합 표시)") {
                 Picker("Style", selection: $imeStyleRaw) {
                     ForEach(IMECompositionStyle.allCases, id: \.rawValue) { style in
@@ -110,6 +114,7 @@ struct HaliteSettingsView: View {
         .onChange(of: scrollbackLines) { _ in postChanged() }
         .onChange(of: tabBarStyleRaw) { _ in postChanged() }
         .onChange(of: imeStyleRaw) { _ in postChanged() }
+        .onChange(of: cursorBlink) { _ in postChanged() }
         .onChange(of: themeName) { _ in postChanged() }
         .onChange(of: autoUpdate) { _ in
             // Sparkle updater에 즉시 반영 (config hot-reload 경로와 별개).
@@ -214,6 +219,7 @@ extension HaliteConfig {
            let style = IMECompositionStyle(rawValue: raw) {
             config.imeStyle = style
         }
+        config.cursorBlink = d.bool(forKey: "halite.cursorBlink")
         if let themeName = d.string(forKey: "halite.theme") {
             if themeName == HaliteTheme.customName {
                 config.theme = CustomTheme.load().toTheme()

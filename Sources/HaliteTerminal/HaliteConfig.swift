@@ -25,6 +25,7 @@ public struct HaliteConfig {
     public var scrollbackBytes: Int
     public var scrollbackLines: Int
     public var imeStyle: IMECompositionStyle
+    public var cursorBlink: Bool
 
     // 색은 theme에서 파생 — 기존 호출처 호환용 computed property.
     public var backgroundColor: NSColor { theme.background }
@@ -43,6 +44,7 @@ public struct HaliteConfig {
         scrollbackBytes: Int = 10_000_000,
         scrollbackLines: Int = 10_000,
         imeStyle: IMECompositionStyle = .none,
+        cursorBlink: Bool = false,
         argv: [String] = HaliteConfig.defaultArgv(),
         env: [String: String] = ProcessInfo.processInfo.environment,
         cwd: String? = nil
@@ -53,6 +55,7 @@ public struct HaliteConfig {
         self.scrollbackBytes = scrollbackBytes
         self.scrollbackLines = scrollbackLines
         self.imeStyle = imeStyle
+        self.cursorBlink = cursorBlink
         self.argv = argv
         self.env = env
         self.cwd = cwd

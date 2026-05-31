@@ -93,6 +93,11 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     /// underline/bar는 CALayer로 그려서 cell 글자를 가리지 않음.
     private let cursorLayer = CALayer()
 
+    /// cursor blink — config.cursorBlink ON이면 timer로 phase 토글.
+    /// blinkVisible=false면 cursor를 숨김(block은 inverse 미적용, underline/bar는 layer hidden).
+    private var cursorBlinkTimer: Timer?
+    private var cursorBlinkVisible = true
+
     /// 현재 적용된 폰트 zoom multiplier. 1.0이 기본. Cmd+= / Cmd+- / Cmd+0로 변경.
     private var fontSizeMultiplier: CGFloat = 1.0
 
@@ -219,6 +224,39 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
 
         // 초기 1회 렌더.
         scheduleRender()
+        updateBlinkTimer()
+    }
+
+    // MARK: - Cursor blink
+
+    /// config.cursorBlink에 따라 timer 시작/중지. ~530ms 주기로 phase 토글.
+    private func updateBlinkTimer() {
+        cursorBlinkTimer?.invalidate()
+        cursorBlinkTimer = nil
+        cursorBlinkVisible = true
+        guard session.config.cursorBlink else {
+            scheduleRender()
+            return
+        }
+        cursorBlinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) {
+            [weak self] _ in
+            guard let self = self else { return }
+            self.cursorBlinkVisible.toggle()
+            self.scheduleRender()
+        }
+    }
+
+    /// 키 입력 시 cursor를 즉시 보이게 + blink phase 리셋 (입력 중엔 안 깜빡이게).
+    private func resetBlinkPhase() {
+        guard session.config.cursorBlink else { return }
+        cursorBlinkVisible = true
+        cursorBlinkTimer?.invalidate()
+        cursorBlinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) {
+            [weak self] _ in
+            guard let self = self else { return }
+            self.cursorBlinkVisible.toggle()
+            self.scheduleRender()
+        }
     }
 
     /// BEL 처리 — 짧은 시각 flash overlay + 시스템 비프.
@@ -259,6 +297,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         lastRenderedVersion = .max
         needsLayout = true
         renderNow()
+        updateBlinkTimer()
     }
 
     @available(*, unavailable)
@@ -1179,6 +1218,8 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         currentKeyEvent = event
         swallowNextDeleteCommand = false
         defer { currentKeyEvent = nil }
+        // 입력 중엔 cursor가 안 깜빡이게 — 즉시 보이게 + phase 리셋.
+        resetBlinkPhase()
 
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
@@ -1388,6 +1429,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     private var lastRenderedSelectionKey: String = ""
     private var lastRenderedFindKey: String = ""
     private var lastRenderedHoverKey: String = ""
+    private var lastRenderedBlinkKey: String = ""
 
     private func renderNow() {
         let grid = session.grid
@@ -1397,11 +1439,14 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             guard let h = hoveredURL else { return "" }
             return "\(h.row)|\(h.colRange.lowerBound)|\(h.colRange.upperBound)"
         }()
+        // blink phase — ON일 때 phase 토글마다 re-render 되도록 dedupe key에 포함.
+        let blinkKey = session.config.cursorBlink ? (cursorBlinkVisible ? "1" : "0") : "x"
         if grid.version == lastRenderedVersion
             && markedText == lastRenderedMarkedText
             && selKey == lastRenderedSelectionKey
             && findKey == lastRenderedFindKey
-            && hoverKey == lastRenderedHoverKey {
+            && hoverKey == lastRenderedHoverKey
+            && blinkKey == lastRenderedBlinkKey {
             return
         }
         lastRenderedVersion = grid.version
@@ -1409,6 +1454,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         lastRenderedSelectionKey = selKey
         lastRenderedFindKey = findKey
         lastRenderedHoverKey = hoverKey
+        lastRenderedBlinkKey = blinkKey
 
         guard let storage = textView.textStorage else { return }
         let baseFont = textView.font
@@ -1449,7 +1495,9 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         // 흔히 함, 예: claude code, vim 일부 모드, htop) 사용자가 입력 중이면 보여야 함.
         let blockCursorRow = grid.cursorVisible ? grid.cursorRow : -1
         let imeOverlayRow = grid.cursorRow   // cursor 가시성과 무관하게 항상 그 자리
-        let blockCursorActive = (grid.cursorShape == .block) && markedText.isEmpty
+        // blink ON이고 현재 blink off phase면 block cursor를 안 그림(깜빡임).
+        let blinkOff = session.config.cursorBlink && !cursorBlinkVisible
+        let blockCursorActive = (grid.cursorShape == .block) && markedText.isEmpty && !blinkOff
         let mt = markedText
         for r in 0..<grid.rows {
             let textViewRow = scrollbackCount + r
@@ -1552,7 +1600,9 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         // - cursor invisible (DECTCEM ?25l)
         // - block 모양 (inverse-cell이 처리)
         // - IME 조합 중 (marked text overlay가 cursor 자리를 대체)
-        guard grid.cursorVisible, shape != .block, markedText.isEmpty else {
+        // - blink ON이고 현재 off phase (underline/bar 깜빡임)
+        let blinkOff = session.config.cursorBlink && !cursorBlinkVisible
+        guard grid.cursorVisible, shape != .block, markedText.isEmpty, !blinkOff else {
             cursorLayer.isHidden = true
             return
         }
