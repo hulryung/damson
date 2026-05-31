@@ -598,7 +598,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
 
     private func cellsForTextViewRow(_ row: Int) -> [Cell] {
         let scrollbackCount = session.grid.scrollback.count
-        if row < scrollbackCount { return session.grid.scrollback[row] }
+        if row < scrollbackCount { return session.grid.scrollback[row].cells }
         let vp = row - scrollbackCount
         if vp >= 0 && vp < session.grid.rows { return session.grid.row(vp) }
         return []
@@ -926,7 +926,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         let scrollbackCount = grid.scrollback.count
         let cells: [Cell]
         if pos.row < scrollbackCount {
-            cells = grid.scrollback[pos.row]
+            cells = grid.scrollback[pos.row].cells
         } else {
             let vp = pos.row - scrollbackCount
             guard vp < grid.rows else { return nil }
@@ -1037,7 +1037,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         for r in start.row...end.row {
             let cells: [Cell]
             if r < scrollbackCount {
-                cells = grid.scrollback[r]
+                cells = grid.scrollback[r].cells
             } else {
                 let vp = r - scrollbackCount
                 if vp >= grid.rows { break }
@@ -1150,7 +1150,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             }
         }
 
-        for (i, line) in grid.scrollback.enumerated() { scan(line, row: i) }
+        for (i, line) in grid.scrollback.enumerated() { scan(line.cells, row: i) }
         for r in 0..<grid.rows { scan(grid.row(r), row: scrollbackCount + r) }
 
         // 정렬된 평탄 리스트 — Cmd+G next/prev 네비용 (row 오름차순, 같은 row 내 col 오름차순).
@@ -1591,7 +1591,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             let hover = hoveredURLRangeForRow(i)
             let active = activeFindRangeForRow(i)
             appendLine(
-                line, cols: line.count, cursorCol: nil,
+                line.cells, cols: line.count, cursorCol: nil,
                 selectedCols: sel, findRanges: finds, activeFindRange: active,
                 hoveredURLRange: hover,
                 baseFont: baseFont, paragraphStyle: paragraphStyle, into: result

@@ -52,6 +52,39 @@ public struct CellAttrs: Equatable {
     }
 }
 
+/// One physical grid row: its cells plus a soft-wrap bit.
+///
+/// `wrapped == true` means this row filled to the right margin and its text
+/// continues on the next row with no intervening CR/LF — i.e. it's one half of
+/// a single logical line that the terminal split to fit the width. A row ended
+/// by an explicit newline leaves `wrapped == false`. This bit is exactly what
+/// reflow needs to rejoin physical rows into logical lines and re-split them at
+/// a new width.
+///
+/// The mutable `subscript(Int)` keeps existing `cells[r][c]` / `cells[r][c] = x`
+/// call sites compiling unchanged once `cells` becomes `[Line]`.
+public struct Line: Equatable {
+    public var cells: [Cell]
+    public var wrapped: Bool
+
+    public init(_ cells: [Cell], wrapped: Bool = false) {
+        self.cells = cells
+        self.wrapped = wrapped
+    }
+
+    public var count: Int { cells.count }
+
+    public subscript(_ i: Int) -> Cell {
+        get { cells[i] }
+        set { cells[i] = newValue }
+    }
+
+    /// A fresh blank row of `cols` cells (never wrapped).
+    public static func blank(cols: Int, attrs: CellAttrs) -> Line {
+        Line(Array(repeating: Cell.empty(attrs: attrs), count: cols))
+    }
+}
+
 /// Grid의 한 셀. 글자 하나 + 속성 + (옵션) hyperlink.
 public struct Cell: Equatable {
     public var char: Character

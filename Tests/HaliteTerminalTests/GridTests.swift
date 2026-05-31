@@ -35,6 +35,95 @@ final class GridTests: XCTestCase {
         XCTAssertEqual(g.cell(row: 1, col: 0).char, "e")
     }
 
+    // MARK: soft-wrap flag (reflow Phase 1)
+
+    func testSoftWrapMarksRowWrapped() {
+        let g = makeGrid(cols: 4, rows: 4)
+        write(g, "abcde") // 5 chars in 4-wide → row 0 auto-wraps into row 1
+        XCTAssertTrue(g.rowWrapped(0), "auto-wrapped row 0 must be flagged wrapped")
+        XCTAssertFalse(g.rowWrapped(1), "continuation row is not (yet) wrapped")
+    }
+
+    func testHardNewlineLeavesRowNotWrapped() {
+        let g = makeGrid(cols: 8, rows: 4)
+        write(g, "foo"); g.lineFeed(); g.carriageReturn()
+        write(g, "bar")
+        XCTAssertFalse(g.rowWrapped(0), "row ended by an explicit newline must not be wrapped")
+        XCTAssertFalse(g.rowWrapped(1))
+    }
+
+    func testSoftWrapFlagRidesIntoScrollback() {
+        let g = makeGrid(cols: 4, rows: 2)
+        write(g, "abcde")  // row 0 ("abcd", wrapped) + row 1 ("e"); cursor on bottom row
+        g.lineFeed()       // cursor at bottom → scrollUp pushes the wrapped row 0
+        XCTAssertEqual(g.scrollback.count, 1)
+        XCTAssertTrue(g.scrollback[0].wrapped, "wrap flag must follow the row into scrollback")
+    }
+
+    func testEraseLineClearsWrappedFlag() {
+        let g = makeGrid(cols: 8, rows: 4)
+        write(g, "abcdefghij")      // row 0 wraps ("abcdefgh"), row 1 = "ij"
+        XCTAssertTrue(g.rowWrapped(0))
+        g.setCursor(row: 1, col: 1) // back up to row 0 (1-based)
+        g.eraseInLine(mode: 2)      // shell clears the line on redraw
+        XCTAssertFalse(g.rowWrapped(0), "erasing a wrapped row must clear its wrap flag")
+    }
+
+    func testEraseLineToEndClearsWrappedFlag() {
+        let g = makeGrid(cols: 8, rows: 4)
+        write(g, "abcdefghij")
+        g.setCursor(row: 1, col: 1)
+        g.eraseInLine(mode: 0)      // cursor → end of line destroys the wrap point
+        XCTAssertFalse(g.rowWrapped(0))
+    }
+
+    func testEraseDisplayClearsWrappedFlag() {
+        let g = makeGrid(cols: 8, rows: 4)
+        write(g, "abcdefghij")
+        g.eraseInDisplay(mode: 2)
+        XCTAssertFalse(g.rowWrapped(0))
+    }
+
+    // MARK: reflow (Phase 2)
+
+    func testReflowNarrowToWideRejoinsWrappedLine() {
+        let g = makeGrid(cols: 4, rows: 4)
+        write(g, "abcdefg")          // row0 "abcd"(wrapped), row1 "efg"
+        XCTAssertTrue(g.rowWrapped(0))
+        g.resize(cols: 8, rows: 4)   // widen → the wrapped halves rejoin
+        XCTAssertEqual(String(g.row(0).map { $0.char }), "abcdefg ")
+        XCTAssertFalse(g.rowWrapped(0))
+        XCTAssertEqual(g.cursorRow, 0)
+        XCTAssertEqual(g.cursorCol, 7) // cursor parked just past "abcdefg"
+    }
+
+    func testReflowWideToNarrowSplitsLine() {
+        let g = makeGrid(cols: 8, rows: 4)
+        write(g, "abcdefghij")        // row0 "abcdefgh"(wrapped), row1 "ij"
+        g.resize(cols: 4, rows: 4)    // narrow → re-split at width 4
+        XCTAssertEqual(String(g.row(0).map { $0.char }), "abcd")
+        XCTAssertTrue(g.rowWrapped(0))
+        XCTAssertEqual(String(g.row(1).map { $0.char }), "efgh")
+        XCTAssertTrue(g.rowWrapped(1))
+        XCTAssertEqual(String(g.row(2).map { $0.char }), "ij  ")
+        XCTAssertFalse(g.rowWrapped(2))
+        XCTAssertEqual(g.cursorRow, 2)
+        XCTAssertEqual(g.cursorCol, 2)
+    }
+
+    func testReflowKeepsHardNewlinesSeparate() {
+        let g = makeGrid(cols: 8, rows: 4)
+        write(g, "foo"); g.lineFeed(); g.carriageReturn()
+        write(g, "bar")
+        g.resize(cols: 4, rows: 4)    // must NOT merge two hard-newline lines
+        XCTAssertEqual(String(g.row(0).map { $0.char }), "foo ")
+        XCTAssertFalse(g.rowWrapped(0))
+        XCTAssertEqual(String(g.row(1).map { $0.char }), "bar ")
+        XCTAssertFalse(g.rowWrapped(1))
+        XCTAssertEqual(g.cursorRow, 1)
+        XCTAssertEqual(g.cursorCol, 3)
+    }
+
     // MARK: LF / CR / BS
 
     func testLineFeedMovesCursorDown() {
@@ -318,7 +407,7 @@ final class GridTests: XCTestCase {
         write(g, "BBBB")
         g.lineFeed() // forces scrollUp(1) since cursor is on bottom
         XCTAssertEqual(g.scrollback.count, 1)
-        XCTAssertEqual(String(g.scrollback[0].map { $0.char }), "AAAA")
+        XCTAssertEqual(String(g.scrollback[0].cells.map { $0.char }), "AAAA")
         XCTAssertEqual(g.scrollbackPushCount, 1)
     }
 
@@ -333,7 +422,7 @@ final class GridTests: XCTestCase {
         XCTAssertEqual(g.scrollback.count, 3)
         XCTAssertEqual(g.scrollbackPushCount, 5) // 5 lines were pushed total
         // Oldest two ("AA", "BB") evicted; "CC" should be the oldest kept.
-        XCTAssertEqual(String(g.scrollback[0].map { $0.char }), "CC")
+        XCTAssertEqual(String(g.scrollback[0].cells.map { $0.char }), "CC")
     }
 
     func testSyncOutputModeDoesNotSuppressScrollbackPush() {
@@ -369,7 +458,7 @@ final class GridTests: XCTestCase {
         write(g, "CCC")
         g.resize(cols: 4, rows: 2)
         XCTAssertEqual(g.scrollback.count, 1)
-        XCTAssertEqual(String(g.scrollback[0].map { $0.char }), "AAA ")
+        XCTAssertEqual(String(g.scrollback[0].cells.map { $0.char }), "AAA ")
     }
 
     func testEraseInDisplayMode3ClearsScrollback() {

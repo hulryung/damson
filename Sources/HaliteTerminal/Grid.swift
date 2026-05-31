@@ -10,7 +10,8 @@ public final class Grid {
     public private(set) var rows: Int
 
     /// 셀 저장: `cells[row][col]`. 항상 `rows × cols`로 유지.
-    private var cells: [[Cell]]
+    /// 각 행은 `Line`(셀 배열 + soft-wrap 비트)이다. wrap 비트는 reflow에서 사용.
+    private var cells: [Line]
 
     /// 커서 (0-based).
     public private(set) var cursorRow: Int = 0
@@ -56,7 +57,7 @@ public final class Grid {
 
     /// 위로 밀려난 줄들. 가장 오래된 것이 index 0, 가장 최근이 마지막.
     /// `maxScrollbackLines`를 초과하면 가장 오래된 것부터 evict.
-    public private(set) var scrollback: [[Cell]] = []
+    public private(set) var scrollback: [Line] = []
 
     /// scrollback의 누적 push 카운트. evict가 일어나도 단조증가하므로
     /// 호스트가 "그 사이 새로 추가된 줄 수" / "evict 여부"를 판단할 수 있음.
@@ -82,12 +83,12 @@ public final class Grid {
 
     /// alt screen 진입 시 보존되는 primary buffer 스냅샷. alt 도중 resize가 와도 같이 따라감.
     private struct PrimarySnapshot {
-        var cells: [[Cell]]
+        var cells: [Line]
         var cursorRow: Int
         var cursorCol: Int
         var pen: CellAttrs
         var pendingWrap: Bool
-        var scrollback: [[Cell]]
+        var scrollback: [Line]
         var scrollbackPushCount: UInt64
         var cursorVisible: Bool
         var scrollTop: Int
@@ -119,7 +120,13 @@ public final class Grid {
     /// 한 행 전체를 셀 배열로 반환. 렌더러용.
     public func row(_ r: Int) -> [Cell] {
         precondition(r >= 0 && r < rows)
-        return cells[r]
+        return cells[r].cells
+    }
+
+    /// 한 viewport 행이 soft-wrap 되었는지(다음 행으로 이어지는지). 렌더러/reflow용.
+    public func rowWrapped(_ r: Int) -> Bool {
+        precondition(r >= 0 && r < rows)
+        return cells[r].wrapped
     }
 
     // MARK: - 기본 mutation
@@ -130,6 +137,12 @@ public final class Grid {
     public func putChar(_ ch: Character) {
         if pendingWrap {
             pendingWrap = false
+            // Soft wrap: the row we're leaving filled to the margin and the text
+            // continues below — mark it so reflow can rejoin the two rows. (A
+            // hard newline goes straight through lineFeed() and leaves it false.)
+            if cursorRow >= 0, cursorRow < rows {
+                cells[cursorRow].wrapped = true
+            }
             lineFeed()
             cursorCol = 0
         }
@@ -141,6 +154,9 @@ public final class Grid {
         // wide char가 마지막 열에 걸리면 그 cell은 비우고 다음 줄로 wrap.
         if wide && cursorCol == cols - 1 {
             cells[cursorRow][cursorCol] = Cell.empty(attrs: pen)
+            // Same soft-wrap case: a wide glyph that won't fit pushes to the next
+            // row, so the row it leaves behind is a wrapped continuation.
+            cells[cursorRow].wrapped = true
             if cursorRow >= rows - 1 {
                 scrollUp(count: 1)
             } else {
@@ -226,7 +242,7 @@ public final class Grid {
             }
         }
 
-        let blank = Array(repeating: Cell.empty(attrs: pen), count: cols)
+        let blank = Line.blank(cols: cols, attrs: pen)
         if evictCount >= regionHeight {
             for r in scrollTop...scrollBottom {
                 cells[r] = blank
@@ -244,7 +260,7 @@ public final class Grid {
         bumpVersion()
     }
 
-    private func pushToScrollback(_ line: [Cell]) {
+    private func pushToScrollback(_ line: Line) {
         scrollback.append(line)
         scrollbackPushCount &+= 1
         if scrollback.count > maxScrollbackLines {
@@ -334,10 +350,17 @@ public final class Grid {
         switch mode {
         case 0:
             for c in cursorCol..<cols { cells[cursorRow][c] = blank }
+            // The wrap point lives at the right margin; erasing to end of line
+            // destroys it, so the row no longer continues below. (Shells emit EL
+            // on every prompt redraw — without this the flag goes stale and
+            // reflow would wrongly merge this row with the next.)
+            cells[cursorRow].wrapped = false
         case 1:
+            // Start→cursor leaves the tail (wrap point) intact — keep `wrapped`.
             for c in 0...min(cursorCol, cols - 1) { cells[cursorRow][c] = blank }
         case 2:
             for c in 0..<cols { cells[cursorRow][c] = blank }
+            cells[cursorRow].wrapped = false
         default:
             return
         }
@@ -354,13 +377,17 @@ public final class Grid {
         switch mode {
         case 0:
             for c in cursorCol..<cols { cells[cursorRow][c] = blank }
+            cells[cursorRow].wrapped = false   // tail erased → wrap point gone
             for r in (cursorRow + 1)..<rows {
                 for c in 0..<cols { cells[r][c] = blank }
+                cells[r].wrapped = false        // fully cleared rows can't wrap
             }
         case 1:
             for r in 0..<cursorRow {
                 for c in 0..<cols { cells[r][c] = blank }
+                cells[r].wrapped = false        // fully cleared rows can't wrap
             }
+            // cursorRow: only start→cursor cleared, tail intact — keep `wrapped`.
             for c in 0...min(cursorCol, cols - 1) { cells[cursorRow][c] = blank }
         case 2:
             cells = Self.makeBlank(rows: rows, cols: cols, attrs: pen)
@@ -380,7 +407,7 @@ public final class Grid {
         let count = max(1, n)
         let regionRemain = scrollBottom - cursorRow + 1
         let actual = min(count, regionRemain)
-        let blank = Array(repeating: Cell.empty(attrs: pen), count: cols)
+        let blank = Line.blank(cols: cols, attrs: pen)
         // cursorRow~scrollBottom 사이에서 아래쪽 actual개 잘림, 위에 actual개 빈 줄 삽입.
         for r in stride(from: scrollBottom, through: cursorRow + actual, by: -1) {
             cells[r] = cells[r - actual]
@@ -399,7 +426,7 @@ public final class Grid {
         let count = max(1, n)
         let regionRemain = scrollBottom - cursorRow + 1
         let actual = min(count, regionRemain)
-        let blank = Array(repeating: Cell.empty(attrs: pen), count: cols)
+        let blank = Line.blank(cols: cols, attrs: pen)
         for r in cursorRow...(scrollBottom - actual) {
             cells[r] = cells[r + actual]
         }
@@ -468,7 +495,7 @@ public final class Grid {
         let regionHeight = scrollBottom - scrollTop + 1
         guard regionHeight > 0 else { return }
         let insertCount = min(n, regionHeight)
-        let blank = Array(repeating: Cell.empty(attrs: pen), count: cols)
+        let blank = Line.blank(cols: cols, attrs: pen)
 
         if insertCount >= regionHeight {
             for r in scrollTop...scrollBottom {
@@ -556,28 +583,40 @@ public final class Grid {
     // MARK: - resize
 
     /// SIGWINCH에 대응. 셀 행렬을 새 크기로 재구성.
-    /// - 행이 줄면 가장 오래된(top) 행이 버려짐 → 셸이 보낸 최근 출력 유지.
-    /// - 행이 늘면 하단을 빈 셀로 패딩.
-    /// - 열 변경은 trim/pad. wrap이 깨질 수 있지만 셸이 SIGWINCH 후 재그리기.
-    /// 스크롤백은 M3.5 추가 시 같이 손봐야 함.
+    /// - primary 화면에서 **컬럼이 바뀌면 reflow** (soft-wrap 된 줄을 새 너비에 맞춰
+    ///   재배치). 그 외(alt 화면, 너비 불변)는 trim/pad.
+    /// - 행이 줄면 가장 오래된 행이 scrollback으로, 늘면 하단을 빈 셀로 패딩.
     public func resize(cols newCols: Int, rows newRows: Int) {
         precondition(newCols > 0 && newRows > 0)
         if newCols == cols && newRows == rows { return }
 
+        if !isAltScreenActive && newCols != cols {
+            // 컬럼이 바뀌는 primary 화면 → reflow. soft-wrap 된 물리 행들을 논리 줄로
+            // 재결합해 새 너비로 다시 쪼개고 scrollback+viewport로 재분배하며 커서의
+            // 논리 위치를 보존. (alt 화면은 앱이 스스로 redraw하므로 제외.)
+            reflowPrimary(toCols: newCols, toRows: newRows)
+        } else {
+            // alt 화면이거나 순수 행 변경 → 단순 trim/pad. 너비가 그대로면 wrap 경계가
+            // 움직이지 않으므로 reflow 불필요.
+            resizeTrimPad(toCols: newCols, toRows: newRows)
+        }
+
+        cols = newCols
+        rows = newRows
+        // resize 시 scroll region은 전체 화면으로 reset (xterm 동작).
+        // 앱이 SIGWINCH 후 다시 DECSTBM을 설정함.
+        scrollTop = 0
+        scrollBottom = newRows - 1
+        bumpVersion()
+    }
+
+    /// 단순 trim/pad resize. alt 화면 또는 너비 불변 행 변경에 사용. 호출 시점에
+    /// `cols`/`rows`는 아직 옛 값(공통 tail이 갱신).
+    private func resizeTrimPad(toCols newCols: Int, toRows newRows: Int) {
         // shrink 시 어느 쪽 행을 잘라낼지 — cursor 기준으로 결정.
         //   cursor가 새 viewport에 들어가면 (cursorRow < newRows) → 아래쪽을 잘라냄.
-        //     이러면 prompt(cursor 위쪽)는 그대로 유지, 빈 bottom만 사라짐.
-        //     셸이 SIGWINCH 후 reset-prompt를 보낼 때 옛 prompt가 그 자리에 그대로 있어서
-        //     깔끔하게 overwrite됨 → "prompt 누적" 회귀 막음.
-        //   cursor가 새 viewport에 안 들어가면 (예: cursor가 row 40인데 newRows=29) →
-        //     초과분 위쪽을 scrollback으로 push (옛 동작). 이때만 옛 prompt가 scrollback에
-        //     남는 부작용 발생 가능하지만, 그런 시나리오는 출력이 viewport 가득 찬 후의
-        //     리사이즈라 어차피 prompt 위치가 cursor와 무관.
-        // 일반 셸 및 primary-screen TUI(Claude Code/Ink 등) 모두 동일하게 cursor-aware
-        // push/drop. primary-screen TUI도 사용자 입장에선 그냥 셸의 일부로 보이고,
-        // 별도 처리(blank cells, viewport-top anchor 등)는 오히려 scrollback이
-        // 사라지거나 페이지가 점프하는 부작용을 만들었음. Terminal.app과 동일하게
-        // 자연스러운 자동 scroll 처리에 맡김.
+        //     prompt(cursor 위쪽)는 유지, 빈 bottom만 사라짐 → "prompt 누적" 회귀 막음.
+        //   안 들어가면 → 초과분 위쪽을 scrollback으로 push.
         let rowOffset: Int
         if newRows < rows {
             if cursorRow < newRows {
@@ -600,7 +639,7 @@ public final class Grid {
         cursorRow = max(0, min(newRows - 1, cursorRow - rowOffset))
         cursorCol = max(0, min(newCols - 1, cursorCol))
 
-        // saved primary가 있으면 같이 resize (그쪽도 동일 크기 유지 + shrink 시 자기 scrollback에 push).
+        // saved primary가 있으면 같이 resize (동일 크기 유지 + shrink 시 자기 scrollback에 push).
         if var saved = savedPrimary {
             let savedRows = saved.cells.count
             let savedCols = saved.cells.first?.count ?? 0
@@ -621,36 +660,152 @@ public final class Grid {
             saved.cursorRow = max(0, min(newRows - 1, saved.cursorRow - savedRowOffset))
             saved.cursorCol = max(0, min(newCols - 1, saved.cursorCol))
             saved.pendingWrap = false
-            // saved primary의 scroll region도 새 rows에 맞게 reset/clip.
             saved.scrollTop = 0
             saved.scrollBottom = newRows - 1
             savedPrimary = saved
         }
-
-        cols = newCols
-        rows = newRows
         pendingWrap = false
-        // resize 시 scroll region은 전체 화면으로 reset (xterm 동작).
-        // 앱이 SIGWINCH 후 다시 DECSTBM을 설정함.
-        scrollTop = 0
-        scrollBottom = newRows - 1
-        bumpVersion()
+    }
+
+    /// 컬럼 reflow (primary 화면 전용). 호출 시점에 `cols`/`rows`는 아직 옛 값.
+    /// scrollback+viewport를 논리 줄로 재결합 → 새 너비로 재분할 → scrollback과
+    /// `newRows` 높이 viewport로 재분배. 커서 논리 위치 보존.
+    private func reflowPrimary(toCols newCols: Int, toRows newRows: Int) {
+        // 1. scrollback + viewport를 하나의 연속 물리 행 시퀀스로. 마지막 scrollback
+        //    행의 wrap 플래그가 첫 viewport 행으로 이어진다.
+        let phys: [Line] = scrollback + cells
+        let cursorAbs = scrollback.count + cursorRow
+
+        // 2. 커서 아래의 빈 padding 행은 버린다(reflow 후 다시 채움). 커서·마지막
+        //    콘텐츠 행까지는 유지.
+        var lastKeep = cursorAbs
+        for i in phys.indices where !isBlankRow(phys[i]) { lastKeep = max(lastKeep, i) }
+        let kept = Array(phys[0...min(lastKeep, phys.count - 1)])
+
+        // 3. 논리 줄로 그룹핑(wrap 플래그로 이어진 run). 커서를 (논리 줄 index, 줄 내
+        //    offset)로 기록.
+        var logicals: [[Cell]] = []
+        var curCells: [Cell] = []
+        var cursorLi = 0
+        var cursorLcol = 0
+        for (i, row) in kept.enumerated() {
+            let base = curCells.count
+            curCells.append(contentsOf: row.cells)
+            if i == cursorAbs {
+                cursorLi = logicals.count
+                // pendingWrap은 커서를 마지막 칸 "한 칸 너머"에 둔다 → 행 전체 길이.
+                cursorLcol = base + (pendingWrap ? row.cells.count
+                                                 : min(max(0, cursorCol), row.cells.count))
+            }
+            if !row.wrapped {
+                logicals.append(curCells)
+                curCells = []
+            }
+        }
+        if !curCells.isEmpty { logicals.append(curCells) }
+        if logicals.isEmpty { logicals.append([]) }
+
+        // 4. 논리 줄별 trailing blank 셀 제거(하드 개행 padding). 단, 커서 줄에서는
+        //    커서 컬럼 아래로는 자르지 않는다.
+        for li in logicals.indices {
+            var n = logicals[li].count
+            while n > 0 && isBlankCell(logicals[li][n - 1]) { n -= 1 }
+            if li == cursorLi { n = max(n, cursorLcol) }
+            if n < logicals[li].count { logicals[li].removeLast(logicals[li].count - n) }
+        }
+
+        // 5. 각 논리 줄을 newCols로 재분할 → wrap 플래그를 가진 새 물리 행.
+        var newPhys: [Line] = []
+        var newCursorAbs = 0
+        var newCursorCol = 0
+        var newPendingWrap = false
+        for (li, L) in logicals.enumerated() {
+            if L.isEmpty {
+                if li == cursorLi { newCursorAbs = newPhys.count; newCursorCol = 0 }
+                newPhys.append(paddedRow([], to: newCols, wrapped: false))
+                continue
+            }
+            var idx = 0
+            while idx < L.count {
+                let end = min(idx + newCols, L.count)
+                let isLast = (end == L.count)
+                if li == cursorLi, cursorLcol >= idx, cursorLcol < end || isLast {
+                    newCursorAbs = newPhys.count
+                    let off = cursorLcol - idx
+                    if off >= newCols {
+                        newCursorCol = newCols - 1
+                        newPendingWrap = true
+                    } else {
+                        newCursorCol = off
+                    }
+                }
+                newPhys.append(paddedRow(Array(L[idx..<end]), to: newCols, wrapped: !isLast))
+                idx = end
+            }
+        }
+        if newPhys.isEmpty { newPhys.append(paddedRow([], to: newCols, wrapped: false)) }
+
+        // 6. viewport(마지막 newRows) + scrollback(나머지). 콘텐츠가 적으면 바닥 패딩.
+        if newPhys.count < newRows {
+            for _ in 0..<(newRows - newPhys.count) {
+                newPhys.append(paddedRow([], to: newCols, wrapped: false))
+            }
+        }
+        let vpStart = newPhys.count - newRows
+        var newScrollback = Array(newPhys[0..<vpStart])
+        let newViewport = Array(newPhys[vpStart..<newPhys.count])
+
+        // 7. 커밋. scrollback 한도 초과분 evict.
+        if newScrollback.count > maxScrollbackLines {
+            newScrollback.removeFirst(newScrollback.count - maxScrollbackLines)
+        }
+        scrollback = newScrollback
+        cells = newViewport
+        cursorRow = max(0, min(newRows - 1, newCursorAbs - vpStart))
+        cursorCol = max(0, min(newCols - 1, newCursorCol))
+        pendingWrap = newPendingWrap
+    }
+
+    /// 시각적으로 빈 셀(공백 + 배경/링크/강조 없음)인지. reflow의 trailing 트리밍용.
+    private func isBlankCell(_ c: Cell) -> Bool {
+        c.char == " " && c.attrs.bg == nil && c.hyperlink == nil
+            && !c.attrs.inverse && !c.attrs.underline
+    }
+
+    /// wrap 되지 않았고 모든 셀이 빈 행인지. reflow가 버릴 padding 행 판정용.
+    private func isBlankRow(_ line: Line) -> Bool {
+        !line.wrapped && line.cells.allSatisfy { isBlankCell($0) }
+    }
+
+    /// `width` 길이로 pad/trim 한 Line 생성 (reflow용).
+    private func paddedRow(_ rowCells: [Cell], to width: Int, wrapped: Bool) -> Line {
+        var r = rowCells
+        if r.count < width {
+            r.append(contentsOf: Array(repeating: Cell.empty(attrs: defaultPen),
+                                       count: width - r.count))
+        } else if r.count > width {
+            r.removeLast(r.count - width)
+        }
+        return Line(r, wrapped: wrapped)
     }
 
     private static func resizeCellsArray(
-        _ source: [[Cell]],
+        _ source: [Line],
         fromCols: Int, fromRows: Int,
         toCols: Int, toRows: Int,
         pen: CellAttrs
-    ) -> [[Cell]] {
+    ) -> [Line] {
         let rowOffset = toRows < fromRows ? fromRows - toRows : 0
         let blank = Cell.empty(attrs: pen)
-        var newCells: [[Cell]] = []
+        var newCells: [Line] = []
         newCells.reserveCapacity(toRows)
         for r in 0..<toRows {
             var newRow: [Cell] = []
             newRow.reserveCapacity(toCols)
             let srcRow = r + rowOffset
+            // Phase 1: column trim/pad carries the source row's wrap flag along.
+            // Phase 2 replaces this whole path with real reflow.
+            let wrapped = (srcRow >= 0 && srcRow < fromRows) ? source[srcRow].wrapped : false
             for c in 0..<toCols {
                 if srcRow >= 0, srcRow < fromRows, c < fromCols {
                     newRow.append(source[srcRow][c])
@@ -658,7 +813,7 @@ public final class Grid {
                     newRow.append(blank)
                 }
             }
-            newCells.append(newRow)
+            newCells.append(Line(newRow, wrapped: wrapped))
         }
         return newCells
     }
@@ -777,7 +932,7 @@ public final class Grid {
     public func debugDump() -> String {
         var out: [String] = []
         for r in 0..<rows {
-            out.append(String(cells[r].map { $0.char }))
+            out.append(String(cells[r].cells.map { $0.char }))
         }
         return out.joined(separator: "\n")
     }
@@ -788,8 +943,7 @@ public final class Grid {
         version &+= 1
     }
 
-    private static func makeBlank(rows: Int, cols: Int, attrs: CellAttrs) -> [[Cell]] {
-        let blankRow = Array(repeating: Cell.empty(attrs: attrs), count: cols)
-        return Array(repeating: blankRow, count: rows)
+    private static func makeBlank(rows: Int, cols: Int, attrs: CellAttrs) -> [Line] {
+        return Array(repeating: Line.blank(cols: cols, attrs: attrs), count: rows)
     }
 }
