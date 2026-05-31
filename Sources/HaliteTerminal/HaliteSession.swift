@@ -51,6 +51,7 @@ public final class HaliteSession: ObservableObject {
             pen: CellAttrs(fg: .default)
         )
         self.grid.maxScrollbackLines = config.scrollbackLines
+        self.grid.setCursorShape(config.cursorShape)
 
         parser.delegate = self
 
@@ -99,6 +100,9 @@ public final class HaliteSession: ObservableObject {
     public func updateConfig(_ config: HaliteConfig) {
         self.config = config
         grid.maxScrollbackLines = config.scrollbackLines
+        // Apply the user's default cursor shape immediately. An app may later
+        // override it via DECSCUSR; that takes precedence until the next reset.
+        grid.setCursorShape(config.cursorShape)
     }
 
     public func terminate() {
@@ -238,13 +242,13 @@ public final class HaliteSession: ObservableObject {
             }
         case 0x71:                          // q — DECSCUSR (intermediate=SP)
             if privateMarker == nil && intermediates == [0x20] {
-                let ps = (params.first ?? -1) <= 0 ? 1 : params[0]
+                let ps = params.first ?? 0
                 let shape: Grid.CursorShape
                 switch ps {
                 case 1, 2: shape = .block
                 case 3, 4: shape = .underline
                 case 5, 6: shape = .bar
-                default: shape = .block
+                default: shape = config.cursorShape  // 0/미지정 = reset → 사용자 기본
                 }
                 grid.setCursorShape(shape)
             }

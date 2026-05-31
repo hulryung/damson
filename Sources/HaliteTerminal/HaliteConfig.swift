@@ -26,6 +26,8 @@ public struct HaliteConfig {
     public var scrollbackLines: Int
     public var imeStyle: IMECompositionStyle
     public var cursorBlink: Bool
+    /// 기본 cursor 모양. 셸/앱이 DECSCUSR로 바꾸면 그게 우선, ps=0(reset)이면 이 값으로 복귀.
+    public var cursorShape: Grid.CursorShape
 
     // 색은 theme에서 파생 — 기존 호출처 호환용 computed property.
     public var backgroundColor: NSColor { theme.background }
@@ -45,6 +47,7 @@ public struct HaliteConfig {
         scrollbackLines: Int = 10_000,
         imeStyle: IMECompositionStyle = .none,
         cursorBlink: Bool = false,
+        cursorShape: Grid.CursorShape = .block,
         argv: [String] = HaliteConfig.defaultArgv(),
         env: [String: String] = ProcessInfo.processInfo.environment,
         cwd: String? = nil
@@ -56,6 +59,7 @@ public struct HaliteConfig {
         self.scrollbackLines = scrollbackLines
         self.imeStyle = imeStyle
         self.cursorBlink = cursorBlink
+        self.cursorShape = cursorShape
         self.argv = argv
         self.env = env
         self.cwd = cwd

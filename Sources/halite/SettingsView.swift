@@ -12,6 +12,7 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.theme") private var themeName: String = HaliteTheme.defaultDark.name
     @AppStorage("halite.autoUpdate") private var autoUpdate: Bool = false
     @AppStorage("halite.cursorBlink") private var cursorBlink: Bool = false
+    @AppStorage("halite.cursorShape") private var cursorShapeRaw: String = Grid.CursorShape.block.rawValue
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
@@ -90,6 +91,11 @@ struct HaliteSettingsView: View {
                 }
             }
             Section("Cursor") {
+                Picker("Shape", selection: $cursorShapeRaw) {
+                    Text("Block").tag(Grid.CursorShape.block.rawValue)
+                    Text("Underline").tag(Grid.CursorShape.underline.rawValue)
+                    Text("Bar").tag(Grid.CursorShape.bar.rawValue)
+                }
                 Toggle("Blink", isOn: $cursorBlink)
             }
             Section("IME Composition (한글/일본어/중국어 조합 표시)") {
@@ -115,6 +121,7 @@ struct HaliteSettingsView: View {
         .onChange(of: tabBarStyleRaw) { _ in postChanged() }
         .onChange(of: imeStyleRaw) { _ in postChanged() }
         .onChange(of: cursorBlink) { _ in postChanged() }
+        .onChange(of: cursorShapeRaw) { _ in postChanged() }
         .onChange(of: themeName) { _ in postChanged() }
         .onChange(of: autoUpdate) { _ in
             // Sparkle updater에 즉시 반영 (config hot-reload 경로와 별개).
@@ -220,6 +227,10 @@ extension HaliteConfig {
             config.imeStyle = style
         }
         config.cursorBlink = d.bool(forKey: "halite.cursorBlink")
+        if let raw = d.string(forKey: "halite.cursorShape"),
+           let shape = Grid.CursorShape(rawValue: raw) {
+            config.cursorShape = shape
+        }
         if let themeName = d.string(forKey: "halite.theme") {
             if themeName == HaliteTheme.customName {
                 config.theme = CustomTheme.load().toTheme()

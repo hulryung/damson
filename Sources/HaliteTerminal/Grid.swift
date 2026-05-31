@@ -24,8 +24,8 @@ public final class Grid {
     /// 셸이 prompt 그릴 동안 잠깐 숨기는 패턴에 사용.
     public private(set) var cursorVisible: Bool = true
 
-    /// DECSCUSR (`CSI Ps SP q`)로 변경되는 cursor 모양.
-    public enum CursorShape: Int {
+    /// Cursor shape, set by DECSCUSR (`CSI Ps SP q`) or the user's default config.
+    public enum CursorShape: String, CaseIterable {
         case block, underline, bar
     }
     public private(set) var cursorShape: CursorShape = .block
