@@ -336,22 +336,30 @@ final class GridTests: XCTestCase {
         XCTAssertEqual(String(g.scrollback[0].map { $0.char }), "CC")
     }
 
-    func testSyncOutputModeSuppressesScrollbackPush() {
-        // DEC 2026 sync frame 중 line-feed로 발생하는 scrollUp은 scrollback에
-        // 누적하지 않는다 (primary-screen TUI redraw burst). 이 불변식이 깨지면
-        // redraw가 history를 오염시키고 화면에 중복/덮어쓰기로 보임.
+    func testSyncOutputModeDoesNotSuppressScrollbackPush() {
+        // DEC 2026 sync는 presentation hint일 뿐 scrollback과 무관. sync 중에도
+        // 화면 최상단(scrollTop==0)에서 위로 빠지는 줄은 정상적으로 scrollback에
+        // 누적되어야 한다 — 안 그러면 Claude Code 같은 primary-screen TUI의 history가
+        // 통째로 사라져 위로 스크롤이 안 됨.
         let g = makeGrid(cols: 4, rows: 2)
         write(g, "AAAA"); g.lineFeed(); g.carriageReturn()
         write(g, "BBBB")
         g.inSyncOutputMode = true
-        g.lineFeed() // sync 중 scrollUp — push 되면 안 됨.
-        XCTAssertEqual(g.scrollback.count, 0)
-        XCTAssertEqual(g.scrollbackPushCount, 0)
-        // sync 종료 후의 scrollUp은 정상적으로 누적.
-        g.inSyncOutputMode = false
-        g.carriageReturn(); write(g, "CCCC")
-        g.lineFeed()
+        g.lineFeed() // sync 중 scrollUp — 그래도 push 되어야 함.
         XCTAssertEqual(g.scrollback.count, 1)
+        XCTAssertEqual(String(g.scrollback[0].map { $0.char }), "AAAA")
+    }
+
+    func testAltScreenSuppressesScrollbackPush() {
+        // alt-screen(vim/htop)에선 위로 빠지는 줄을 scrollback에 누적하지 않는다.
+        let g = makeGrid(cols: 4, rows: 2)
+        write(g, "AAAA"); g.lineFeed(); g.carriageReturn()
+        write(g, "BBBB")
+        g.enterAltScreen()
+        // alt buffer는 cursor가 0행으로 리셋되므로 바닥까지 내려가 scrollUp을 유발.
+        write(g, "XXXX"); g.lineFeed(); g.carriageReturn()
+        write(g, "YYYY"); g.lineFeed() // 바닥 행에서 scrollUp — alt라 suppress.
+        XCTAssertEqual(g.scrollback.count, 0)
     }
 
     func testResizeShrinkRowsPushesToScrollback() {

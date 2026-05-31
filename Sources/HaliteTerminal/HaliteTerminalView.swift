@@ -422,8 +422,8 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         //
         // (debounce/throttle 시도했으나: debounce는 연속 드래그가 timer를 reset해서
         //  드래그가 끝날 때까지 한 번도 fire 안 됨. 일반 셸의 prompt 누적은 SIGWINCH
-        //  자체의 표준 동작이고, TUI 세션은 inSyncOutputMode로 scrollback 누적이 막혀
-        //  있어 잔재 회귀 없음.)
+        //  자체의 표준 동작. TUI 세션은 redraw가 대부분 in-place(net-zero scroll)라
+        //  resize 중에도 scrollback 잔재가 거의 안 쌓임.)
         let font = textView.font ?? NSFont.userFixedPitchFont(ofSize: session.config.fontSize)
             ?? NSFont.systemFont(ofSize: session.config.fontSize)
         let glyphSize = ("M" as NSString).size(withAttributes: [.font: font])
