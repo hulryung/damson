@@ -1619,6 +1619,10 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         } else if evictedSinceLast > 0 {
             // 사용자가 위로 스크롤해 history를 보는 중 — scrollback이 evict된 만큼
             // 스크롤도 따라 올려서 보던 줄이 화면 같은 위치에 머물게(content-anchor).
+            // 전제: setAttributedString이 top에서 E줄 줄여도 clipView.origin.y는
+            // 그대로 유지된다(AppKit이 content를 semantic하게 따라가지 않음). 이 전제가
+            // 깨지면 이중 보정으로 화면이 튈 수 있음 — 그 경우 이 else-if 블록만 지우면
+            // 핵심 수정(강제 바닥 고정 제거)은 그대로 유지됨. >10k 줄 + 위로 스크롤 시에만 관여.
             let curY = scrollView.contentView.bounds.origin.y
             let adjusted = max(0, curY - CGFloat(evictedSinceLast) * cellMetrics.height)
             scrollView.contentView.scroll(to: NSPoint(x: 0, y: adjusted))
