@@ -41,5 +41,38 @@ enum MetalShaders {
     fragment float4 bg_fragment(BgVOut in [[stage_in]]) {
         return in.color;
     }
+
+    struct GlyphInstance {
+        float2 origin; float2 size; float2 uvOrigin; float2 uvSize; float4 color;
+    };
+    struct GlyphVOut {
+        float4 position [[position]];
+        float2 uv;
+        float4 color;
+    };
+
+    vertex GlyphVOut glyph_vertex(uint vid [[vertex_id]],
+                                  uint iid [[instance_id]],
+                                  constant Uniforms& u [[buffer(0)]],
+                                  const device GlyphInstance* insts [[buffer(1)]]) {
+        float2 corners[4] = { float2(0,0), float2(1,0), float2(0,1), float2(1,1) };
+        float2 corner = corners[vid];
+        GlyphInstance inst = insts[iid];
+        float2 px = inst.origin + corner * inst.size;
+        float2 ndc = float2(px.x / u.viewportSize.x * 2.0 - 1.0,
+                            1.0 - px.y / u.viewportSize.y * 2.0);
+        GlyphVOut out;
+        out.position = float4(ndc, 0.0, 1.0);
+        out.uv = inst.uvOrigin + corner * inst.uvSize;
+        out.color = inst.color;
+        return out;
+    }
+
+    fragment float4 glyph_fragment(GlyphVOut in [[stage_in]],
+                                   texture2d<float> atlas [[texture(0)]],
+                                   sampler samp [[sampler(0)]]) {
+        float coverage = atlas.sample(samp, in.uv).r;
+        return float4(in.color.rgb, in.color.a * coverage);
+    }
     """
 }

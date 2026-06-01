@@ -33,6 +33,20 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// The content inset, matched to the legacy textView's so cols/rows agree.
     private let inset = NSSize(width: 4, height: 4)
 
+    /// Glyph atlas, rebuilt when font / cell size / backing scale changes.
+    private var atlas: GlyphAtlas?
+    private var atlasSignature = ""
+
+    private func ensureAtlas() {
+        let scale = metalView.metalLayer.contentsScale
+        let sig = "\(renderFont.fontName)|\(renderFont.pointSize)|\(metrics.width)|\(metrics.height)|\(scale)"
+        if sig != atlasSignature || atlas == nil {
+            atlas = GlyphAtlas(device: md.device, font: renderFont,
+                               cellW: metrics.width, cellH: metrics.height, scale: scale)
+            atlasSignature = sig
+        }
+    }
+
     init?(config: HaliteConfig) {
         guard let md = MetalDevice.shared else { return nil }
         self.md = md
@@ -76,10 +90,11 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         self.lastState = state
         self.lastTotalRows = grid.scrollback.count + grid.rows
 
+        ensureAtlas()
         let layer = metalView.metalLayer
         guard layer.drawableSize.width > 0, let drawable = layer.nextDrawable() else { return }
 
-        let instances = buildInstances(grid: grid, state: state)
+        let (bgInstances, glyphInstances) = buildInstances(grid: grid, state: state)
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
@@ -89,40 +104,65 @@ final class MetalTerminalBackend: TerminalRenderBackend {
 
         guard let cmd = md.queue.makeCommandBuffer(),
               let enc = cmd.makeRenderCommandEncoder(descriptor: pass) else { return }
-        enc.setRenderPipelineState(md.bgPipeline)
         var uniforms = Uniforms(viewportSize: SIMD2<Float>(Float(metalView.bounds.width),
                                                            Float(metalView.bounds.height)))
-        enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-        if !instances.isEmpty,
-           let buf = md.device.makeBuffer(bytes: instances,
-                                          length: MemoryLayout<BgInstance>.stride * instances.count,
+
+        // Pass 1: cell backgrounds / selection / find / block cursor.
+        if !bgInstances.isEmpty,
+           let buf = md.device.makeBuffer(bytes: bgInstances,
+                                          length: MemoryLayout<BgInstance>.stride * bgInstances.count,
                                           options: .storageModeShared) {
+            enc.setRenderPipelineState(md.bgPipeline)
+            enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
             enc.setVertexBuffer(buf, offset: 0, index: 1)
             enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
-                               instanceCount: instances.count)
+                               instanceCount: bgInstances.count)
         }
+
+        // Pass 2: glyphs (coverage atlas modulated by fg color).
+        if !glyphInstances.isEmpty, let atlas = atlas,
+           let buf = md.device.makeBuffer(bytes: glyphInstances,
+                                          length: MemoryLayout<GlyphInstance>.stride * glyphInstances.count,
+                                          options: .storageModeShared) {
+            enc.setRenderPipelineState(md.glyphPipeline)
+            enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+            enc.setVertexBuffer(buf, offset: 0, index: 1)
+            enc.setFragmentTexture(atlas.texture, index: 0)
+            enc.setFragmentSamplerState(md.glyphSampler, index: 0)
+            enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                               instanceCount: glyphInstances.count)
+        }
+
         enc.endEncoding()
         cmd.present(drawable)
         cmd.commit()
     }
 
-    /// Build bg/selection/find/cursor fill instances for the visible rows.
-    private func buildInstances(grid: Grid, state: RenderState) -> [BgInstance] {
+    /// Build bg fills + glyph quads for the visible rows in one pass over cells.
+    private func buildInstances(grid: Grid, state: RenderState) -> (bg: [BgInstance], glyph: [GlyphInstance]) {
         let map = coordMap()
         let cellH = max(metrics.height, 1)
         let totalRows = grid.scrollback.count + grid.rows
         let h = metalView.bounds.height
-        // Visible unified-row range.
         let first = max(0, Int(floor((scrollY - inset.height) / cellH)))
         let last = min(totalRows - 1, Int(ceil((scrollY + h - inset.height) / cellH)))
-        guard first <= last else { return [] }
+        guard first <= last else { return ([], []) }
 
-        var out: [BgInstance] = []
-        out.reserveCapacity((last - first + 1) * max(grid.cols, 1))
+        var bg: [BgInstance] = []
+        var glyphs: [GlyphInstance] = []
+        bg.reserveCapacity((last - first + 1) * max(grid.cols, 1))
+        glyphs.reserveCapacity(bg.capacity)
 
         let blockCursorRow = grid.cursorVisible ? (grid.scrollback.count + grid.cursorRow) : -1
         let blinkOff = state.cursorBlinkEnabled && !state.cursorBlinkVisible
         let blockCursorOn = grid.cursorShape == .block && state.markedText.isEmpty && !blinkOff
+
+        // IME preedit overlay (composing text drawn at the cursor; the cells it
+        // covers are hidden). Shown even when DECTCEM hid the cursor.
+        let imeRow = grid.scrollback.count + grid.cursorRow
+        let imeActive = !state.markedText.isEmpty
+        let imeOverlayCols = imeActive ? state.markedText.reduce(0) { $0 + (Cell.isWide($1) ? 2 : 1) } : 0
+        let imeAfterCol = min(grid.cursorCol + imeOverlayCols, grid.cols)
 
         for row in first...last {
             let cells = cellsForRow(grid: grid, unifiedRow: row)
@@ -131,22 +171,102 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             let sel = selectedColumns(state, row: row, cols: cols)
             let finds = state.findMatchesByRow[row] ?? []
             let activeFind: Range<Int>? = (state.activeFindRow == row) ? state.activeFindRange : nil
+            let hover: Range<Int>? = (state.hoveredRow == row) ? state.hoveredRange : nil
             for col in 0..<cols {
-                if cells[col].isContinuation { continue }
+                let cell = cells[col]
+                if cell.isContinuation { continue }
+                if imeActive, row == imeRow, col >= grid.cursorCol, col < imeAfterCol { continue }
                 let isCursor = (row == blockCursorRow && col == grid.cursorCol && blockCursorOn)
-                guard let color = bgColor(cell: cells[col], col: col, sel: sel, finds: finds,
-                                          activeFind: activeFind, isCursor: isCursor) else { continue }
                 let wide = (col + 1 < cols && cells[col + 1].isContinuation)
                 let rect = map.cellRectInView(row: row, col: col)
                 let w = wide ? metrics.width * 2 : metrics.width
-                out.append(BgInstance(
-                    origin: SIMD2<Float>(Float(rect.origin.x), Float(rect.origin.y)),
-                    size: SIMD2<Float>(Float(w), Float(rect.height)),
-                    color: rgba(color)
-                ))
+                let origin = SIMD2<Float>(Float(rect.origin.x), Float(rect.origin.y))
+                let size = SIMD2<Float>(Float(w), Float(rect.height))
+
+                if let color = bgColor(cell: cell, col: col, sel: sel, finds: finds,
+                                       activeFind: activeFind, isCursor: isCursor) {
+                    bg.append(BgInstance(origin: origin, size: size, color: rgba(color)))
+                }
+                if cell.char != " ", let uv = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide) {
+                    let fg = fgColor(cell: cell, col: col, sel: sel, finds: finds,
+                                     activeFind: activeFind, hover: hover, isCursor: isCursor)
+                    glyphs.append(GlyphInstance(origin: origin, size: size,
+                                                uvOrigin: uv.origin, uvSize: uv.size, color: rgba(fg)))
+                }
             }
         }
-        return out
+        if imeActive {
+            appendIMEComposition(markedText: state.markedText, row: imeRow,
+                                 startCol: grid.cursorCol, gridCols: grid.cols,
+                                 map: map, bg: &bg, glyphs: &glyphs)
+        }
+        return (bg, glyphs)
+    }
+
+    /// Draw the IME composing text at the cursor, cell-aligned, with the
+    /// configured style (underline / background). Mirrors the legacy overlay.
+    private func appendIMEComposition(markedText: String, row: Int, startCol: Int,
+                                      gridCols: Int, map: CoordinateMap,
+                                      bg: inout [BgInstance], glyphs: inout [GlyphInstance]) {
+        let style = config.imeStyle
+        var col = startCol
+        for ch in markedText {
+            guard col < gridCols else { break }
+            let wide = Cell.isWide(ch)
+            let w = wide ? 2 : 1
+            let rect = map.cellRectInView(row: row, col: col)
+            let cellWpts = CGFloat(w) * metrics.width
+            let origin = SIMD2<Float>(Float(rect.origin.x), Float(rect.origin.y))
+            let size = SIMD2<Float>(Float(cellWpts), Float(rect.height))
+
+            var fg = config.foregroundColor
+            switch style {
+            case .background:
+                bg.append(BgInstance(origin: origin, size: size,
+                                     color: rgba(NSColor.systemBlue.withAlphaComponent(0.45))))
+                fg = .white
+            case .both:
+                bg.append(BgInstance(origin: origin, size: size,
+                                     color: rgba(NSColor.systemBlue.withAlphaComponent(0.65))))
+                fg = .white
+            case .underline, .thickUnderline, .none:
+                break
+            }
+
+            if ch != " ", let uv = atlas?.region(for: ch, bold: false, wide: wide) {
+                glyphs.append(GlyphInstance(origin: origin, size: size,
+                                            uvOrigin: uv.origin, uvSize: uv.size, color: rgba(fg)))
+            }
+
+            let underline: (color: NSColor, thickness: CGFloat)?
+            switch style {
+            case .underline:
+                underline = (config.foregroundColor.withAlphaComponent(0.7), max(1.5, rect.height * 0.06))
+            case .thickUnderline, .both:
+                underline = (config.foregroundColor, max(2, rect.height * 0.1))
+            case .background, .none:
+                underline = nil
+            }
+            if let u = underline {
+                let uy = rect.maxY - u.thickness
+                bg.append(BgInstance(origin: SIMD2<Float>(Float(rect.origin.x), Float(uy)),
+                                     size: SIMD2<Float>(Float(cellWpts), Float(u.thickness)),
+                                     color: rgba(u.color)))
+            }
+            col += w
+        }
+    }
+
+    /// Resolved glyph foreground, mirroring the legacy fg rules.
+    private func fgColor(cell: Cell, col: Int, sel: Range<Int>?, finds: [Range<Int>],
+                         activeFind: Range<Int>?, hover: Range<Int>?, isCursor: Bool) -> NSColor {
+        if isCursor { return config.theme.background }   // inverse over the cursor block
+        if hover?.contains(col) ?? false { return .systemBlue }
+        if (activeFind?.contains(col) ?? false) || finds.contains(where: { $0.contains(col) }) {
+            return .black
+        }
+        let (fg, _) = cell.attrs.resolvedColors(theme: config.theme)
+        return fg
     }
 
     /// Resolved fill for a cell, honoring the legacy priority

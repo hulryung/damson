@@ -12,6 +12,10 @@ final class MetalDevice {
 
     /// bg/selection/cursor fill pipeline (instanced quads, src-over blending).
     let bgPipeline: MTLRenderPipelineState
+    /// glyph pipeline (instanced quads sampling the coverage atlas, src-over).
+    let glyphPipeline: MTLRenderPipelineState
+    /// Linear-clamp sampler for the glyph atlas.
+    let glyphSampler: MTLSamplerState
 
     /// Pixel format used by the CAMetalLayer and pipelines.
     static let pixelFormat: MTLPixelFormat = .bgra8Unorm
@@ -56,9 +60,44 @@ final class MetalDevice {
             return nil
         }
 
+        // Glyph pipeline — same color attachment/blend, glyph shaders.
+        guard let gv = library.makeFunction(name: "glyph_vertex"),
+              let gf = library.makeFunction(name: "glyph_fragment") else {
+            NSLog("Halite: Metal glyph shader functions missing")
+            return nil
+        }
+        let gdesc = MTLRenderPipelineDescriptor()
+        gdesc.vertexFunction = gv
+        gdesc.fragmentFunction = gf
+        let ga = gdesc.colorAttachments[0]!
+        ga.pixelFormat = Self.pixelFormat
+        ga.isBlendingEnabled = true
+        ga.rgbBlendOperation = .add
+        ga.alphaBlendOperation = .add
+        ga.sourceRGBBlendFactor = .sourceAlpha
+        ga.sourceAlphaBlendFactor = .sourceAlpha
+        ga.destinationRGBBlendFactor = .oneMinusSourceAlpha
+        ga.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        guard let gpipeline = try? device.makeRenderPipelineState(descriptor: gdesc) else {
+            NSLog("Halite: Metal glyph pipeline creation failed")
+            return nil
+        }
+
+        let samp = MTLSamplerDescriptor()
+        samp.minFilter = .linear
+        samp.magFilter = .linear
+        samp.sAddressMode = .clampToEdge
+        samp.tAddressMode = .clampToEdge
+        guard let sampler = device.makeSamplerState(descriptor: samp) else {
+            NSLog("Halite: Metal sampler creation failed")
+            return nil
+        }
+
         self.device = device
         self.queue = queue
         self.library = library
         self.bgPipeline = pipeline
+        self.glyphPipeline = gpipeline
+        self.glyphSampler = sampler
     }
 }
