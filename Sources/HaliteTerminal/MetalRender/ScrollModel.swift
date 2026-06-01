@@ -1,37 +1,79 @@
+import Foundation
 import CoreGraphics
 
 /// Scalar vertical scroll position for the Metal backend.
 ///
 /// Consumes OS scroll-event deltas directly — NSScrollView-style — rather than
-/// simulating a spring. macOS delivers `scrollingDeltaY` during the gesture and a
-/// decaying `momentumPhase` stream after lift-off, so applying those deltas yields
-/// smooth scroll + momentum for free. Trackpad deltas are precise (points, 1:1);
-/// mouse-wheel deltas are lines, scaled by the cell height.
+/// simulating a spring for wheel/trackpad input. macOS delivers `scrollingDeltaY`
+/// during the gesture and a decaying `momentumPhase` stream after lift-off, so
+/// applying those deltas yields smooth scroll + momentum for free. Trackpad deltas
+/// are precise (points, 1:1); mouse-wheel deltas are lines, scaled by cell height.
+///
+/// Programmatic jumps (snap-to-cursor) animate via an exponential ease toward a
+/// `target`, stepped by a display link (`AnimationLink`); the model just holds the
+/// position math so it stays unit-testable with no view.
 ///
 /// `current` is content pixels from the top of the content that the viewport's top
-/// sits at; 0 = scrolled to the very top, `maxY` = bottom. Programmatic animated
-/// eases (snap-to-cursor) are a later increment (AnimationLink); this type only
-/// holds position + clamp + wheel application.
+/// sits at; 0 = scrolled to the very top, `maxY` = bottom.
 struct ScrollModel {
     private(set) var current: CGFloat = 0
+    /// Destination of an in-flight programmatic ease (== current when idle).
+    private var target: CGFloat = 0
+    /// Whether a programmatic ease is in flight (driven by `step(dt:)`).
+    private(set) var animating = false
 
-    /// Maximum offset (`contentHeight - viewportHeight`). Setting it re-clamps
-    /// `current` so a window grow / scrollback eviction can't strand the view past
-    /// the new bottom. Negative values (content shorter than viewport) pin to top.
+    /// Time constant of the ease, seconds. ~0.04 settles a typical jump in ~0.2s,
+    /// matching the legacy snap-to-cursor easeOut feel.
+    private let tau: CGFloat = 0.04
+    /// Sub-pixel threshold at which the ease is considered settled.
+    private let settleEpsilon: CGFloat = 0.5
+
+    /// Maximum offset (`contentHeight - viewportHeight`). Setting it re-clamps both
+    /// `current` and `target` so a window grow / scrollback eviction can't strand
+    /// the view (or an ease) past the new bottom. Negative (content shorter than
+    /// viewport) pins to top.
     var maxY: CGFloat = 0 {
-        didSet { current = clamp(current) }
+        didSet {
+            current = clamp(current)
+            target = clamp(target)
+        }
     }
 
     func clamp(_ y: CGFloat) -> CGFloat {
         max(0, min(y, max(0, maxY)))
     }
 
-    /// Jump to an absolute offset, clamped. No animation.
+    /// Jump to an absolute offset, clamped. Cancels any in-flight ease.
     mutating func jump(to y: CGFloat) {
         current = clamp(y)
+        target = current
+        animating = false
     }
 
-    /// Apply one scroll-wheel event's vertical delta.
+    /// Begin a smooth ease toward an absolute offset. No-op (and not animating) if
+    /// already within the settle threshold of the target.
+    mutating func animate(to y: CGFloat) {
+        target = clamp(y)
+        animating = abs(target - current) >= settleEpsilon
+    }
+
+    /// Advance an in-flight ease by `dt` seconds (frame-rate independent). Returns
+    /// `true` when settled (caller stops the display link). A no-op returns `true`.
+    @discardableResult
+    mutating func step(dt: CGFloat) -> Bool {
+        guard animating else { return true }
+        let k = 1 - CGFloat(exp(-Double(max(0, dt) / tau)))
+        current += (target - current) * k
+        if abs(target - current) < settleEpsilon {
+            current = target
+            animating = false
+            return true
+        }
+        return false
+    }
+
+    /// Apply one scroll-wheel event's vertical delta. Cancels any in-flight ease
+    /// (direct user input takes over).
     /// - Parameters:
     ///   - deltaY: `event.scrollingDeltaY` (already encodes natural-scroll direction).
     ///   - precise: `event.hasPreciseScrollingDeltas` (trackpad). Precise deltas are
@@ -40,8 +82,10 @@ struct ScrollModel {
     /// - Returns: whether `current` actually moved (false at an edge → skip redraw).
     @discardableResult
     mutating func applyWheel(deltaY: CGFloat, precise: Bool, lineHeight: CGFloat) -> Bool {
+        animating = false
         let pixels = precise ? deltaY : deltaY * lineHeight
         let next = clamp(current - pixels)
+        target = next
         guard next != current else { return false }
         current = next
         return true

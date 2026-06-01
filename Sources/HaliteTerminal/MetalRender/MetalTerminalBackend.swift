@@ -20,12 +20,14 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     private var metrics = CellMetrics(width: 8, height: 16)
 
     /// Scalar vertical scroll position. Consumes OS wheel/momentum deltas
-    /// directly (NSScrollView-style); programmatic eases (snap-to-cursor) land in
-    /// a later increment via an animation link.
+    /// directly (NSScrollView-style); programmatic jumps (snap-to-cursor) ease via
+    /// `animLink`.
     private var scroll = ScrollModel()
     /// Read-only mirror of `scroll.current` (content px from top, 0 = top), kept
     /// so the many existing `scrollY` reads (coord map, instance positions) work.
     private var scrollY: CGFloat { scroll.current }
+    /// Transient display link for smooth programmatic eases (macOS 14+).
+    private lazy var animLink = AnimationLink(view: metalView)
     /// Cached from the last render so `contentHeight` is correct between frames.
     private var lastTotalRows: Int = 0
     /// Snapshot of the last frame's inputs, so resize/backing-change redraws.
@@ -378,12 +380,34 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     var viewportHeight: CGFloat { metalView.bounds.height }
 
     func setScrollY(_ y: CGFloat, animated: Bool) {
-        // Increment A: `animated` is not yet honored (no animation link) — jump.
-        // The ScrollModel clamps to [0, contentHeight - viewportHeight].
         scroll.maxY = max(0, contentHeight - viewportHeight)
-        scroll.jump(to: y)
-        redrawLast()
-        onScrollGeometryChanged?()
+        guard animated else {
+            // Hard jump cancels any in-flight ease.
+            animLink.stop()
+            scroll.jump(to: y)
+            redrawLast()
+            onScrollGeometryChanged?()
+            return
+        }
+        // Smooth ease toward the target via a transient display link (macOS 14+).
+        scroll.animate(to: y)
+        guard scroll.animating else {        // already at target
+            redrawLast()
+            onScrollGeometryChanged?()
+            return
+        }
+        let started = animLink.start { [weak self] dt in
+            guard let self else { return true }
+            let settled = self.scroll.step(dt: CGFloat(dt))
+            self.redrawLast()
+            self.onScrollGeometryChanged?()
+            return settled
+        }
+        if !started {                        // macOS < 14: no display link → jump
+            scroll.jump(to: y)
+            redrawLast()
+            onScrollGeometryChanged?()
+        }
     }
 
     /// Consume a wheel/trackpad event: apply its delta and redraw. macOS delivers
@@ -391,6 +415,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// momentum without simulating a spring. Always returns true (Metal owns the
     /// wheel; the host won't fall through to a no-op `super.scrollWheel`).
     func handleScrollWheel(_ event: NSEvent) -> Bool {
+        animLink.stop()   // direct input cancels any in-flight programmatic ease
         scroll.maxY = max(0, contentHeight - viewportHeight)
         let moved = scroll.applyWheel(deltaY: event.scrollingDeltaY,
                                       precise: event.hasPreciseScrollingDeltas,

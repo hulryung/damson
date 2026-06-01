@@ -83,4 +83,85 @@ final class ScrollModelTests: XCTestCase {
         XCTAssertEqual(m.current, 0)
         XCTAssertFalse(changed, "no movement at the top edge → no redraw needed")
     }
+
+    // MARK: - Programmatic ease (increment B)
+
+    func testStepWithoutAnimateIsNoop() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 300)
+        XCTAssertTrue(m.step(dt: 1.0 / 60), "no ease in flight → settled")
+        XCTAssertEqual(m.current, 300)
+        XCTAssertFalse(m.animating)
+    }
+
+    func testAnimateToCurrentDoesNotAnimate() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 300)
+        m.animate(to: 300.2)   // within settle epsilon
+        XCTAssertFalse(m.animating, "already at target → no animation")
+    }
+
+    func testAnimateThenStepConvergesToTarget() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 0)
+        m.animate(to: 500)
+        XCTAssertTrue(m.animating)
+        var settled = false
+        for _ in 0..<600 where !settled {       // cap ~10s of 60fps frames
+            settled = m.step(dt: 1.0 / 60)
+        }
+        XCTAssertTrue(settled, "ease must settle")
+        XCTAssertEqual(m.current, 500, accuracy: 0.001)
+        XCTAssertFalse(m.animating)
+    }
+
+    func testStepIsMonotonicAndDoesNotOvershoot() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 0)
+        m.animate(to: 400)
+        var prev = m.current
+        for _ in 0..<120 {
+            _ = m.step(dt: 1.0 / 60)
+            XCTAssertGreaterThanOrEqual(m.current, prev, "monotonic toward target")
+            XCTAssertLessThanOrEqual(m.current, 400 + 0.001, "no overshoot")
+            prev = m.current
+        }
+    }
+
+    func testEaseSettlesWithinAboutFifthOfASecond() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 0)
+        m.animate(to: 200)
+        var t: CGFloat = 0
+        let dt: CGFloat = 1.0 / 120
+        while m.animating && t < 1.0 { _ = m.step(dt: dt); t += dt }
+        XCTAssertFalse(m.animating)
+        XCTAssertLessThan(t, 0.35, "ease should feel snappy (~0.2s), not draggy")
+    }
+
+    func testWheelCancelsInFlightEase() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 0)
+        m.animate(to: 500)
+        _ = m.step(dt: 1.0 / 60)
+        XCTAssertTrue(m.animating)
+        m.applyWheel(deltaY: -10, precise: true, lineHeight: 16)
+        XCTAssertFalse(m.animating, "direct wheel input cancels the programmatic ease")
+    }
+
+    func testMaxYShrinkReclampsEaseTarget() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 0)
+        m.animate(to: 800)
+        m.maxY = 100              // content shrank mid-ease
+        for _ in 0..<300 { _ = m.step(dt: 1.0 / 60) }
+        XCTAssertLessThanOrEqual(m.current, 100, "ease must not settle past the new bottom")
+    }
 }
