@@ -11,10 +11,11 @@ import AppKit
 /// (호출자들은 이미 `import HaliteTerminal`).
 public enum Motion {
 
-    /// 모든 라이프사이클 애니메이션의 지속 시간. 0.16s — 기존 스크롤 스냅/벨 플래시와 동일한 감각.
+    /// 모든 라이프사이클 애니메이션의 지속 시간. 0.16s — 기존 스크롤 스냅/벨 플래시(0.18s)와
+    /// 비슷한, 의도적으로 빠른 감각.
     public static let duration: TimeInterval = 0.16
 
-    /// 모든 애니메이션의 타이밍 곡선. easeOut — 스크롤 스냅/벨 플래시와 동일.
+    /// 모든 애니메이션의 타이밍 곡선. easeOut — 스크롤 스냅/벨 플래시와 같은 곡선.
     public static var timing: CAMediaTimingFunction { CAMediaTimingFunction(name: .easeOut) }
 
     /// 마스터 게이트. 각 애니메이션 진입점에서 매번 LIVE로 읽는다(캐시 금지).
