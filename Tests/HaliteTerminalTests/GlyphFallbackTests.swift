@@ -82,6 +82,46 @@ final class GlyphFallbackTests: XCTestCase {
             "Nerd icon ink (\(box[0].width)) must fit one cell (\(cellW)); a non-Mono variant would overflow and clip")
     }
 
+    /// Mirror the running app exactly: base = FontDiscovery.defaultFamily() (NFM)
+    /// wrapped by fontWithNerdFallback (carries a cascadeList). The cascadeList must
+    /// NOT make CTFontGetGlyphsForCharacters claim Hangul on the base (it doesn't),
+    /// and the explicit CJK fallback must still fire.
+    func testAppDefaultFontPathRendersHangul() throws {
+        let size: CGFloat = 17
+        let family = "JetBrainsMono Nerd Font Mono"   // == defaultFamily() on this machine
+        guard NSFont(name: family, size: size) != nil else { throw XCTSkip("NFM not installed") }
+        try XCTSkipIf(cjkFallbackFont(size: size) == nil, "no CJK fallback font installed")
+        let renderFont = fontWithNerdFallback(family: family, size: size)
+        let cellW = ("M" as NSString).size(withAttributes: [.font: renderFont]).width
+        let r = GlyphRasterizer(font: renderFont, cellW: cellW, cellH: cellW * 2, scale: 2)
+        let han = try XCTUnwrap(r.raster("한", bold: false, wide: true),
+            "app's default font (NFM + cascade) must render Hangul via CJK fallback")
+        XCTAssertGreaterThan(maxInkX(han), han.width / 2, "Hangul must fill 2 cells, not squish")
+    }
+
+    /// Regression: decomposed (NFD) Hangul must render. The terminal can receive
+    /// Hangul as Jamo — notably syllables with a final consonant (받침) arrive as
+    /// 초성+중성+종성 — and the per-glyph cmap path can't compose Jamo (it drew
+    /// nothing, so 받침 syllables like 한/글 went blank). draw() normalizes to NFC
+    /// first; this asserts decomposed syllables now rasterize at full 2-cell width.
+    func testDecomposedHangulRendersViaNFC() throws {
+        let family = "JetBrainsMono Nerd Font Mono"
+        guard NSFont(name: family, size: 17) != nil, cjkFallbackFont(size: 17) != nil else {
+            throw XCTSkip("fonts not installed")
+        }
+        let renderFont = fontWithNerdFallback(family: family, size: 17)
+        let cellW = ("M" as NSString).size(withAttributes: [.font: renderFont]).width
+        let r = GlyphRasterizer(font: renderFont, cellW: cellW, cellH: cellW * 2, scale: 2)
+        // "한글" decomposed → both syllables carry a 받침 (final consonant).
+        let nfd = "한글".decomposedStringWithCanonicalMapping
+        for ch in nfd {
+            XCTAssertGreaterThan(ch.unicodeScalars.count, 1, "precondition: '\(ch)' must be decomposed Jamo")
+            let bmp = try XCTUnwrap(r.raster(ch, bold: false, wide: true),
+                "decomposed Hangul \(Array(ch.unicodeScalars)) must render (NFC normalization)")
+            XCTAssertGreaterThan(maxInkX(bmp), bmp.width / 2, "must fill 2 cells")
+        }
+    }
+
     func testNonCJKMissingGlyphStaysBlank() throws {
         let size: CGFloat = 17
         guard let base = font("JetBrainsMono Nerd Font", size) else {

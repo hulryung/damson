@@ -76,7 +76,13 @@ final class GlyphRasterizer {
     private func draw(_ ch: Character, in f: NSFont, wide: Bool) -> Bitmap? {
         let ctFont = f as CTFont
 
-        let utf16 = Array(String(ch).utf16)
+        // Normalize to precomposed (NFC). The terminal can receive decomposed
+        // Hangul (NFD Jamo) — e.g. syllables with a final consonant (받침) arrive
+        // as 초성+중성+종성 — and a per-glyph cmap lookup can't compose Jamo, so it
+        // would draw 2–3 separate Jamo or, lacking a 종성 glyph, render nothing.
+        // Composing to the single precomposed syllable (U+AC00…D7A3) draws one
+        // correct glyph, matching the legacy CTLine/NSAttributedString path.
+        let utf16 = Array(String(ch).precomposedStringWithCanonicalMapping.utf16)
         guard !utf16.isEmpty else { return nil }
         var glyphs = [CGGlyph](repeating: 0, count: utf16.count)
         let hasAll = utf16.withUnsafeBufferPointer { buf in
