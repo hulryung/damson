@@ -45,7 +45,7 @@ halite surfaces are **NSTextView/NSScrollView**. Resizing a *live* surface fires
 
 ### Shared motion core — `Motion`
 
-New file `Sources/halite/Motion.swift`. A small stateless helper (enum with static members), no instances.
+New file `Sources/HaliteTerminal/Motion.swift`. A small stateless helper (enum with static members), no instances. (Placed in the **HaliteTerminal library** rather than the `halite` executable so the gating logic is unit-testable — the executable target has no test target. Public API and call sites are unchanged; callers already `import HaliteTerminal`.)
 
 ```
 enum Motion {
