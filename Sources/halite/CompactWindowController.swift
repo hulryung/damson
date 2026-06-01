@@ -111,7 +111,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
         // 커스텀 탭 바.
         tabBar = CompactTabBarView()
         tabBar.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.onTabSelected = { [weak self] idx in self?.selectTab(idx) }
+        tabBar.onTabSelected = { [weak self] idx in
+            guard let self = self else { return }
+            self.selectTab(idx, transition: .switch(fromIndex: self.currentIndex))
+        }
         tabBar.onTabClosed = { [weak self] idx in self?.closeTab(idx) }
         tabBar.onNewTab = { [weak self] in self?.addNewTab() }
         tabBar.onTabReordered = { [weak self] from, to in self?.reorderTab(from: from, to: to) }
@@ -183,6 +186,24 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
 
     func selectTab(_ index: Int, transition: TabTransition = .none) {
         guard index >= 0, index < tabs.count else { return }
+
+        // Capture the outgoing tab's pixels BEFORE removeFromSuperview() tears it down.
+        // Only for a real switch between two distinct, animation-enabled tabs.
+        var switchOverlay: (image: NSImage, frame: NSRect, fromIndex: Int)?
+        if case .switch(let fromIndex) = transition,
+           Motion.enabled,
+           fromIndex >= 0, fromIndex < tabs.count, fromIndex != index {
+            let outgoing = tabs[fromIndex].tree
+            // Only snapshot if that tree is actually the one on screen right now, and the
+            // capture succeeds (zero-size → nil → instant path, spec §Snapshot fidelity).
+            if outgoing.superview === contentContainer,
+               let image = Motion.snapshot(of: outgoing) {
+                // outgoing.frame is in contentContainer's coordinates — exactly where the
+                // overlay must sit.
+                switchOverlay = (image, outgoing.frame, fromIndex)
+            }
+        }
+
         currentIndex = index
         for t in tabs { t.tree.removeFromSuperview() }
         let tree = tabs[index].tree
@@ -202,10 +223,9 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
         }
         refreshTabBar()
 
-        // The incoming tree may carry a leftover from-state if a prior create
-        // animation on this same view was superseded. Reset to the final visual
-        // state unconditionally; the `.create` branch below re-applies the
-        // from-state. Keeps the non-animated path identical to today.
+        // The incoming tree may carry a leftover from-state if a prior create/switch
+        // animation on this same view was superseded. Reset to the final visual state
+        // unconditionally; the branches below re-apply a from-state if they animate.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         tree.layer?.opacity = 1
@@ -214,6 +234,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
 
         if case .create = transition, Motion.enabled {
             animateTabCreate(tree)
+        }
+
+        // Run the switch animation only if we captured a snapshot above. Otherwise this is
+        // the instant path (disabled / create / first show / nil-snapshot) — identical to today.
+        if let ov = switchOverlay {
+            animateTabSwitch(incoming: tree, overlayImage: ov.image,
+                             overlayFrame: ov.frame, fromIndex: ov.fromIndex, toIndex: index)
         }
     }
 
@@ -270,6 +297,78 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
             layer.opacity = 1
             layer.transform = CATransform3DIdentity
             CATransaction.commit()
+        })
+    }
+
+    /// Tab-switch motion: the outgoing tab (a bitmap overlay) and the incoming live tab both
+    /// slide horizontally by a small delta while crossfading. Direction follows the index sign:
+    /// moving to a higher index slides content left (new tab enters from the right), lower
+    /// slides right. Layer-only — never touches frames — so the live surface never reflows.
+    /// (Index order == visual order, even after drag-reorder; see Task 6 preamble.)
+    ///
+    /// Idiom note: the overlay (detached CALayer from Motion.overlay) uses the CAAnimationGroup
+    /// + fillMode=.forwards + isRemovedOnCompletion=false idiom — NO model writes, exactly like
+    /// closeTab. The incoming live PaneTreeView layer uses the Motion.run
+    /// allowsImplicitAnimation idiom — exactly like animateTabCreate.
+    private func animateTabSwitch(incoming tree: PaneTreeView, overlayImage: NSImage,
+                                  overlayFrame: NSRect, fromIndex: Int, toIndex: Int) {
+        guard let incomingLayer = tree.layer else { return }  // layer-backed; should not be nil
+        // Ensure constraints have produced the final frame before we read/animate it.
+        contentContainer.layoutSubtreeIfNeeded()
+
+        // Slide delta: ~24pt. Higher target index → content moves left (negative x).
+        let delta: CGFloat = 24
+        let dir: CGFloat = (toIndex > fromIndex) ? -1 : 1
+        let slide = delta * dir
+
+        // Outgoing overlay sits exactly where the old tree was; it slides `slide` and fades out.
+        let overlay = Motion.overlay(image: overlayImage, frame: overlayFrame, in: contentContainer)
+
+        // Incoming live layer starts offset the OPPOSITE way (so it converges to identity) and
+        // transparent. Commit the start state with actions disabled so it doesn't pre-animate.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        incomingLayer.opacity = 0
+        incomingLayer.transform = CATransform3DMakeTranslation(-slide, 0, 0)
+        CATransaction.commit()
+
+        // --- Outgoing overlay: slide + fade out via CAAnimationGroup ---
+        // Detached CALayer (no NSView backing, no .animator()) → explicit CABasicAnimation,
+        // exactly like closeTab. NO model writes on the overlay (model writes on a delegate-less
+        // CALayer trigger implicit animations that double-stack). fillMode=.forwards pins the
+        // end state until done removes the layer.
+        let oSlide = CABasicAnimation(keyPath: "transform.translation.x")
+        oSlide.fromValue = 0
+        oSlide.toValue = slide
+        let oFade = CABasicAnimation(keyPath: "opacity")
+        oFade.fromValue = 1.0
+        oFade.toValue = 0.0
+        let oGroup = CAAnimationGroup()
+        oGroup.animations = [oSlide, oFade]
+        oGroup.duration = Motion.duration
+        oGroup.timingFunction = Motion.timing
+        oGroup.isRemovedOnCompletion = false
+        oGroup.fillMode = .forwards
+        overlay.add(oGroup, forKey: "switchOut")
+
+        // --- Incoming live layer: slide to identity + fade in ---
+        // Backed by a real NSView layer → use Motion.run with allowsImplicitAnimation=true,
+        // bare layer assignments animate implicitly — exactly like animateTabCreate.
+        Motion.run({
+            incomingLayer.opacity = 1
+            incomingLayer.transform = CATransform3DIdentity
+        }, done: { [weak tree] in
+            // Remove the overlay and hard-restore the live layer to identity, regardless of
+            // whether a newer switch superseded this one (each animation targets its own
+            // overlay; cleanup is idempotent and safe).
+            overlay.removeFromSuperlayer()
+            if let layer = tree?.layer {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                layer.opacity = 1
+                layer.transform = CATransform3DIdentity
+                CATransaction.commit()
+            }
         })
     }
 
@@ -406,13 +505,15 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
     /// Cmd+Shift+] / Ctrl+Tab — 다음 탭 (wrap).
     @objc func selectNextTab(_ sender: Any?) {
         guard !tabs.isEmpty else { return }
-        selectTab((currentIndex + 1) % tabs.count)
+        let from = currentIndex
+        selectTab((currentIndex + 1) % tabs.count, transition: .switch(fromIndex: from))
     }
 
     /// Cmd+Shift+[ / Ctrl+Shift+Tab — 이전 탭 (wrap).
     @objc func selectPreviousTab(_ sender: Any?) {
         guard !tabs.isEmpty else { return }
-        selectTab((currentIndex - 1 + tabs.count) % tabs.count)
+        let from = currentIndex
+        selectTab((currentIndex - 1 + tabs.count) % tabs.count, transition: .switch(fromIndex: from))
     }
 
     /// Cmd+1..9 — n번째 탭 (9는 마지막 탭). NSMenuItem.tag에 1-based 번호.
@@ -420,7 +521,9 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
         guard let item = sender as? NSMenuItem else { return }
         let n = item.tag
         let idx = (n == 9) ? tabs.count - 1 : n - 1
-        if idx >= 0 && idx < tabs.count { selectTab(idx) }
+        if idx >= 0 && idx < tabs.count {
+            selectTab(idx, transition: .switch(fromIndex: currentIndex))
+        }
     }
 
     // MARK: - Pane focus 키보드 네비
