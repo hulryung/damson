@@ -353,11 +353,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
         group.isRemovedOnCompletion = false
         group.fillMode = .forwards
 
-        // 최종 상태를 모델 레이어에도 반영(애니메이션 add 후에 모델값을 최종으로 둬서
-        // 애니메이션 종료/제거 시 레이어가 최종 위치/투명도에서 쉰다). 곧 done에서 제거되므로
-        // 남은 모델 상태는 무의미하지만, 일관성을 위해 명시.
-        overlay.position = toPos
-        overlay.opacity = 0
+        // 모델값을 따로 쓰지 않는다. fillMode = .forwards 가 종료~제거 사이 동안
+        // 슬라이드/페이드된 최종 상태를 그대로 고정하므로 모델 갱신이 불필요하다.
+        // (delegate 없는 vanilla CALayer라 bare 모델 대입은 Core Animation의 기본
+        // 암시적 애니메이션을 유발 — handleBell 관용구처럼 add 전후로 모델을 건드리지 않는다.)
         overlay.add(group, forKey: "tabClose")
 
         // 애니메이션 후 오버레이 제거. 각 close는 자기 오버레이만 캡처하므로
