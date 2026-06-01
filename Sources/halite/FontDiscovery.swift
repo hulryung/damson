@@ -36,12 +36,22 @@ enum FontDiscovery {
             || family.contains(" NFP")
     }
 
-    /// halite의 디폴트 폰트 가족 = **Menlo** (macOS 모든 시스템 기본 monospace).
-    /// Powerline glyph는 HaliteTerminal의 `fontWithNerdFallback` cascade에서 시스템
-    /// 설치된 Nerd Font로 자동 fallback 처리되므로 디폴트가 Nerd Font일 필요 없음.
-    /// 한글도 같은 cascade에서 Apple SD Gothic Neo로 처리.
+    /// halite의 디폴트 폰트 가족 = **JetBrainsMono Nerd Font Mono** (NFM).
+    ///
+    /// Latin 글자는 NF와 100% 동일하면서, Nerd 아이콘을 **1셀 폭으로 축소**해 터미널
+    /// cell-grid에 맞춘다. 비-Mono(NF)는 아이콘 잉크가 1셀을 넘어(예: U+F43A 클럭
+    /// ink 0~1.67셀) Metal rasterizer의 1셀 박스에서 잘리므로 피한다. 한글/CJK는
+    /// `cjkFallbackFont`(D2Coding 계열)로 fallback — fallback 최소화. 없으면 NF → Menlo.
     static func defaultFamily() -> String {
-        "Menlo"
+        let preferred = [
+            "JetBrainsMono Nerd Font Mono",  // NFM: Latin=NF 동일 + 아이콘 1셀 폭
+            "JetBrainsMono Nerd Font",       // NF (아이콘 자연 폭) — 차선
+        ]
+        let installed = Set(NSFontManager.shared.availableFontFamilies)
+        for family in preferred where installed.contains(family) {
+            return family
+        }
+        return "Menlo"
     }
 
     /// Nerd Font의 "Mono" 변형 (글리프가 1셀 폭으로 강제). 터미널엔 보통 이게 정렬됨.

@@ -24,32 +24,10 @@ public func fontWithNerdFallback(family: String, size: CGFloat) -> NSFont {
         cascade.append(NSFontDescriptor(name: nerd, size: size))
     }
 
-    // (3) 한글 monospace fallback — D2Coding 우선 (한국 개발자에게 표준이고 한글 글자
-    //     폭이 균일해 cell-grid 정렬에 좋음). 변형이 여러 개라 설치된 것을 차례로 시도.
-    let koreanMono = [
-        "D2Coding",
-        "D2CodingLigature",
-        "D2Coding Nerd Font Mono",
-        "D2Coding Nerd Font",
-        "D2CodingLigature Nerd Font Mono",
-        "D2CodingLigature Nerd Font",
-        "NanumGothicCoding",
-    ]
-    var addedKorean = false
-    for name in koreanMono where NSFont(name: name, size: size) != nil {
-        cascade.append(NSFontDescriptor(name: name, size: size))
-        addedKorean = true
-        break
-    }
-
-    // (4) D2Coding류가 미설치인 경우만 Apple SD Gothic Neo (모든 macOS에 있음).
-    //     주의: SD Gothic Neo는 proportional이라 한글 폭이 미세하게 어긋날 수 있음.
-    if !addedKorean {
-        if NSFont(name: "Apple SD Gothic Neo", size: size) != nil {
-            cascade.append(NSFontDescriptor(name: "Apple SD Gothic Neo", size: size))
-        } else if NSFont(name: "AppleSDGothicNeo-Regular", size: size) != nil {
-            cascade.append(NSFontDescriptor(name: "AppleSDGothicNeo-Regular", size: size))
-        }
+    // (3) CJK(한글) fallback — base 폰트가 못 가진 동아시아 글자만 이 폰트로 그린다.
+    //     Metal GlyphRasterizer와 **동일** 폰트를 쓰도록 cjkFallbackFont로 일원화.
+    if let cjk = cjkFallbackFont(size: size) {
+        cascade.append(NSFontDescriptor(name: cjk.fontName, size: size))
     }
 
     guard !cascade.isEmpty else { return primary }
@@ -57,6 +35,34 @@ public func fontWithNerdFallback(family: String, size: CGFloat) -> NSFont {
         NSFontDescriptor.AttributeName.cascadeList: cascade,
     ])
     return NSFont(descriptor: descriptor, size: size) ?? primary
+}
+
+/// CJK(주로 한글) fallback 폰트를 한 곳에서 해석한다 — legacy cascade와 Metal
+/// GlyphRasterizer가 **동일** 폰트를 쓰도록 보장한다.
+///
+/// D2Coding 계열 우선: 한글이 ASCII의 2배 폭(East-Asian Wide)으로 그려져 터미널
+/// cell-grid(한글=2칸)에 맞고 한국 개발자 표준.
+///
+/// ⚠️ Nerd Font **"Mono"** 변형은 피한다 — 모든 글리프를 1셀 폭으로 강제해 한글까지
+/// 반칸으로 찌그러뜨린다(한/A 비율 1.0). 비-Mono(`Nerd Font`)/`Propo` 변형은 한글을
+/// 정상 2배 폭으로 유지(비율 2.0)하므로 그쪽을 우선. 모두 없으면 NanumGothicCoding,
+/// 최종적으로 Apple SD Gothic Neo(proportional).
+public func cjkFallbackFont(size: CGFloat) -> NSFont? {
+    let candidates = [
+        "D2Coding",                          // 원본 TTF (한글 2배 폭)
+        "D2CodingLigature",
+        "D2Coding Nerd Font",                // 비-Mono: 한글 정상 2칸
+        "D2CodingLigature Nerd Font",
+        "D2Coding Nerd Font Propo",
+        "D2CodingLigature Nerd Font Propo",
+        "NanumGothicCoding",
+        "Apple SD Gothic Neo",
+        "AppleSDGothicNeo-Regular",
+    ]
+    for name in candidates {
+        if let f = NSFont(name: name, size: size) { return f }
+    }
+    return nil
 }
 
 /// 폰트 가족 이름에 "Nerd Font" 등의 키워드가 포함되면 Nerd Font로 간주.

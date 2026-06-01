@@ -1,0 +1,104 @@
+import XCTest
+import AppKit
+@testable import HaliteTerminal
+
+/// Verifies the Metal glyph path's minimal-fallback policy: the base font draws
+/// what it can, and the *only* fallback is the CJK face for East-Asian glyphs the
+/// base lacks — rendered at full double-width (not squished to one cell).
+final class GlyphFallbackTests: XCTestCase {
+
+    private func font(_ name: String, _ size: CGFloat) -> NSFont? { NSFont(name: name, size: size) }
+
+    /// Rightmost column index that has any coverage, or -1 if the bitmap is blank.
+    private func maxInkX(_ bmp: GlyphRasterizer.Bitmap) -> Int {
+        var maxX = -1
+        for y in 0..<bmp.height {
+            let row = y * bmp.width
+            for x in 0..<bmp.width where bmp.bytes[row + x] != 0 {
+                if x > maxX { maxX = x }
+            }
+        }
+        return maxX
+    }
+
+    func testBaseFontDrawsASCII() throws {
+        let size: CGFloat = 17
+        guard let base = font("JetBrainsMono Nerd Font", size) else {
+            throw XCTSkip("JetBrainsMono Nerd Font not installed")
+        }
+        let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
+        XCTAssertNotNil(r.raster("A", bold: false, wide: false), "base font must draw ASCII 'A'")
+    }
+
+    func testCJKFallsBackFromBaseLackingHangul() throws {
+        let size: CGFloat = 17
+        guard let base = font("JetBrainsMono Nerd Font", size) else {
+            throw XCTSkip("JetBrainsMono Nerd Font not installed")
+        }
+        // Precondition: the base font genuinely lacks Hangul (so this exercises fallback).
+        let ct = base as CTFont
+        var g = [CGGlyph](repeating: 0, count: 1)
+        let baseHasHangul = Array("한".utf16).withUnsafeBufferPointer {
+            CTFontGetGlyphsForCharacters(ct, $0.baseAddress!, &g, 1)
+        }
+        try XCTSkipIf(baseHasHangul, "base font unexpectedly has Hangul; fallback not exercised")
+        try XCTSkipIf(cjkFallbackFont(size: size) == nil, "no CJK fallback font installed")
+
+        let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
+
+        let han = try XCTUnwrap(r.raster("한", bold: false, wide: true),
+                                "Hangul must render via CJK fallback, not tofu")
+
+        // The glyph must occupy ~2 cells: ink should extend past the horizontal
+        // midpoint of the 2-cell bitmap. A "Nerd Font Mono" CJK face squishes
+        // Hangul to one cell (ink stays in the left half) — guard against that.
+        let mid = han.width / 2
+        XCTAssertGreaterThan(maxInkX(han), mid,
+            "Hangul ink must reach the right cell (got maxX=\(maxInkX(han)), width=\(han.width)); " +
+            "a half-width 'Mono' CJK face would fail this")
+    }
+
+    /// The default base font must use a "Mono" Nerd variant whose icon ink fits
+    /// within one cell — non-Mono (NF) icons overflow the cell (e.g. U+F43A clock
+    /// ink spans ~1.67 cells) and get clipped by the per-cell Metal rasterizer.
+    func testNerdIconInkFitsOneCell() throws {
+        let size: CGFloat = 17
+        guard let base = font("JetBrainsMono Nerd Font Mono", size) else {
+            throw XCTSkip("JetBrainsMono Nerd Font Mono not installed")
+        }
+        let clock: Character = "\u{F43A}"
+        let ct = base as CTFont
+        var g = [CGGlyph](repeating: 0, count: 1)
+        let present = Array(String(clock).utf16).withUnsafeBufferPointer {
+            CTFontGetGlyphsForCharacters(ct, $0.baseAddress!, &g, 1)
+        }
+        try XCTSkipIf(!present, "base font lacks the clock glyph")
+        var box = [CGRect](repeating: .zero, count: 1)
+        CTFontGetBoundingRectsForGlyphs(ct, .horizontal, g, &box, 1)
+        let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
+        XCTAssertLessThanOrEqual(box[0].width, cellW + 0.5,
+            "Nerd icon ink (\(box[0].width)) must fit one cell (\(cellW)); a non-Mono variant would overflow and clip")
+    }
+
+    func testNonCJKMissingGlyphStaysBlank() throws {
+        let size: CGFloat = 17
+        guard let base = font("JetBrainsMono Nerd Font", size) else {
+            throw XCTSkip("JetBrainsMono Nerd Font not installed")
+        }
+        // U+2C00 (Glagolitic) is non-CJK and absent from JetBrains Mono; with the
+        // minimal policy it must NOT fall back → blank.
+        let ch: Character = "\u{2C00}"
+        let ct = base as CTFont
+        var g = [CGGlyph](repeating: 0, count: 1)
+        let present = Array(String(ch).utf16).withUnsafeBufferPointer {
+            CTFontGetGlyphsForCharacters(ct, $0.baseAddress!, &g, 1)
+        }
+        try XCTSkipIf(present, "base font has the test glyph; cannot assert no-fallback")
+        let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
+        XCTAssertNil(r.raster(ch, bold: false, wide: false),
+                     "non-CJK missing glyph must stay blank (minimal fallback)")
+    }
+}
