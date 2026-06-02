@@ -365,6 +365,16 @@ final class GridTests: XCTestCase {
         XCTAssertFalse(g.pen.strikethrough)
     }
 
+    func testEmojiIsWideTwoCells() {
+        XCTAssertTrue(Cell.isWide("😀"), "emoji presentation → 2-cell")
+        XCTAssertTrue(Cell.isEmojiPresentation("😀"))
+        let g = makeGrid(cols: 8, rows: 2)
+        g.putChar("😀")
+        XCTAssertEqual(g.cursorCol, 2, "wide emoji advances the cursor by 2")
+        XCTAssertTrue(g.cell(row: 0, col: 1).isContinuation, "2nd cell is a continuation")
+        XCTAssertFalse(Cell.isWide("A"), "ASCII stays 1-cell")
+    }
+
     func testWideCharContinuationCarriesHyperlink() {
         let g = makeGrid(cols: 8, rows: 2)
         g.setHyperlink("https://example.com")

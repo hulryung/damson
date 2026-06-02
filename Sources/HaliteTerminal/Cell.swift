@@ -139,6 +139,9 @@ public struct Cell: Equatable {
     /// Unicode East Asian Width 표의 "W" 카테고리의 흔한 블록만 단순 range check.
     /// 정밀 wcwidth는 M5 본격에서.
     public static func isWide(_ ch: Character) -> Bool {
+        // Emoji-presentation graphemes occupy 2 cells (matches modern wcwidth /
+        // Unicode TR51 and keeps the square emoji glyph from being squished).
+        if isEmojiPresentation(ch) { return true }
         for scalar in ch.unicodeScalars {
             let v = scalar.value
             switch v {
