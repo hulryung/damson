@@ -1182,6 +1182,23 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
 
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // ⌘⇧] / ⌘⇧[ — next / previous tab. Dispatched here (not via the menu's
+        // key equivalent) because NSMenu's matching for shifted punctuation is
+        // unreliable: charactersIgnoringModifiers applies Shift so the event's
+        // char is "}"/"{", and punctuation — unlike letters — doesn't case-fold,
+        // so a "]"/"[" menu item never matches. Route through the responder chain
+        // (the tab controller owns the action), exactly as ⌘W does below. Match
+        // both glyph forms to be independent of how Shift is reported.
+        if mods == [.command, .shift] {
+            switch event.charactersIgnoringModifiers {
+            case "}", "]":
+                if NSApp.sendAction(Selector(("selectNextTab:")), to: nil, from: self) { return true }
+            case "{", "[":
+                if NSApp.sendAction(Selector(("selectPreviousTab:")), to: nil, from: self) { return true }
+            default: break
+            }
+            return super.performKeyEquivalent(with: event)
+        }
         guard mods == .command else {
             return super.performKeyEquivalent(with: event)
         }

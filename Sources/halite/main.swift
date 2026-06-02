@@ -542,6 +542,11 @@ func installMainMenu() {
     let windowMenu = NSMenu(title: "Window")
     windowItem.submenu = windowMenu
 
+    // NSMenu's punctuation key-equivalent matching for ⌘⇧] / ⌘⇧[ is unreliable
+    // (charactersIgnoringModifiers applies Shift → "}"/"{", and letters case-fold
+    // but punctuation doesn't). These items stay for menu DISPLAY + click; the
+    // actual keystroke is dispatched in HaliteSurfaceView.performKeyEquivalent,
+    // the same path ⌘W already uses.
     let nextTab = NSMenuItem(
         title: "Show Next Tab",
         action: Selector(("selectNextTab:")), keyEquivalent: "]"
