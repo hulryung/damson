@@ -519,24 +519,24 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                             Float(s.blueComponent), Float(s.alphaComponent))
     }
 
-    #if DEBUG
-    /// Headless, permission-free capture of the real render pipeline: render
-    /// `grid` to an offscreen texture (no window, no `CAMetalLayer` drawable, no
-    /// Screen Recording) and read it back as a `CGImage`. Drives the same
-    /// `buildInstances` + shader passes as `render(...)`, so the bitmap is a
-    /// faithful sample of on-screen output. Backs the render smoke test.
-    func renderToCGImage(grid: Grid, config: HaliteConfig, state: RenderState,
-                         metrics: CellMetrics, cols: Int, rows: Int, scale: CGFloat) -> CGImage? {
-        self.config = config
-        self.metrics = metrics
-        let wPts = inset.width * 2 + CGFloat(cols) * metrics.width
-        let hPts = inset.height * 2 + CGFloat(rows) * metrics.height
-        // Size the window-less content view so buildInstances + uniforms agree.
-        metalView.frame = NSRect(x: 0, y: 0, width: wPts, height: hPts)
+    /// Capture the current on-screen frame as a `CGImage` by re-rendering the
+    /// last grid/state at the live view size + scroll into an offscreen texture.
+    /// `cacheDisplay` can't read a `CAMetalLayer` framebuffer, so tab/pane
+    /// transition snapshots route through here instead of going blank.
+    func captureImage() -> CGImage? {
+        guard let grid = lastGrid else { return nil }
+        return offscreenImage(scale: metalView.metalLayer.contentsScale,
+                              grid: grid, state: lastState)
+    }
+
+    /// Render `grid`/`state` through the real `buildInstances` + shader passes
+    /// into an offscreen texture sized to the current `metalView` bounds, then
+    /// read it back as a `CGImage`. No window, no drawable, no Screen Recording.
+    /// Uses the live `scrollY`/`metrics`, so the bitmap matches what's on screen.
+    private func offscreenImage(scale: CGFloat, grid: Grid, state: RenderState) -> CGImage? {
+        let wPts = metalView.bounds.width, hPts = metalView.bounds.height
+        guard wPts > 0, hPts > 0 else { return nil }
         metalView.metalLayer.contentsScale = scale
-        self.lastGrid = grid
-        self.lastState = state
-        self.lastTotalRows = grid.scrollback.count + grid.rows
         ensureAtlas()
 
         let pw = max(1, Int((wPts * scale).rounded()))
@@ -603,6 +603,23 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                        bytesPerRow: bytesPerRow, space: space, bitmapInfo: info,
                        provider: provider, decode: nil, shouldInterpolate: false,
                        intent: .defaultIntent)
+    }
+
+    #if DEBUG
+    /// Headless render-parity capture for the smoke test: size the window-less
+    /// view to `cols`×`rows`, set the grid, and render from the top via the same
+    /// offscreen path the live capture uses.
+    func renderToCGImage(grid: Grid, config: HaliteConfig, state: RenderState,
+                         metrics: CellMetrics, cols: Int, rows: Int, scale: CGFloat) -> CGImage? {
+        self.config = config
+        self.metrics = metrics
+        let wPts = inset.width * 2 + CGFloat(cols) * metrics.width
+        let hPts = inset.height * 2 + CGFloat(rows) * metrics.height
+        metalView.frame = NSRect(x: 0, y: 0, width: wPts, height: hPts)
+        self.lastGrid = grid
+        self.lastState = state
+        self.lastTotalRows = grid.scrollback.count + grid.rows
+        return offscreenImage(scale: scale, grid: grid, state: state)
     }
     #endif
 }

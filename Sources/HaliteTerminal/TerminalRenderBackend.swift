@@ -120,6 +120,11 @@ public protocol TerminalRenderBackend: AnyObject {
     /// primitives below using its own policy flags.
     func render(grid: Grid, config: HaliteConfig, state: RenderState, metrics: CellMetrics)
 
+    /// Capture the current on-screen frame as a bitmap, for tab/pane transition
+    /// snapshots. `cacheDisplay` can't read a `CAMetalLayer` framebuffer, so the
+    /// backend re-renders its current frame offscreen instead of going blank.
+    func captureImage() -> CGImage?
+
     /// Geometry of the underline/bar cursor overlay, in `contentView`-relative
     /// (== host) coordinates, or `nil` when it should be hidden (block cursor,
     /// invisible, IME-composing, blink-off, or scrolled out of view). The host

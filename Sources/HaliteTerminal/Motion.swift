@@ -36,8 +36,12 @@ public enum Motion {
     }
 
     /// 뷰의 현재 렌더링을 비트맵으로 스냅샷. 사라지는/철거되는 콘텐츠
-    /// (닫히는 탭·페인, 전환 시 나가는 탭)에 쓴다. NSTextView/NSScrollView 내용까지 잡힌다.
+    /// (닫히는 탭·페인, 전환 시 나가는 탭)에 쓴다.
     /// 0 크기 뷰이거나 캐싱 실패 시 nil — 호출자는 nil이면 즉시(instant) 경로로 폴백해야 한다.
+    ///
+    /// `cacheDisplay`는 일반 레이어 트리만 잡고 `CAMetalLayer` 프레임버퍼는 못 잡으므로
+    /// (터미널 텍스트/색이 빈 화면으로 나옴), base 캡처 위에 자손 `HaliteSurfaceView`들의
+    /// 현재 Metal 프레임을 각자 위치에 합성한다.
     public static func snapshot(of view: NSView) -> NSImage? {
         let bounds = view.bounds
         guard bounds.width > 0, bounds.height > 0 else { return nil }
@@ -45,7 +49,26 @@ public enum Motion {
         view.cacheDisplay(in: bounds, to: rep)
         let image = NSImage(size: bounds.size)
         image.addRepresentation(rep)
+
+        let surfaces = terminalSurfaces(in: view)
+        guard !surfaces.isEmpty else { return image }
+        image.lockFocus()
+        defer { image.unlockFocus() }
+        for surface in surfaces {
+            guard let metalImage = surface.captureMetalImage() else { continue }
+            // surface 위치를 view 좌표로 변환. lockFocus 컨텍스트는 bottom-left 원점이므로
+            // view가 flipped(top-left)면 y를 뒤집어 맞춘다.
+            var rect = surface.convert(surface.bounds, to: view)
+            if view.isFlipped { rect.origin.y = bounds.height - rect.maxY }
+            metalImage.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+        }
         return image
+    }
+
+    /// `view` 하위(자신 포함)의 모든 `HaliteSurfaceView`. surface 안쪽은 더 안 내려간다.
+    private static func terminalSurfaces(in view: NSView) -> [HaliteSurfaceView] {
+        if let surface = view as? HaliteSurfaceView { return [surface] }
+        return view.subviews.flatMap { terminalSurfaces(in: $0) }
     }
 
     /// `host.layer` 위에 자기완결적인 이미지 기반 CALayer를 `frame`(host 좌표계)에 얹고

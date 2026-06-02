@@ -1388,6 +1388,15 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         return backend.cursorScreenRect(grid: session.grid, metrics: cellMetrics, window: window)
     }
 
+    /// Current rendered frame as an image, for tab/pane transition snapshots.
+    /// The Metal backend re-renders its current grid offscreen because
+    /// `cacheDisplay` can't read the `CAMetalLayer` framebuffer (it returns a
+    /// blank frame). `nil` if there's nothing to capture yet.
+    public func captureMetalImage() -> NSImage? {
+        guard bounds.width > 0, bounds.height > 0, let cg = backend.captureImage() else { return nil }
+        return NSImage(cgImage: cg, size: bounds.size)
+    }
+
     private static func unwrapString(_ value: Any) -> String {
         if let s = value as? String { return s }
         if let attr = value as? NSAttributedString { return attr.string }
