@@ -180,7 +180,7 @@ public final class Grid {
             char: ch, attrs: pen, hyperlink: currentHyperlink
         )
         if wide, cursorCol + 1 < cols {
-            cells[cursorRow][cursorCol + 1] = Cell.continuation(attrs: pen)
+            cells[cursorRow][cursorCol + 1] = Cell.continuation(attrs: pen, hyperlink: currentHyperlink)
         }
 
         let advance = wide ? 2 : 1

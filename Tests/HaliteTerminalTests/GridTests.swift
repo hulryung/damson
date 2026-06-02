@@ -365,6 +365,17 @@ final class GridTests: XCTestCase {
         XCTAssertFalse(g.pen.strikethrough)
     }
 
+    func testWideCharContinuationCarriesHyperlink() {
+        let g = makeGrid(cols: 8, rows: 2)
+        g.setHyperlink("https://example.com")
+        g.putChar("한")   // wide: lead at col 0, continuation at col 1
+        g.setHyperlink(nil)
+        XCTAssertEqual(g.cell(row: 0, col: 0).hyperlink, "https://example.com")
+        XCTAssertTrue(g.cell(row: 0, col: 1).isContinuation)
+        XCTAssertEqual(g.cell(row: 0, col: 1).hyperlink, "https://example.com",
+            "continuation must inherit the hyperlink so hover/click ranges don't break mid-wide-char")
+    }
+
     func testSGR256ColorFG() {
         let g = makeGrid()
         g.applySGR([38, 5, 196]) // 256-color index

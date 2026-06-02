@@ -118,9 +118,10 @@ public struct Cell: Equatable {
         Cell(char: " ", attrs: attrs)
     }
 
-    /// wide char의 후행 cell. 선행 cell 다음 칸에 배치.
-    public static func continuation(attrs: CellAttrs) -> Cell {
-        Cell(char: " ", attrs: attrs, isContinuation: true)
+    /// wide char의 후행 cell. 선행 cell 다음 칸에 배치. 선행 cell의 hyperlink를
+    /// 이어받아야 hyperlink 범위 판정(hover/클릭)이 wide 글자에서 끊기지 않는다.
+    public static func continuation(attrs: CellAttrs, hyperlink: String? = nil) -> Cell {
+        Cell(char: " ", attrs: attrs, isContinuation: true, hyperlink: hyperlink)
     }
 
     /// 이 문자가 동아시아 wide (cell 2개 점유)인지 판정.
