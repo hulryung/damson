@@ -111,7 +111,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let layer = metalView.metalLayer
         guard layer.drawableSize.width > 0, let drawable = layer.nextDrawable() else { return }
 
-        let (bgInstances, glyphInstances) = buildInstances(grid: grid, state: state)
+        let (bgInstances, glyphInstances, overlayInstances) = buildInstances(grid: grid, state: state)
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
@@ -150,23 +150,40 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                                instanceCount: glyphInstances.count)
         }
 
+        // Pass 3: line overlays (underline / strikethrough / hyperlink / hover) —
+        // same filled-quad pipeline as bg, drawn ON TOP so strikethrough shows.
+        if !overlayInstances.isEmpty,
+           let buf = md.device.makeBuffer(bytes: overlayInstances,
+                                          length: MemoryLayout<BgInstance>.stride * overlayInstances.count,
+                                          options: .storageModeShared) {
+            enc.setRenderPipelineState(md.bgPipeline)
+            enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+            enc.setVertexBuffer(buf, offset: 0, index: 1)
+            enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                               instanceCount: overlayInstances.count)
+        }
+
         enc.endEncoding()
         cmd.present(drawable)
         cmd.commit()
     }
 
-    /// Build bg fills + glyph quads for the visible rows in one pass over cells.
-    private func buildInstances(grid: Grid, state: RenderState) -> (bg: [BgInstance], glyph: [GlyphInstance]) {
+    /// Build bg fills + glyph quads + line overlays (underline/strikethrough) for
+    /// the visible rows in one pass over cells. Overlay lines draw AFTER the glyph
+    /// pass so a strikethrough sits on top of the text.
+    private func buildInstances(grid: Grid, state: RenderState)
+        -> (bg: [BgInstance], glyph: [GlyphInstance], overlay: [BgInstance]) {
         let map = coordMap()
         let cellH = max(metrics.height, 1)
         let totalRows = grid.scrollback.count + grid.rows
         let h = metalView.bounds.height
         let first = max(0, Int(floor((scrollY - inset.height) / cellH)))
         let last = min(totalRows - 1, Int(ceil((scrollY + h - inset.height) / cellH)))
-        guard first <= last else { return ([], []) }
+        guard first <= last else { return ([], [], []) }
 
         var bg: [BgInstance] = []
         var glyphs: [GlyphInstance] = []
+        var overlay: [BgInstance] = []   // underline / strikethrough / hyperlink / hover lines
         bg.reserveCapacity((last - first + 1) * max(grid.cols, 1))
         glyphs.reserveCapacity(bg.capacity)
 
@@ -210,11 +227,37 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                                        activeFind: activeFind, isCursor: isCursor) {
                     bg.append(BgInstance(origin: origin, size: size, color: rgba(color)))
                 }
+                let fg = fgColor(cell: cell, col: col, sel: sel, finds: finds,
+                                 activeFind: activeFind, hover: hover, isCursor: isCursor)
                 if cell.char != " ", let uv = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide) {
-                    let fg = fgColor(cell: cell, col: col, sel: sel, finds: finds,
-                                     activeFind: activeFind, hover: hover, isCursor: isCursor)
                     glyphs.append(GlyphInstance(origin: origin, size: size,
                                                 uvOrigin: uv.origin, uvSize: uv.size, color: rgba(fg)))
+                }
+
+                // Line overlays. Underline color precedence (matching legacy):
+                // hover blue > hyperlink fg α0.5 > SGR-underline fg. Strikethrough
+                // is independent (cell fg), drawn through the glyph centre.
+                let hovered = hover?.contains(col) ?? false
+                if cell.attrs.underline || cell.attrs.strikethrough || cell.hyperlink != nil || hovered {
+                    let thickness = max(1, (cellH * 0.08).rounded())
+                    var underlineColor: NSColor? = cell.attrs.underline ? fg : nil
+                    if cell.hyperlink != nil {
+                        underlineColor = cell.attrs.resolvedColors(theme: config.theme).fg
+                            .withAlphaComponent(0.5)
+                    }
+                    if hovered { underlineColor = .systemBlue }
+                    if let uc = underlineColor {
+                        let uy = snap(y1 - thickness)
+                        overlay.append(BgInstance(origin: SIMD2<Float>(Float(x0), Float(uy)),
+                                                  size: SIMD2<Float>(Float(x1 - x0), Float(y1 - uy)),
+                                                  color: rgba(uc)))
+                    }
+                    if cell.attrs.strikethrough {
+                        let sy = snap(y0 + (y1 - y0) * 0.5 - thickness * 0.5)
+                        overlay.append(BgInstance(origin: SIMD2<Float>(Float(x0), Float(sy)),
+                                                  size: SIMD2<Float>(Float(x1 - x0), Float(thickness)),
+                                                  color: rgba(fg)))
+                    }
                 }
             }
         }
@@ -223,7 +266,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                                  startCol: grid.cursorCol, gridCols: grid.cols,
                                  map: map, bg: &bg, glyphs: &glyphs)
         }
-        return (bg, glyphs)
+        return (bg, glyphs, overlay)
     }
 
     /// Draw the IME composing text at the cursor, cell-aligned, with the

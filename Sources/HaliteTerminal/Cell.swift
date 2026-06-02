@@ -22,6 +22,7 @@ public struct CellAttrs: Equatable {
     public var bold: Bool
     public var italic: Bool
     public var underline: Bool
+    public var strikethrough: Bool
     public var inverse: Bool
 
     public init(
@@ -30,6 +31,7 @@ public struct CellAttrs: Equatable {
         bold: Bool = false,
         italic: Bool = false,
         underline: Bool = false,
+        strikethrough: Bool = false,
         inverse: Bool = false
     ) {
         self.fg = fg
@@ -37,6 +39,7 @@ public struct CellAttrs: Equatable {
         self.bold = bold
         self.italic = italic
         self.underline = underline
+        self.strikethrough = strikethrough
         self.inverse = inverse
     }
 

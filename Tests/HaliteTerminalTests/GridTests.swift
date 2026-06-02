@@ -348,6 +348,23 @@ final class GridTests: XCTestCase {
         XCTAssertFalse(g.pen.bold)
     }
 
+    func testSGRUnderlineAndStrikethrough() {
+        let g = makeGrid()
+        g.applySGR([4])
+        XCTAssertTrue(g.pen.underline)
+        g.applySGR([9])
+        XCTAssertTrue(g.pen.strikethrough)
+        g.applySGR([24])
+        XCTAssertFalse(g.pen.underline, "24 clears underline")
+        XCTAssertTrue(g.pen.strikethrough, "...but not strikethrough")
+        g.applySGR([29])
+        XCTAssertFalse(g.pen.strikethrough, "29 clears strikethrough")
+        g.applySGR([4, 9])
+        g.applySGR([0])
+        XCTAssertFalse(g.pen.underline, "reset clears both")
+        XCTAssertFalse(g.pen.strikethrough)
+    }
+
     func testSGR256ColorFG() {
         let g = makeGrid()
         g.applySGR([38, 5, 196]) // 256-color index

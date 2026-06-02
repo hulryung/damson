@@ -539,10 +539,12 @@ public final class Grid {
             case 3:  pen.italic = true
             case 4:  pen.underline = true
             case 7:  pen.inverse = true
+            case 9:  pen.strikethrough = true
             case 22: pen.bold = false
             case 23: pen.italic = false
             case 24: pen.underline = false
             case 27: pen.inverse = false
+            case 29: pen.strikethrough = false
             case 30...37:
                 pen.fg = .palette(p - 30)
             case 38:
@@ -780,7 +782,7 @@ public final class Grid {
     /// 시각적으로 빈 셀(공백 + 배경/링크/강조 없음)인지. reflow의 trailing 트리밍용.
     private func isBlankCell(_ c: Cell) -> Bool {
         c.char == " " && c.attrs.bg == nil && c.hyperlink == nil
-            && !c.attrs.inverse && !c.attrs.underline
+            && !c.attrs.inverse && !c.attrs.underline && !c.attrs.strikethrough
     }
 
     /// wrap 되지 않았고 모든 셀이 빈 행인지. reflow가 버릴 padding 행 판정용.

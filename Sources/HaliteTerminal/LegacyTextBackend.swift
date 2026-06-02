@@ -568,6 +568,10 @@ final class LegacyTextBackend: TerminalRenderBackend {
         if cellAttrs.underline {
             attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
         }
+        if cellAttrs.strikethrough {
+            attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            attrs[.strikethroughColor] = fg
+        }
         if let uri = hyperlink, let url = URL(string: uri) {
             attrs[.link] = url
             attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
