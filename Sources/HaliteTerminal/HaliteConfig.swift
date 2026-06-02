@@ -30,6 +30,10 @@ public struct HaliteConfig {
     public var animations: Bool
     /// 기본 cursor 모양. 셸/앱이 DECSCUSR로 바꾸면 그게 우선, ps=0(reset)이면 이 값으로 복귀.
     public var cursorShape: Grid.CursorShape
+    /// 프로그래밍 리가처(=>, !=, ->, === 등)를 셀 정렬해 렌더할지. 기본 OFF.
+    /// 폰트 자체의 OpenType liga/calt 테이블에 의존 — 리가처 없는 폰트(Menlo 등)는
+    /// 켜도 변화 없음. Fira Code / JetBrains Mono / D2CodingLigature 등에서 보임.
+    public var ligatures: Bool
 
     // 색은 theme에서 파생 — 기존 호출처 호환용 computed property.
     public var backgroundColor: NSColor { theme.background }
@@ -51,6 +55,7 @@ public struct HaliteConfig {
         cursorBlink: Bool = false,
         animations: Bool = true,
         cursorShape: Grid.CursorShape = .block,
+        ligatures: Bool = false,
         argv: [String] = HaliteConfig.defaultArgv(),
         env: [String: String] = ProcessInfo.processInfo.environment,
         cwd: String? = nil
@@ -64,6 +69,7 @@ public struct HaliteConfig {
         self.cursorBlink = cursorBlink
         self.animations = animations
         self.cursorShape = cursorShape
+        self.ligatures = ligatures
         self.argv = argv
         self.env = env
         self.cwd = cwd

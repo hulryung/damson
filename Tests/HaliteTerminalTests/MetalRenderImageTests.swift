@@ -128,4 +128,48 @@ final class MetalRenderImageTests: XCTestCase {
         try png.write(to: URL(fileURLWithPath: outPath))
         print("HALITE_PARITY_PNG=\(outPath) (\(cg.width)x\(cg.height), \(differing) non-bg sample px)")
     }
+
+    /// Render a ligature sheet with a ligature-capable font, ligatures off vs on,
+    /// so the difference is visible. Skipped if no ligature font is installed.
+    func testLigatureSheet() throws {
+        guard MetalDevice.shared != nil else { throw XCTSkip("Metal device unavailable") }
+        let ligFonts = ["Fira Code", "FiraCode-Regular", "JetBrains Mono",
+                        "Cascadia Code", "D2CodingLigature Nerd Font"]
+        let avail = Set(NSFontManager.shared.availableFontFamilies)
+        guard let family = ligFonts.first(where: { avail.contains($0) || NSFont(name: $0, size: 14) != nil })
+        else { throw XCTSkip("no ligature font installed") }
+
+        let samples = ["let f = a => b;", "x != y && p == q", "ptr -> field", "a >= b <= c",
+                       "=== !== |> <| ::", "/* <!-- --> */", "i++; --j; a ??= b"]
+        let cols = 40, rows = samples.count * 2 + 1
+
+        func sheet(ligatures: Bool) throws -> CGImage {
+            let config = HaliteConfig(fontFamily: family, fontSize: 16, ligatures: ligatures)
+            let backend = try XCTUnwrap(MetalTerminalBackend(config: config))
+            let grid = Grid(cols: cols, rows: rows, pen: CellAttrs(fg: .default))
+            grid.setCursorVisible(false)
+            for (i, s) in samples.enumerated() {
+                grid.setCursor(row: i * 2 + 1, col: 1)
+                for ch in s { grid.putChar(ch) }
+            }
+            let font = fontWithNerdFallback(family: family, size: 16)
+            let metrics = CellMetrics(
+                width: max(("M" as NSString).size(withAttributes: [.font: font]).width, 1),
+                height: max(measuredLineHeight(font), 1))
+            return try XCTUnwrap(backend.renderToCGImage(
+                grid: grid, config: config, state: RenderState(),
+                metrics: metrics, cols: cols, rows: rows, scale: 2))
+        }
+
+        let off = try sheet(ligatures: false)
+        let on = try sheet(ligatures: true)
+        let dir = ProcessInfo.processInfo.environment["HALITE_SHOT_DIR"] ?? "/tmp"
+        for (name, img) in [("halite_lig_off.png", off), ("halite_lig_on.png", on)] {
+            let rep = NSBitmapImageRep(cgImage: img)
+            if let png = rep.representation(using: .png, properties: [:]) {
+                try png.write(to: URL(fileURLWithPath: "\(dir)/\(name)"))
+            }
+        }
+        print("HALITE_LIG_FONT=\(family)  off=\(dir)/halite_lig_off.png  on=\(dir)/halite_lig_on.png")
+    }
 }

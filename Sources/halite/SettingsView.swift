@@ -14,6 +14,7 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.cursorBlink") private var cursorBlink: Bool = false
     @AppStorage("halite.animations") private var animations: Bool = true
     @AppStorage("halite.cursorShape") private var cursorShapeRaw: String = Grid.CursorShape.block.rawValue
+    @AppStorage("halite.ligatures") private var ligatures: Bool = false
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
@@ -50,6 +51,10 @@ struct HaliteSettingsView: View {
                         .font(.custom(fontFamily, size: CGFloat(fontSize)))
                         .frame(width: 220, alignment: .leading)
                 }
+                Toggle("Ligatures", isOn: $ligatures)
+                Text("=> != -> === 등 프로그래밍 리가처. 폰트가 지원할 때만 보입니다 (Fira Code, JetBrains Mono, D2CodingLigature 등).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
             Section("Scrollback") {
                 HStack {
@@ -125,6 +130,7 @@ struct HaliteSettingsView: View {
         .onChange(of: cursorBlink) { _ in postChanged() }
         .onChange(of: animations) { _ in postChanged() }
         .onChange(of: cursorShapeRaw) { _ in postChanged() }
+        .onChange(of: ligatures) { _ in postChanged() }
         .onChange(of: themeName) { _ in postChanged() }
         .onChange(of: autoUpdate) { _ in
             // Sparkle updater에 즉시 반영 (config hot-reload 경로와 별개).
@@ -230,6 +236,7 @@ extension HaliteConfig {
             config.imeStyle = style
         }
         config.cursorBlink = d.bool(forKey: "halite.cursorBlink")
+        config.ligatures = d.bool(forKey: "halite.ligatures")
         config.animations = d.object(forKey: "halite.animations") as? Bool ?? true
         if let raw = d.string(forKey: "halite.cursorShape"),
            let shape = Grid.CursorShape(rawValue: raw) {

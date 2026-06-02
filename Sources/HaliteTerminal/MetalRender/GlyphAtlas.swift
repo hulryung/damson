@@ -37,9 +37,10 @@ final class GlyphAtlas {
     private var colorCursorY = 0
     private var colorFull = false
 
-    private struct GlyphKey: Hashable {
-        var ch: Character
-        var bold: Bool
+    private enum GlyphKey: Hashable {
+        case char(Character, bold: Bool)
+        /// A shaped ligature glyph (by glyph id), spanning `span` cells.
+        case glyph(UInt16, bold: Bool, span: Int)
     }
 
     struct GlyphInstanceUV {
@@ -64,7 +65,7 @@ final class GlyphAtlas {
 
     /// Region for a glyph, rasterizing+packing on first use. nil = draw nothing.
     func region(for ch: Character, bold: Bool, wide: Bool) -> Region? {
-        let key = GlyphKey(ch: ch, bold: bold)
+        let key = GlyphKey.char(ch, bold: bold)
         if let cached = regions[key] { return cached }   // includes cached-nil blanks
         guard let bmp = rasterizer.raster(ch, bold: bold, wide: wide) else {
             regions[key] = .some(nil)
@@ -75,6 +76,21 @@ final class GlyphAtlas {
             : packMask(bmp).map { Region(uv: $0, isColor: false) }
         regions[key] = .some(result)
         return result
+    }
+
+    /// Region for a shaped ligature glyph (by glyph id, spanning `cellSpan`
+    /// cells), rasterizing+packing on first use. Always a mask glyph. nil = blank.
+    func region(forGlyph glyph: CGGlyph, bold: Bool, cellSpan: Int) -> Region? {
+        let key = GlyphKey.glyph(glyph, bold: bold, span: cellSpan)
+        if let cached = regions[key] { return cached }
+        guard let bmp = rasterizer.rasterGlyph(glyph, bold: bold, cellSpan: cellSpan),
+              let uv = packMask(bmp) else {
+            regions[key] = .some(nil)
+            return nil
+        }
+        let region = Region(uv: uv, isColor: false)
+        regions[key] = .some(region)
+        return region
     }
 
     /// Pack an R8 coverage bitmap into the mask page.

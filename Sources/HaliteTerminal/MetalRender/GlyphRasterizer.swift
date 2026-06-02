@@ -130,6 +130,49 @@ final class GlyphRasterizer {
         return Bitmap(bytes: data, width: pw, height: ph, isColor: true)
     }
 
+    /// The base / bold rendering face, exposed so `LineShaper` shapes ligature
+    /// runs with the exact same font the atlas rasterizes them from.
+    func face(bold: Bool) -> NSFont { bold ? boldFont : font }
+
+    /// Horizontal padding (in cells) added on each side of a shaped-glyph bitmap,
+    /// so a connecting ligature form whose ink overflows its cell isn't clipped.
+    /// The renderer offsets the quad left by this much (see `ligaturePadPts`).
+    static let ligaturePadCells = 1
+
+    /// Rasterize a single, already-shaped `CGGlyph` (from `LineShaper`) into an R8
+    /// coverage bitmap. The glyph's pen origin sits one cell in from the left
+    /// (`ligaturePadCells`) so contextual connecting forms (Fira Code's "=", "-",
+    /// arrow halves) can extend past their cell into the padding instead of being
+    /// clipped — the renderer shifts the quad back by the same pad so the ink
+    /// lands exactly where CoreText placed it. `bold` must match the shaping font.
+    func rasterGlyph(_ glyph: CGGlyph, bold: Bool, cellSpan: Int) -> Bitmap? {
+        let ctFont = (bold ? boldFont : font) as CTFont
+        let pad = CGFloat(Self.ligaturePadCells) * cellW
+        let boxW = cellW * CGFloat(max(cellSpan, 1)) + pad * 2
+        let pw = Int(ceil(boxW * scale))
+        let ph = Int(ceil(cellH * scale))
+        guard pw > 0, ph > 0 else { return nil }
+
+        var data = [UInt8](repeating: 0, count: pw * ph)
+        let ok = data.withUnsafeMutableBytes { raw -> Bool in
+            guard let ctx = CGContext(
+                data: raw.baseAddress, width: pw, height: ph, bitsPerComponent: 8,
+                bytesPerRow: pw, space: gray, bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return false }
+            ctx.setShouldAntialias(true)
+            ctx.setAllowsAntialiasing(true)
+            ctx.setShouldSmoothFonts(false)
+            ctx.scaleBy(x: scale, y: scale)
+            ctx.setFillColor(CGColor(gray: 1.0, alpha: 1.0))
+            var g = glyph
+            var pos = CGPoint(x: pad, y: cellH - baseline)
+            CTFontDrawGlyphs(ctFont, &g, &pos, 1, ctx)
+            return true
+        }
+        guard ok, data.contains(where: { $0 != 0 }) else { return nil }
+        return Bitmap(bytes: data, width: pw, height: ph)
+    }
+
     /// Rasterize `ch` with `f`, or nil if `f`'s own cmap lacks the glyph (a direct
     /// per-font query — `NSFont.cascadeList` is intentionally not consulted).
     private func draw(_ ch: Character, in f: NSFont, wide: Bool) -> Bitmap? {

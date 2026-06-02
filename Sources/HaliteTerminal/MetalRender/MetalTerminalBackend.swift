@@ -42,6 +42,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// Glyph atlas, rebuilt when font / cell size / backing scale changes.
     private var atlas: GlyphAtlas?
     private var atlasSignature = ""
+    /// Ligature shaper, rebuilt alongside the atlas (same font). Used only when
+    /// `config.ligatures` is on.
+    private var lineShaper: LineShaper?
 
     private func ensureAtlas() {
         let scale = metalView.metalLayer.contentsScale
@@ -49,6 +52,8 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         if sig != atlasSignature || atlas == nil {
             atlas = GlyphAtlas(device: md.device, font: renderFont,
                                cellW: metrics.width, cellH: metrics.height, scale: scale)
+            let bold = NSFontManager.shared.convert(renderFont, toHaveTrait: .boldFontMask)
+            lineShaper = LineShaper(baseFont: renderFont, boldFont: bold)
             atlasSignature = sig
         }
     }
@@ -221,6 +226,17 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             let finds = state.findMatchesByRow[row] ?? []
             let activeFind: Range<Int>? = (state.activeFindRow == row) ? state.activeFindRange : nil
             let hover: Range<Int>? = (state.hoveredRow == row) ? state.hoveredRange : nil
+
+            // Ligatures (opt-in): shape the row once; shaped glyph ids replace the
+            // per-char glyphs across each shapable run (bg/overlays stay per-cell).
+            var shapedByStart: [Int: LineShaper.ShapedGlyph] = [:]
+            var shapedCovered: Set<Int> = []
+            if config.ligatures, let shaper = lineShaper {
+                for sg in shaper.shape(in: cells) {
+                    shapedByStart[sg.startCol] = sg
+                    for c in sg.startCol..<(sg.startCol + sg.cellSpan) { shapedCovered.insert(c) }
+                }
+            }
             for col in 0..<cols {
                 let cell = cells[col]
                 if cell.isContinuation { continue }
@@ -244,7 +260,23 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                 }
                 let fg = fgColor(cell: cell, col: col, sel: sel, finds: finds,
                                  activeFind: activeFind, hover: hover, isCursor: isCursor)
-                if cell.char != " ", let region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide) {
+                if shapedCovered.contains(col) {
+                    // A shaped run owns this cell. Draw the shaped glyph id at its
+                    // start column (spanning cellSpan), nothing for trailing cells.
+                    // The bitmap is padded by `ligaturePadCells` on each side (so
+                    // overflowing connecting forms aren't clipped); shift the quad
+                    // left by the same pad and widen it to match.
+                    if let sg = shapedByStart[col],
+                       let region = atlas?.region(forGlyph: sg.glyph, bold: sg.bold, cellSpan: sg.cellSpan) {
+                        let pad = CGFloat(GlyphRasterizer.ligaturePadCells) * metrics.width
+                        let gx0 = snap(inset.width + CGFloat(col) * metrics.width - pad)
+                        let gx1 = snap(inset.width + CGFloat(col + sg.cellSpan) * metrics.width + pad)
+                        glyphs.append(GlyphInstance(
+                            origin: SIMD2<Float>(Float(gx0), Float(y0)),
+                            size: SIMD2<Float>(Float(gx1 - gx0), Float(y1 - y0)),
+                            uvOrigin: region.uv.origin, uvSize: region.uv.size, color: rgba(fg)))
+                    }
+                } else if cell.char != " ", let region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide) {
                     let inst = GlyphInstance(origin: origin, size: size,
                                              uvOrigin: region.uv.origin, uvSize: region.uv.size,
                                              color: rgba(fg))
