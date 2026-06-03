@@ -192,6 +192,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
         var switchOverlay: (image: NSImage, frame: NSRect, fromIndex: Int)?
         if case .switch(let fromIndex) = transition,
            Motion.enabled,
+           TabTransitionStyle.current != .none,
            fromIndex >= 0, fromIndex < tabs.count, fromIndex != index {
             let outgoing = tabs[fromIndex].tree
             // Only snapshot if that tree is actually the one on screen right now, and the
@@ -316,60 +317,89 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate {
         // Ensure constraints have produced the final frame before we read/animate it.
         contentContainer.layoutSubtreeIfNeeded()
 
-        // Slide delta: ~24pt. Higher target index → content moves left (negative x).
-        let delta: CGFloat = 24
-        let dir: CGFloat = (toIndex > fromIndex) ? -1 : 1
-        let slide = delta * dir
+        // Cross-slide geometry (matches Rust halite). Higher target index = new tab
+        // is to the right → it enters from the right while the old one exits left.
+        let goingRight = toIndex > fromIndex
+        let width = contentContainer.bounds.width
+        let style = TabTransitionStyle.current
 
-        // Outgoing overlay sits exactly where the old tree was; it slides `slide` and fades out.
+        // Per-style offsets + fade + duration. `slide` = full-width page swipe
+        // (no fade), with a longer duration so the moving content is legible —
+        // a full-width slide at the default 0.16s reads as an instant cut.
+        // `crossfade` = the gentle 24pt slide + opacity; `none` handled upstream.
+        let fade: Bool
+        let incomingStart: CGFloat   // incoming layer's start x (ends at 0)
+        let outgoingEnd: CGFloat     // outgoing overlay's end x (starts at 0)
+        let dur: TimeInterval
+        switch style {
+        case .slide:
+            fade = false
+            incomingStart = goingRight ? width : -width
+            outgoingEnd = goingRight ? -width : width
+            dur = 0.28
+        case .crossfade, .none:
+            fade = true
+            let delta: CGFloat = 24
+            incomingStart = goingRight ? delta : -delta
+            outgoingEnd = goingRight ? -delta : delta
+            dur = Motion.duration
+        }
+
+        // Outgoing overlay sits exactly where the old tree was; it slides to `outgoingEnd`.
         let overlay = Motion.overlay(image: overlayImage, frame: overlayFrame, in: contentContainer)
 
-        // Incoming live layer starts offset the OPPOSITE way (so it converges to identity) and
-        // transparent. Commit the start state with actions disabled so it doesn't pre-animate.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        incomingLayer.opacity = 0
-        incomingLayer.transform = CATransform3DMakeTranslation(-slide, 0, 0)
-        CATransaction.commit()
+        // BOTH sides use EXPLICIT CABasicAnimation. The incoming is a live NSView's
+        // backing layer under Auto Layout; an implicit transform animation on it
+        // gets clobbered by AppKit's layout-driven geometry updates (the layer
+        // snaps to identity → "one screen frozen, one sliding"). An explicit
+        // animation plays on the presentation layer regardless of the model, so the
+        // model stays at the final (identity) value and the slide actually runs.
+        incomingLayer.opacity = 1   // model = final; the anim drives the presentation
 
-        // --- Outgoing overlay: slide + fade out via CAAnimationGroup ---
-        // Detached CALayer (no NSView backing, no .animator()) → explicit CABasicAnimation,
-        // exactly like closeTab. NO model writes on the overlay (model writes on a delegate-less
-        // CALayer trigger implicit animations that double-stack). fillMode=.forwards pins the
-        // end state until done removes the layer.
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak tree] in
+            overlay.removeFromSuperlayer()
+            tree?.layer?.removeAnimation(forKey: "switchIn")
+        }
+
+        // Incoming: slide from off-screen to 0 (+ optional fade in).
+        let iSlide = CABasicAnimation(keyPath: "transform.translation.x")
+        iSlide.fromValue = incomingStart
+        iSlide.toValue = 0
+        var inAnims = [iSlide]
+        if fade {
+            let iFade = CABasicAnimation(keyPath: "opacity")
+            iFade.fromValue = 0.0
+            iFade.toValue = 1.0
+            inAnims.append(iFade)
+        }
+        let iGroup = CAAnimationGroup()
+        iGroup.animations = inAnims
+        iGroup.duration = dur
+        iGroup.timingFunction = Motion.timing
+        incomingLayer.add(iGroup, forKey: "switchIn")
+
+        // Outgoing overlay (detached CALayer): slide 0 → outgoingEnd (+ optional fade out).
+        // fillMode=.forwards pins the end state until the completion removes it.
         let oSlide = CABasicAnimation(keyPath: "transform.translation.x")
         oSlide.fromValue = 0
-        oSlide.toValue = slide
-        let oFade = CABasicAnimation(keyPath: "opacity")
-        oFade.fromValue = 1.0
-        oFade.toValue = 0.0
+        oSlide.toValue = outgoingEnd
+        var outAnims = [oSlide]
+        if fade {
+            let oFade = CABasicAnimation(keyPath: "opacity")
+            oFade.fromValue = 1.0
+            oFade.toValue = 0.0
+            outAnims.append(oFade)
+        }
         let oGroup = CAAnimationGroup()
-        oGroup.animations = [oSlide, oFade]
-        oGroup.duration = Motion.duration
+        oGroup.animations = outAnims
+        oGroup.duration = dur
         oGroup.timingFunction = Motion.timing
         oGroup.isRemovedOnCompletion = false
         oGroup.fillMode = .forwards
         overlay.add(oGroup, forKey: "switchOut")
 
-        // --- Incoming live layer: slide to identity + fade in ---
-        // Backed by a real NSView layer → use Motion.run with allowsImplicitAnimation=true,
-        // bare layer assignments animate implicitly — exactly like animateTabCreate.
-        Motion.run({
-            incomingLayer.opacity = 1
-            incomingLayer.transform = CATransform3DIdentity
-        }, done: { [weak tree] in
-            // Remove the overlay and hard-restore the live layer to identity, regardless of
-            // whether a newer switch superseded this one (each animation targets its own
-            // overlay; cleanup is idempotent and safe).
-            overlay.removeFromSuperlayer()
-            if let layer = tree?.layer {
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                layer.opacity = 1
-                layer.transform = CATransform3DIdentity
-                CATransaction.commit()
-            }
-        })
+        CATransaction.commit()
     }
 
     /// Move a tab from one position to another (drag-to-reorder).

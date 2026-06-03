@@ -16,6 +16,7 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.cursorShape") private var cursorShapeRaw: String = Grid.CursorShape.block.rawValue
     @AppStorage("halite.ligatures") private var ligatures: Bool = false
     @AppStorage("halite.showScrollbar") private var showScrollbar: Bool = false
+    @AppStorage("halite.tabTransition") private var tabTransitionRaw: String = TabTransitionStyle.slide.rawValue
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
@@ -97,6 +98,11 @@ struct HaliteSettingsView: View {
                     }
                 }
                 Toggle("Show Scrollbar", isOn: $showScrollbar)
+                Picker("Tab Transition", selection: $tabTransitionRaw) {
+                    ForEach(TabTransitionStyle.allCases, id: \.rawValue) { style in
+                        Text(style.displayName).tag(style.rawValue)
+                    }
+                }
             }
             Section("Cursor") {
                 Picker("Shape", selection: $cursorShapeRaw) {

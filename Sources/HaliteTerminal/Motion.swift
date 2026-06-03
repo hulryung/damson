@@ -94,7 +94,8 @@ public enum Motion {
     /// 레이어 속성을 직접 대입해도 암시적으로 애니메이트된다 — 탭 생성/페인 닫기가
     /// 이 계약에 의존한다(이게 빠지면 스냅된다). `.animator()` 변경에도 동일하게 동작.
     /// `done`은 완료 시 호출된다(오버레이 제거/상태 복원 용).
-    public static func run(_ body: () -> Void, done: (() -> Void)? = nil) {
+    public static func run(duration: TimeInterval = Motion.duration,
+                           _ body: () -> Void, done: (() -> Void)? = nil) {
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = duration
             ctx.timingFunction = timing
