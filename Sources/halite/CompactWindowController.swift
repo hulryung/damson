@@ -54,11 +54,15 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private var swipeNeighborLayer: CALayer?   // neighbor shown as a snapshot (no hit-test)
     private var swipeNeighborIndex = -1
     private var swipeFromRight = false   // neighbor (next tab) enters from the right
-    private var settleDx: CGFloat = 0
-    private var settleStep: ((CFTimeInterval) -> Bool)?   // returns true when settled
-    private var settleDisplayLink: AnyObject?             // CADisplayLink (macOS 14+, ProMotion)
-    private var settleTimer: Timer?                       // macOS 13 fallback
-    private var settleLastTs: CFTimeInterval = 0
+
+    // Shared tab-slide motion — the keyboard/click cross-slide and the trackpad
+    // swipe settle use the SAME duration + curve so they decelerate identically.
+    // CABasicAnimation runs on the display's refresh rate (120Hz on ProMotion) for
+    // free, so neither path needs a manual display link.
+    static let tabSlideDuration: TimeInterval = 0.42
+    static func tabSlideTiming() -> CAMediaTimingFunction {
+        CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)   // strong ease-out
+    }
 
     var hasTabs: Bool { !tabs.isEmpty }
 
@@ -346,18 +350,21 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         let incomingStart: CGFloat   // incoming layer's start x (ends at 0)
         let outgoingEnd: CGFloat     // outgoing overlay's end x (starts at 0)
         let dur: TimeInterval
+        let timing: CAMediaTimingFunction
         switch style {
         case .slide:
             fade = false
             incomingStart = goingRight ? width : -width
             outgoingEnd = goingRight ? -width : width
-            dur = 0.28
+            dur = Self.tabSlideDuration
+            timing = Self.tabSlideTiming()   // shared with the trackpad-swipe settle
         case .crossfade, .none:
             fade = true
             let delta: CGFloat = 24
             incomingStart = goingRight ? delta : -delta
             outgoingEnd = goingRight ? -delta : delta
             dur = Motion.duration
+            timing = Motion.timing
         }
 
         // Outgoing overlay sits exactly where the old tree was; it slides to `outgoingEnd`.
@@ -391,7 +398,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         let iGroup = CAAnimationGroup()
         iGroup.animations = inAnims
         iGroup.duration = dur
-        iGroup.timingFunction = Motion.timing
+        iGroup.timingFunction = timing
         incomingLayer.add(iGroup, forKey: "switchIn")
 
         // Outgoing overlay (detached CALayer): slide 0 → outgoingEnd (+ optional fade out).
@@ -409,7 +416,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         let oGroup = CAAnimationGroup()
         oGroup.animations = outAnims
         oGroup.duration = dur
-        oGroup.timingFunction = Motion.timing
+        oGroup.timingFunction = timing
         oGroup.isRemovedOnCompletion = false
         oGroup.fillMode = .forwards
         overlay.add(oGroup, forKey: "switchOut")
@@ -505,57 +512,39 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         }
     }
 
-    /// hiterm-style settle: each frame move toward `targetDx` by a fraction of the
-    /// remaining distance, so it eases out — fast at first, slowing as it nears the
-    /// target, then snaps crisply within 1pt. Driven by a `CADisplayLink` so it runs
-    /// at the display's refresh rate (120Hz on ProMotion); the per-frame fraction is
-    /// derived from the actual frame interval (`dt`) so the settle takes the same
-    /// wall-clock time at 60 or 120Hz (matching hiterm's 0.15-at-60fps feel).
-    /// macOS 13 falls back to a 60Hz timer.
+    /// Settle the swipe to its target with the SHARED tab-slide motion (same
+    /// duration + curve as the keyboard/click cross-slide), so both decelerate
+    /// identically. Explicit CABasicAnimations on the current tree layer and the
+    /// neighbor snapshot; `done` runs on the transaction completion (guarded by
+    /// `swipeAnimating` so an abort that already cleaned up wins).
     private func startSwipeSettle(from dx: CGFloat, to targetDx: CGFloat,
                                   neighborStart: CGFloat, done: @escaping () -> Void) {
-        stopSettle()
-        settleDx = dx
-        settleStep = { [weak self] dt in
-            guard let self else { return true }
-            let dist = targetDx - self.settleDx
-            let settled = abs(dist) < 1.0
-            // 0.15 per 1/60s → frame-rate-independent fraction = 1 − 0.85^(dt·60).
-            self.settleDx = settled ? targetDx : self.settleDx + dist * (1 - pow(0.85, dt * 60))
-            self.setSwipeTranslation(self.tabs[self.currentIndex].tree.layer, self.settleDx)
-            self.setSwipeTranslation(self.swipeNeighborLayer, neighborStart + self.settleDx)
-            if settled { done() }
-            return settled
+        let currentLayer = tabs[currentIndex].tree.layer
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self, self.swipeAnimating else { return }
+            done()
         }
-        if #available(macOS 14.0, *) {
-            let link = contentContainer.displayLink(target: self, selector: #selector(settleTick(_:)))
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
-            link.add(to: .main, forMode: .common)
-            settleLastTs = 0
-            settleDisplayLink = link
-        } else {
-            settleTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
-                guard let self else { t.invalidate(); return }
-                if self.settleStep?(1.0 / 60.0) ?? true { self.stopSettle() }
-            }
-        }
+        slideSwipeLayer(currentLayer, from: dx, to: targetDx)
+        slideSwipeLayer(swipeNeighborLayer, from: neighborStart + dx, to: neighborStart + targetDx)
+        CATransaction.commit()
     }
 
-    @available(macOS 14.0, *)
-    @objc private func settleTick(_ link: CADisplayLink) {
-        let now = link.timestamp
-        let dt = settleLastTs == 0 ? (1.0 / 60.0) : max(0, now - settleLastTs)
-        settleLastTs = now
-        if settleStep?(dt) ?? true { stopSettle() }
-    }
-
-    private func stopSettle() {
-        if #available(macOS 14.0, *) { (settleDisplayLink as? CADisplayLink)?.invalidate() }
-        settleDisplayLink = nil
-        settleTimer?.invalidate()
-        settleTimer = nil
-        settleStep = nil
-        settleLastTs = 0
+    /// Animate a layer's translation.x from→to with the shared tab-slide motion.
+    /// Explicit (plays on the presentation layer regardless of the model); the
+    /// model is left at the final value.
+    private func slideSwipeLayer(_ layer: CALayer?, from: CGFloat, to: CGFloat) {
+        guard let layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = CATransform3DMakeTranslation(to, 0, 0)
+        CATransaction.commit()
+        let a = CABasicAnimation(keyPath: "transform.translation.x")
+        a.fromValue = from
+        a.toValue = to
+        a.duration = Self.tabSlideDuration
+        a.timingFunction = Self.tabSlideTiming()
+        layer.add(a, forKey: "swipeSettle")
     }
 
     private func endSwipe() {
@@ -567,13 +556,17 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     /// Tear down an in-flight swipe before a non-swipe path (keyboard/click switch)
     /// takes over, so nothing is left offset.
     private func abortSwipe() {
-        stopSettle()
+        // endSwipe() clears swipeAnimating first, so any in-flight settle's
+        // completion block early-returns (its `done` won't fire after this).
+        endSwipe()
+        swipeNeighborLayer?.removeAnimation(forKey: "swipeSettle")
         swipeNeighborLayer?.removeFromSuperlayer()
         swipeNeighborLayer = nil
         if currentIndex >= 0, currentIndex < tabs.count {
-            setSwipeTranslation(tabs[currentIndex].tree.layer, 0)
+            let layer = tabs[currentIndex].tree.layer
+            layer?.removeAnimation(forKey: "swipeSettle")
+            setSwipeTranslation(layer, 0)
         }
-        endSwipe()
     }
 
     private func setSwipeTranslation(_ layer: CALayer?, _ x: CGFloat) {
