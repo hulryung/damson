@@ -44,8 +44,23 @@ final class MetalContentView: NSView {
         onNeedsDisplay?()
     }
 
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        // Leave the synchronized-present mode and draw one final correct frame.
+        updateDrawableSize()
+        onNeedsDisplay?()
+    }
+
     private func updateDrawableSize() {
         let scale = window?.backingScaleFactor ?? metalLayer.contentsScale
+        // While the window is being live-resized, present the drawable as part of
+        // the layout transaction (paired with the synchronous present in the
+        // backend) so the layer never stretches its last frame to the new bounds.
+        metalLayer.presentsWithTransaction = inLiveResize
+        // Resize the drawable without an implicit animation (which would scale the
+        // contents over ~0.25s and read as the text stretching).
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         metalLayer.contentsScale = scale
         let w = max(1, bounds.width * scale)
         let h = max(1, bounds.height * scale)
@@ -53,5 +68,6 @@ final class MetalContentView: NSView {
         if metalLayer.drawableSize != newSize {
             metalLayer.drawableSize = newSize
         }
+        CATransaction.commit()
     }
 }

@@ -183,8 +183,19 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         }
 
         enc.endEncoding()
-        cmd.present(drawable)
-        cmd.commit()
+        // During live resize the layer presents with the layout transaction, so the
+        // frame must be presented synchronously (after scheduling) — otherwise the
+        // old drawable gets stretched to the new bounds before this frame lands
+        // (visible flicker / stretched text). Outside resize, async present keeps
+        // typing latency minimal.
+        if metalView.metalLayer.presentsWithTransaction {
+            cmd.commit()
+            cmd.waitUntilScheduled()
+            drawable.present()
+        } else {
+            cmd.present(drawable)
+            cmd.commit()
+        }
     }
 
     /// Build bg fills + glyph quads + line overlays (underline/strikethrough) for
