@@ -141,6 +141,14 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
     private var controlSocket: ControlSocketServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // macOS press-and-hold(악센트 팝업) 제어. 켜져 있으면 키를 길게 눌러도
+        // 텍스트 입력 시스템이 "악센트 대기"로 가로채 키 반복이 억제된다(키에 따라
+        // 들쭉날쭉 — f/q/x 등은 아예 반복 안 됨). 터미널은 모든 키가 반복돼야 하므로
+        // 기본은 OFF(반복). 설정 토글(halite.pressAndHold)이 ON이면 macOS 기본(악센트
+        // 팝업)으로. 미설정 → false → ApplePressAndHoldEnabled=false.
+        let pressAndHold = UserDefaults.standard.bool(forKey: "halite.pressAndHold")
+        UserDefaults.standard.set(pressAndHold, forKey: "ApplePressAndHoldEnabled")
+
         // 이전 세션 상태가 있고 Compact 모드면 그 레이아웃 + cwd로 복원, 아니면 새 창.
         if TabBarStyle.current == .compact,
            let state = SessionRestore.load(), !state.windows.isEmpty {

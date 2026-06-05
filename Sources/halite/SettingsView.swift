@@ -25,6 +25,7 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.screenEffectIntensity") private var screenEffectIntensity: Double = 1.0
     @AppStorage("halite.glyphAppear") private var glyphAppearRaw: String = GlyphAnimStyle.none.rawValue
     @AppStorage("halite.glyphDisappear") private var glyphDisappearRaw: String = GlyphAnimStyle.none.rawValue
+    @AppStorage("halite.pressAndHold") private var pressAndHold: Bool = false
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
@@ -55,6 +56,10 @@ struct HaliteSettingsView: View {
         .onChange(of: screenEffectIntensity) { _ in postChanged() }
         .onChange(of: glyphAppearRaw) { _ in postChanged() }
         .onChange(of: glyphDisappearRaw) { _ in postChanged() }
+        .onChange(of: pressAndHold) { v in
+            // 시스템 키 즉시 갱신(완전 적용은 재시작 후). 끄면 키 반복, 켜면 악센트 팝업.
+            UserDefaults.standard.set(v, forKey: "ApplePressAndHoldEnabled")
+        }
         .onChange(of: themeName) { _ in postChanged() }
         .onChange(of: autoUpdate) { _ in
             // Sparkle updater에 즉시 반영 (config hot-reload 경로와 별개).
@@ -226,6 +231,12 @@ struct HaliteSettingsView: View {
                         Text(style.displayName).tag(style.rawValue)
                     }
                 }
+            }
+            Section("Keyboard") {
+                Toggle("Press and hold for accents", isOn: $pressAndHold)
+                Text("끄면(기본) 모든 키가 길게 누름에 반복 입력됩니다(터미널 표준). 켜면 macOS 기본 동작 — a·e 등 일부 키는 길게 누를 때 악센트 팝업이 떠 반복이 안 됩니다. 변경은 앱 재시작 후 적용.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
         .formStyle(.grouped)
