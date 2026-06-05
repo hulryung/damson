@@ -841,6 +841,7 @@ public final class Grid {
         cursorRow = max(0, min(newRows - 1, newCursorAbs - vpStart))
         cursorCol = max(0, min(newCols - 1, newCursorCol))
         pendingWrap = newPendingWrap
+
     }
 
     /// 시각적으로 빈 셀(공백 + 배경/링크/강조 없음)인지. reflow의 trailing 트리밍용.

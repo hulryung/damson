@@ -91,6 +91,15 @@ public final class HaliteSession: ObservableObject {
         gridChanged.send()
     }
 
+    /// Reflow the on-screen grid to a new size WITHOUT notifying the shell
+    /// (no SIGWINCH). Used during a live window resize so the shell doesn't redraw
+    /// (and accumulate) its prompt on every drag frame; the host sends one real
+    /// `resize` (SIGWINCH) when the drag ends.
+    public func resizeGridOnly(cols: Int, rows: Int) {
+        grid.resize(cols: cols, rows: rows)
+        gridChanged.send()
+    }
+
     public func clearSelection() {
         // TODO(M8)
     }

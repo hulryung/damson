@@ -405,16 +405,25 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         let usableH = max(stableContentHeight - inset.height * 2, 1)
         let cols = max(Int(floor(usableW / cellW)), 1)
         let rows = max(Int(floor(usableH / cellH)), 1)
-        // dedupe — 실제 cols/rows가 변화 없으면 SIGWINCH 안 보냄 (no-op layout 등).
-        let prevCols = lastReportedSize?.cols ?? session.grid.cols
-        let prevRows = lastReportedSize?.rows ?? session.grid.rows
-        if prevCols == cols && prevRows == rows {
-            lastReportedSize = (cols, rows)
-            return
+
+        let gridStale = (session.grid.cols != cols || session.grid.rows != rows)
+        let ptyStale = (lastPtySize == nil || lastPtySize! != (cols, rows))
+        if !gridStale && !ptyStale { return }   // genuine no-op layout
+
+        if inLiveResize {
+            // Visual reflow only; defer SIGWINCH so the shell doesn't redraw and
+            // accumulate its prompt on every drag frame. The final size is flushed
+            // (with SIGWINCH) at viewDidEndLiveResize.
+            if gridStale { session.resizeGridOnly(cols: cols, rows: rows) }
+        } else {
+            session.resize(cols: cols, rows: rows)   // grid + PTY (SIGWINCH)
+            lastPtySize = (cols, rows)
         }
-        lastReportedSize = (cols, rows)
-        session.resize(cols: cols, rows: rows)
     }
+    /// The size last reported to the PTY (SIGWINCH). Tracked separately from the
+    /// grid so a live resize can reflow the grid every frame while flushing the
+    /// PTY size only once, on drag end.
+    private var lastPtySize: (cols: Int, rows: Int)?
 
     /// macOS 네이티브 윈도우 탭 바가 실제로 차지하는 높이 — 탭이 추가되면 macOS는
     /// `window.frame.height`를 이만큼 줄여서 탭바 공간을 만든다. 측정값: 600 → 564 = 36pt.
