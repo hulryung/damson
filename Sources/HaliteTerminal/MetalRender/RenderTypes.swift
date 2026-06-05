@@ -35,4 +35,6 @@ struct PostFXParams {
     var coeffs: SIMD4<Float>
     /// rgb phosphor tint (a unused)
     var tint: SIMD4<Float>
+    /// x=curvature (barrel), yzw reserved
+    var coeffs2: SIMD4<Float>
 }

@@ -95,6 +95,7 @@ enum MetalShaders {
         float2 screenSize;   // drawable size in pixels
         float4 coeffs;       // x=scanline, y=glow, z=vignette, w=glowRadiusPx
         float4 tint;         // rgb phosphor tint (a unused)
+        float4 coeffs2;      // x=curvature (barrel), yzw reserved
     };
     struct PostFXVOut {
         float4 position [[position]];
@@ -110,16 +111,33 @@ enum MetalShaders {
         return out;
     }
 
+    // Gentle center-magnify bulge: the 4 corners stay put, the middle is
+    // slightly enlarged (sampled from a contracted region). amount 0 = identity.
+    // Always stays inside [0,1] (no outward push), so there's no off-tube bezel.
+    static inline float2 crt_curve(float2 uv, float amount) {
+        float2 c = uv * 2.0 - 1.0;          // -1..1, center origin
+        float r2 = dot(c, c) * 0.5;         // 0 at center, 1 at the corners
+        float scale = 1.0 - amount * (1.0 - r2);   // <1 in the middle, =1 at corners
+        c *= scale;                         // contract toward center → magnify middle
+        return c * 0.5 + 0.5;               // back to 0..1
+    }
+
     fragment float4 postfx_fragment(PostFXVOut in [[stage_in]],
                                     texture2d<float> scene [[texture(0)]],
                                     sampler samp [[sampler(0)]],
                                     constant PostFXParams& p [[buffer(0)]]) {
-        float4 src = scene.sample(samp, in.uv);
-        float3 color = src.rgb;
         float scan = p.coeffs.x;
         float glowS = p.coeffs.y;
         float vig = p.coeffs.z;
         float glowR = p.coeffs.w;
+        float curve = p.coeffs2.x;
+
+        // Curve the sampling coordinate; everything below samples/measures in
+        // bulge space so scanlines and vignette follow the magnified middle.
+        float2 uv = (curve > 0.0) ? crt_curve(in.uv, curve) : in.uv;
+
+        float4 src = scene.sample(samp, uv);
+        float3 color = src.rgb;
 
         // Phosphor glow: cheap 3x3 box blur, lighten-mixed back in.
         if (glowS > 0.0 && glowR > 0.0) {
@@ -127,7 +145,7 @@ enum MetalShaders {
             float3 sum = float3(0.0);
             for (int dx = -1; dx <= 1; dx++) {
                 for (int dy = -1; dy <= 1; dy++) {
-                    sum += scene.sample(samp, in.uv + float2(float(dx), float(dy)) * texel).rgb;
+                    sum += scene.sample(samp, uv + float2(float(dx), float(dy)) * texel).rgb;
                 }
             }
             float3 glow = sum * (1.0 / 9.0);
@@ -135,7 +153,7 @@ enum MetalShaders {
         }
         // Scanlines: dim alternating device-pixel rows.
         if (scan > 0.0) {
-            int row = int(in.uv.y * p.screenSize.y);
+            int row = int(uv.y * p.screenSize.y);
             float dim = mix(1.0, 1.0 - scan, float(row & 1));
             color *= dim;
         }
@@ -143,7 +161,7 @@ enum MetalShaders {
         color *= p.tint.rgb;
         // Vignette: darken toward the corners.
         if (vig > 0.0) {
-            float d = distance(in.uv, float2(0.5));
+            float d = distance(uv, float2(0.5));
             color *= 1.0 - smoothstep(0.35, 0.85, d) * vig;
         }
         return float4(color, src.a);

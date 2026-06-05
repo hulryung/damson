@@ -30,7 +30,9 @@ public enum ScreenEffect: String, CaseIterable, Sendable {
                 screenSize: screenSize,
                 coeffs: SIMD4<Float>(0.18 * k, 0.22 * k, 0.40 * k, 1.5),
                 // 살짝 따뜻한 phosphor 틴트(거의 중립). 강도에 따라 중립↔틴트 보간.
-                tint: SIMD4<Float>(mix(1.0, 1.02, k), mix(1.0, 1.0, k), mix(1.0, 0.97, k), 1.0))
+                tint: SIMD4<Float>(mix(1.0, 1.02, k), mix(1.0, 1.0, k), mix(1.0, 0.97, k), 1.0),
+                // 중심 확대 bulge — 귀퉁이 고정, 가운데만 살짝. 강도에 비례, 은은하게.
+                coeffs2: SIMD4<Float>(0.12 * k, 0, 0, 0))
         }
     }
 }
