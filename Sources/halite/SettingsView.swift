@@ -23,6 +23,8 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.backgroundBlur") private var backgroundBlur: Bool = false
     @AppStorage("halite.screenEffect") private var screenEffectRaw: String = ScreenEffect.none.rawValue
     @AppStorage("halite.screenEffectIntensity") private var screenEffectIntensity: Double = 1.0
+    @AppStorage("halite.glyphAppear") private var glyphAppearRaw: String = GlyphAnimStyle.none.rawValue
+    @AppStorage("halite.glyphDisappear") private var glyphDisappearRaw: String = GlyphAnimStyle.none.rawValue
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
@@ -51,6 +53,8 @@ struct HaliteSettingsView: View {
         .onChange(of: backgroundBlur) { _ in postChanged() }
         .onChange(of: screenEffectRaw) { _ in postChanged() }
         .onChange(of: screenEffectIntensity) { _ in postChanged() }
+        .onChange(of: glyphAppearRaw) { _ in postChanged() }
+        .onChange(of: glyphDisappearRaw) { _ in postChanged() }
         .onChange(of: themeName) { _ in postChanged() }
         .onChange(of: autoUpdate) { _ in
             // Sparkle updater에 즉시 반영 (config hot-reload 경로와 별개).
@@ -173,6 +177,21 @@ struct HaliteSettingsView: View {
                 }
                 .disabled(screenEffectRaw == ScreenEffect.none.rawValue)
                 Text("화면 전체에 입히는 효과. CRT/인광/블룸 등(정적 — idle 시 추가 비용 없음).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Section("Text Animation") {
+                Picker("On Type (생성)", selection: $glyphAppearRaw) {
+                    ForEach(GlyphAnimStyle.allCases, id: \.rawValue) { s in
+                        Text(s.appearDisplayName()).tag(s.rawValue)
+                    }
+                }
+                Picker("On Delete (소멸)", selection: $glyphDisappearRaw) {
+                    ForEach(GlyphAnimStyle.allCases, id: \.rawValue) { s in
+                        Text(s.disappearDisplayName()).tag(s.rawValue)
+                    }
+                }
+                Text("커서 근처에서 글자가 생기거나 지워질 때 짧게 재생되는 애니메이션. 타이핑/지우기에만 적용(스크롤·대량 출력 제외).")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -485,6 +504,14 @@ extension HaliteConfig {
         }
         if let i = d.object(forKey: "halite.screenEffectIntensity") as? Double {
             config.screenEffectIntensity = CGFloat(max(0.2, min(1.0, i)))
+        }
+        if let raw = d.string(forKey: "halite.glyphAppear"),
+           let s = GlyphAnimStyle(rawValue: raw) {
+            config.glyphAppear = s
+        }
+        if let raw = d.string(forKey: "halite.glyphDisappear"),
+           let s = GlyphAnimStyle(rawValue: raw) {
+            config.glyphDisappear = s
         }
         config.animations = d.object(forKey: "halite.animations") as? Bool ?? true
         if let raw = d.string(forKey: "halite.cursorShape"),

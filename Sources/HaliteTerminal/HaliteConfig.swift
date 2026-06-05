@@ -48,6 +48,10 @@ public struct HaliteConfig {
     public var screenEffect: ScreenEffect
     /// 화면 효과 강도(0~1). 1이면 효과 기본값 그대로, 낮추면 약하게.
     public var screenEffectIntensity: CGFloat
+    /// 커서 근처에서 글자가 새로 생길 때의 애니메이션. 기본 none. [[GlyphAnimStyle]].
+    public var glyphAppear: GlyphAnimStyle
+    /// 커서 근처에서 글자가 지워질 때의 애니메이션. 기본 none.
+    public var glyphDisappear: GlyphAnimStyle
 
     // 색은 theme에서 파생 — 기존 호출처 호환용 computed property.
     public var backgroundColor: NSColor { theme.background }
@@ -75,6 +79,8 @@ public struct HaliteConfig {
         backgroundBlur: Bool = false,
         screenEffect: ScreenEffect = .none,
         screenEffectIntensity: CGFloat = 1.0,
+        glyphAppear: GlyphAnimStyle = .none,
+        glyphDisappear: GlyphAnimStyle = .none,
         argv: [String] = HaliteConfig.defaultArgv(),
         env: [String: String] = ProcessInfo.processInfo.environment,
         cwd: String? = nil
@@ -94,6 +100,8 @@ public struct HaliteConfig {
         self.backgroundBlur = backgroundBlur
         self.screenEffect = screenEffect
         self.screenEffectIntensity = screenEffectIntensity
+        self.glyphAppear = glyphAppear
+        self.glyphDisappear = glyphDisappear
         self.argv = argv
         self.env = env
         self.cwd = cwd

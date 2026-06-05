@@ -45,6 +45,23 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// Offscreen scene render target, used only when a screen effect is active.
     /// Recreated when the drawable size changes.
     private var sceneTexture: MTLTexture?
+
+    // MARK: glyph appear/disappear animation (cursor-area only)
+
+    private struct GlyphAnimEntry {
+        var appearing: Bool
+        var start: CFTimeInterval
+        var cell: Cell          // disappear: the glyph to fade out (gone from the grid)
+    }
+    private struct CellPos: Hashable { var row: Int; var col: Int }   // unified-row coords
+    private static let glyphAnimDuration: CFTimeInterval = 0.13
+    private var glyphAnims: [CellPos: GlyphAnimEntry] = [:]
+    /// Snapshot of the cursor row's cells at the last diffed grid version, used to
+    /// detect single-cell typing / deleting near the cursor.
+    private var prevCursorRow: [Cell] = []
+    private var prevCursorRowIndex: Int = -1
+    private var lastGlyphDiffVersion: UInt64 = .max
+    private lazy var glyphAnimLink = AnimationLink(view: metalView)
     /// Ligature shaper, rebuilt alongside the atlas (same font). Used only when
     /// `config.ligatures` is on.
     private var lineShaper: LineShaper?
@@ -104,6 +121,83 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         render(grid: grid, config: config, state: lastState, metrics: metrics)
     }
 
+    // MARK: glyph appear/disappear
+
+    /// 그리드가 바뀐 프레임에 커서 행을 직전 스냅샷과 비교해, 소량(≤4) 변화면
+    /// 생성/소멸 애니메이션을 등록한다. 행이 바뀌었거나(Enter/스크롤) 대량 변화면
+    /// (라인 redraw/붙여넣기) 건너뛴다 — 타이핑/지우기만 잡기 위해서.
+    private func diffGlyphChanges(grid: Grid) {
+        let appear = config.glyphAppear
+        let disappear = config.glyphDisappear
+        guard appear != .none || disappear != .none else {
+            prevCursorRowIndex = -1
+            return
+        }
+        // grid 버전이 그대로면(애니메이션 틱 등) 재diff하지 않는다.
+        guard grid.version != lastGlyphDiffVersion else { return }
+        lastGlyphDiffVersion = grid.version
+
+        let urow = grid.scrollback.count + grid.cursorRow
+        let cur: [Cell] = (0..<grid.cols).map { grid.cell(row: grid.cursorRow, col: $0) }
+        defer { prevCursorRow = cur; prevCursorRowIndex = urow }
+
+        // 직전과 같은 커서 행일 때만 비교(행이 바뀌면 타이핑이 아님).
+        guard prevCursorRowIndex == urow, prevCursorRow.count == cur.count else { return }
+
+        var appears: [Int] = []
+        var disappears: [(Int, Cell)] = []
+        for c in 0..<cur.count {
+            let beforeBlank = prevCursorRow[c].char == " "
+            let afterBlank = cur[c].char == " "
+            if !afterBlank, beforeBlank || prevCursorRow[c].char != cur[c].char {
+                appears.append(c)
+            } else if afterBlank, !beforeBlank {
+                disappears.append((c, prevCursorRow[c]))
+            }
+        }
+        let total = appears.count + disappears.count
+        guard total > 0, total <= 4 else { return }   // 대량 변화는 무시
+
+        let now = CACurrentMediaTime()
+        if appear != .none {
+            for c in appears {
+                glyphAnims[CellPos(row: urow, col: c)] =
+                    GlyphAnimEntry(appearing: true, start: now, cell: cur[c])
+            }
+        }
+        if disappear != .none {
+            for (c, old) in disappears {
+                glyphAnims[CellPos(row: urow, col: c)] =
+                    GlyphAnimEntry(appearing: false, start: now, cell: old)
+            }
+        }
+        if !glyphAnims.isEmpty { startGlyphAnimLink() }
+    }
+
+    private func pruneGlyphAnims() {
+        guard !glyphAnims.isEmpty else { return }
+        let now = CACurrentMediaTime()
+        glyphAnims = glyphAnims.filter { now - $0.value.start < Self.glyphAnimDuration }
+    }
+
+    private func startGlyphAnimLink() {
+        let ok = glyphAnimLink.start { [weak self] _ in
+            guard let self else { return true }
+            self.pruneGlyphAnims()
+            if self.glyphAnims.isEmpty { return true }
+            self.redrawLast()
+            return self.glyphAnims.isEmpty
+        }
+        if !ok { glyphAnims.removeAll() }   // macOS < 14: no link → instant (no anim)
+    }
+
+    /// (row,col) 셀의 생성 애니메이션 진행도(0~1). 없으면 nil.
+    private func appearProgress(row: Int, col: Int) -> Float? {
+        guard let a = glyphAnims[CellPos(row: row, col: col)], a.appearing else { return nil }
+        let p = Float((CACurrentMediaTime() - a.start) / Self.glyphAnimDuration)
+        return max(0, min(1, p))
+    }
+
     func render(grid: Grid, config: HaliteConfig, state: RenderState, metrics: CellMetrics) {
         self.config = config
         self.metrics = metrics
@@ -115,6 +209,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         scroll.maxY = max(0, contentHeight - viewportHeight)
 
         ensureAtlas()
+        // 커서 근처 타이핑/지우기를 감지해 글자 생성/소멸 애니메이션을 등록(grid가
+        // 바뀐 프레임에만). 이후 buildInstances가 이 진행도를 반영한다.
+        diffGlyphChanges(grid: grid)
         let layer = metalView.metalLayer
         // 배경 불투명도 < 1이면 레이어를 투명으로 둬 뒤(데스크톱/블러)가 비치게 한다.
         let opacity = max(0.2, min(1.0, config.backgroundOpacity))
@@ -320,9 +417,13 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                             uvOrigin: region.uv.origin, uvSize: region.uv.size, color: rgba(fg)))
                     }
                 } else if cell.char != " ", let region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide) {
-                    let inst = GlyphInstance(origin: origin, size: size,
+                    var inst = GlyphInstance(origin: origin, size: size,
                                              uvOrigin: region.uv.origin, uvSize: region.uv.size,
                                              color: rgba(fg))
+                    // 생성 애니메이션(커서 근처): 진행도만큼 fade/scale.
+                    if config.glyphAppear != .none, let p = appearProgress(row: row, col: col) {
+                        inst = config.glyphAppear.apply(to: inst, appearing: true, p: p)
+                    }
                     if region.isColor { colorGlyphs.append(inst) } else { glyphs.append(inst) }
                 }
 
@@ -358,8 +459,40 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                                  startCol: grid.cursorCol, gridCols: grid.cols,
                                  map: map, bg: &bg, glyphs: &glyphs, colorGlyphs: &colorGlyphs)
         }
+        // 소멸 애니메이션: grid엔 더 이상 없는 글자를 기억해 ghost로 fade/collapse.
+        if config.glyphDisappear != .none, !glyphAnims.isEmpty {
+            appendDisappearingGlyphs(first: first, last: last, glyphs: &glyphs,
+                                     colorGlyphs: &colorGlyphs)
+        }
         if config.showScrollbar { appendScrollbar(into: &overlay) }
         return (bg, glyphs, colorGlyphs, overlay)
+    }
+
+    /// grid에서 사라진 글자를 기억해둔 셀로 ghost glyph를 그려 소멸 애니메이션을 낸다.
+    private func appendDisappearingGlyphs(first: Int, last: Int,
+                                          glyphs: inout [GlyphInstance],
+                                          colorGlyphs: inout [GlyphInstance]) {
+        let now = CACurrentMediaTime()
+        let style = config.glyphDisappear
+        for (pos, a) in glyphAnims where !a.appearing {
+            guard pos.row >= first, pos.row <= last, a.cell.char != " " else { continue }
+            let p = Float((now - a.start) / Self.glyphAnimDuration)
+            guard p < 1 else { continue }
+            let wide = Cell.isWide(a.cell.char)
+            let x0 = snap(inset.width + CGFloat(pos.col) * metrics.width)
+            let x1 = snap(inset.width + CGFloat(pos.col + (wide ? 2 : 1)) * metrics.width)
+            let y0 = snap(inset.height + CGFloat(pos.row) * metrics.height - scrollY)
+            let y1 = snap(inset.height + CGFloat(pos.row + 1) * metrics.height - scrollY)
+            guard let region = atlas?.region(for: a.cell.char, bold: a.cell.attrs.bold, wide: wide)
+            else { continue }
+            let fg = a.cell.attrs.resolvedColors(theme: config.theme).fg
+            var inst = GlyphInstance(origin: SIMD2<Float>(Float(x0), Float(y0)),
+                                     size: SIMD2<Float>(Float(x1 - x0), Float(y1 - y0)),
+                                     uvOrigin: region.uv.origin, uvSize: region.uv.size,
+                                     color: rgba(fg))
+            inst = style.apply(to: inst, appearing: false, p: max(0, min(1, p)))
+            if region.isColor { colorGlyphs.append(inst) } else { glyphs.append(inst) }
+        }
     }
 
     /// Draw the IME composing text at the cursor, cell-aligned, with the
