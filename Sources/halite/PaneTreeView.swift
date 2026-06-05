@@ -102,18 +102,29 @@ final class PaneTreeView: NSView {
         rebuild(animation: Motion.enabled ? .split(newLeaf: newLeaf) : .none)
     }
 
-    func closeActive() {
-        guard case .leaf = activeLeaf.kind else { return }
+    func closeActive() { closeLeaf(activeLeaf) }
+
+    /// 세션이 종료(셸 exit)됐을 때 그 세션을 가진 leaf를 닫는다. 종료 콜백은 다른
+    /// 스레드일 수 있어 main에서 호출되도록 한다.
+    func closeSession(_ session: HaliteSession) {
+        guard let leaf = leafNode(for: session, in: root) else { return }
+        closeLeaf(leaf)
+    }
+
+    /// 지정한 leaf를 닫는다 (마지막 pane이면 onAllPanesClosed). closeActive와 셸
+    /// exit가 공유한다.
+    func closeLeaf(_ leaf: PaneNode) {
+        guard case .leaf(let s, _) = leaf.kind else { return }
 
         // --- 애니메이션 의도 계산 (트리 변경 전에). 비활성/스냅샷 실패 시 .none로 즉시 경로. ---
         var animation: PaneAnimation = .none
         if Motion.enabled,
-           let parent = activeLeaf.parent,
+           let parent = leaf.parent,
            case .split(let dir, let first, _, _) = parent.kind,
-           let wrapper = findWrapper(for: activeLeaf, in: self),
+           let wrapper = findWrapper(for: leaf, in: self),
            let snap = Motion.snapshot(of: wrapper) {
             let closingFrame = wrapper.convert(wrapper.bounds, to: self)
-            let isFirst = (first === activeLeaf)
+            let isFirst = (first === leaf)
             let edge: ClosingEdge
             switch dir {
             case .horizontal: edge = isFirst ? .left : .right   // first=좌, second=우
@@ -122,19 +133,17 @@ final class PaneTreeView: NSView {
             animation = .close(snapshot: snap, closingFrame: closingFrame, edge: edge)
         }
 
-        // session terminate.
-        if case .leaf(let s, _) = activeLeaf.kind {
-            s.terminate()
-        }
+        // session terminate (셸 exit면 이미 죽었지만 idempotent).
+        s.terminate()
         // 부모의 다른 child가 그 부모 자리로 promote.
-        guard let parent = activeLeaf.parent,
+        guard let parent = leaf.parent,
               case .split(_, let first, let second, _) = parent.kind
         else {
             // root leaf 닫은 경우 — 전체 종료.
             onAllPanesClosed?()
             return
         }
-        let sibling = (first === activeLeaf) ? second : first
+        let sibling = (first === leaf) ? second : first
         parent.kind = sibling.kind
         // sibling이 split이었으면 그 자식들의 parent를 갱신.
         if case .split(_, let a, let b, _) = parent.kind {
@@ -144,6 +153,16 @@ final class PaneTreeView: NSView {
         // 새 active를 promote된 sub-tree의 첫 leaf로 설정.
         activeLeaf = firstLeaf(of: parent)
         rebuild(animation: animation)
+    }
+
+    /// 트리에서 주어진 세션을 가진 leaf 노드를 찾는다 (=== 식별).
+    private func leafNode(for session: HaliteSession, in node: PaneNode) -> PaneNode? {
+        switch node.kind {
+        case .leaf(let s, _):
+            return s === session ? node : nil
+        case .split(_, let a, let b, _):
+            return leafNode(for: session, in: a) ?? leafNode(for: session, in: b)
+        }
     }
 
     /// 마우스 클릭 등으로 외부에서 active pane 변경 호출.
@@ -235,7 +254,7 @@ final class PaneTreeView: NSView {
 
     private func addSubviewsForNode(_ node: PaneNode, into container: NSView) {
         switch node.kind {
-        case .leaf(_, let surface):
+        case .leaf(let session, let surface):
             // leaf 컨테이너 — border 표시용 wrapper. frame + autoresizing 으로 fill.
             let wrapper = PaneLeafWrapper(leaf: node, owner: self)
             wrapper.translatesAutoresizingMaskIntoConstraints = true
@@ -259,6 +278,16 @@ final class PaneTreeView: NSView {
             surface.onFocus = { [weak self, weak node] in
                 guard let self, let node, !self.rebuilding else { return }
                 self.setActive(node)
+            }
+            // Shell exited (e.g. `exit`) → close this pane (collapses the split, or
+            // closes the tab/window if it was the last). Fired on a PTY thread, so
+            // hop to main. Found by session identity so a later split/rebuild that
+            // moved the node doesn't matter.
+            session.onExit = { [weak self, weak session] _ in
+                guard let session else { return }
+                DispatchQueue.main.async { [weak self] in
+                    self?.closeSession(session)
+                }
             }
 
         case .split(_, let first, let second, _):
