@@ -95,7 +95,7 @@ enum MetalShaders {
         float2 screenSize;   // drawable size in pixels
         float4 coeffs;       // x=scanline, y=glow, z=vignette, w=glowRadiusPx
         float4 tint;         // rgb phosphor tint (a unused)
-        float4 coeffs2;      // x=curvature (barrel), yzw reserved
+        float4 coeffs2;      // x=curvature, y=monochrome amount, zw reserved
     };
     struct PostFXVOut {
         float4 position [[position]];
@@ -157,8 +157,15 @@ enum MetalShaders {
             float dim = mix(1.0, 1.0 - scan, float(row & 1));
             color *= dim;
         }
-        // Phosphor tint.
-        color *= p.tint.rgb;
+        // Color transform: monochrome (phosphor / grayscale) maps luminance onto
+        // the tint color; otherwise the tint is a subtle multiply (CRT warmth).
+        float mono = p.coeffs2.y;
+        if (mono > 0.0) {
+            float lum = dot(color, float3(0.299, 0.587, 0.114));
+            color = mix(color, lum * p.tint.rgb, mono);
+        } else {
+            color *= p.tint.rgb;
+        }
         // Vignette: darken toward the corners.
         if (vig > 0.0) {
             float d = distance(uv, float2(0.5));

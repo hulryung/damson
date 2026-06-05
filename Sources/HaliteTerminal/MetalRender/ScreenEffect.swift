@@ -7,11 +7,19 @@ import simd
 public enum ScreenEffect: String, CaseIterable, Sendable {
     case none
     case crt
+    case greenPhosphor
+    case amberPhosphor
+    case grayscale
+    case bloom
 
     public var displayName: String {
         switch self {
         case .none: return "None (없음)"
         case .crt: return "CRT (스캔라인·글로우)"
+        case .greenPhosphor: return "Green Phosphor (초록 단색 CRT)"
+        case .amberPhosphor: return "Amber Phosphor (호박색 단색 CRT)"
+        case .grayscale: return "Grayscale (흑백)"
+        case .bloom: return "Bloom (부드러운 글로우)"
         }
     }
 
@@ -32,7 +40,35 @@ public enum ScreenEffect: String, CaseIterable, Sendable {
                 // 살짝 따뜻한 phosphor 틴트(거의 중립). 강도에 따라 중립↔틴트 보간.
                 tint: SIMD4<Float>(mix(1.0, 1.02, k), mix(1.0, 1.0, k), mix(1.0, 0.97, k), 1.0),
                 // 중심 확대 bulge — 귀퉁이 고정, 가운데만 살짝. 강도에 비례, 은은하게.
+                // y = monochrome amount.
                 coeffs2: SIMD4<Float>(0.12 * k, 0, 0, 0))
+        case .greenPhosphor:
+            // CRT + 초록 단색(휘도→초록). tint = phosphor 색.
+            return PostFXParams(
+                screenSize: screenSize,
+                coeffs: SIMD4<Float>(0.18 * k, 0.25 * k, 0.40 * k, 1.5),
+                tint: SIMD4<Float>(0.20, 1.0, 0.30, 1.0),
+                coeffs2: SIMD4<Float>(0.12 * k, k, 0, 0))
+        case .amberPhosphor:
+            return PostFXParams(
+                screenSize: screenSize,
+                coeffs: SIMD4<Float>(0.18 * k, 0.25 * k, 0.40 * k, 1.5),
+                tint: SIMD4<Float>(1.0, 0.70, 0.20, 1.0),
+                coeffs2: SIMD4<Float>(0.12 * k, k, 0, 0))
+        case .grayscale:
+            // 순수 흑백 — 스캔라인/글로우/곡률 없음, 휘도→회색.
+            return PostFXParams(
+                screenSize: screenSize,
+                coeffs: SIMD4<Float>(0, 0, 0, 1.5),
+                tint: SIMD4<Float>(1.0, 1.0, 1.0, 1.0),
+                coeffs2: SIMD4<Float>(0, k, 0, 0))
+        case .bloom:
+            // 부드러운 글로우만 — 스캔라인/곡률/단색 없음. 글로우 반경 크게.
+            return PostFXParams(
+                screenSize: screenSize,
+                coeffs: SIMD4<Float>(0, 0.55 * k, 0, 2.5),
+                tint: SIMD4<Float>(1.0, 1.0, 1.0, 1.0),
+                coeffs2: SIMD4<Float>(0, 0, 0, 0))
         }
     }
 }
