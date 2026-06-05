@@ -310,7 +310,7 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
         let win = NSWindow(contentViewController: host)
         win.title = "halite Settings"
         win.styleMask = [.titled, .closable, .resizable]
-        win.setContentSize(NSSize(width: 500, height: 560))
+        win.setContentSize(NSSize(width: 540, height: 600))
         win.isReleasedWhenClosed = false
         settingsWindow = win
         win.makeKeyAndOrderFront(nil)

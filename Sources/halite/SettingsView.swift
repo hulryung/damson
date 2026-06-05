@@ -28,6 +28,39 @@ struct HaliteSettingsView: View {
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
 
     var body: some View {
+        TabView {
+            appearanceTab.tabItem { Label("Appearance", systemImage: "paintbrush") }
+            windowTab.tabItem { Label("Window", systemImage: "macwindow") }
+            effectsTab.tabItem { Label("Effects", systemImage: "sparkles") }
+            terminalTab.tabItem { Label("Terminal", systemImage: "terminal") }
+            advancedTab.tabItem { Label("Advanced", systemImage: "gearshape") }
+        }
+        .frame(width: 540, height: 600)
+        .onChange(of: fontSize) { _ in postChanged() }
+        .onChange(of: fontFamily) { _ in postChanged() }
+        .onChange(of: scrollbackLines) { _ in postChanged() }
+        .onChange(of: tabBarStyleRaw) { _ in postChanged() }
+        .onChange(of: imeStyleRaw) { _ in postChanged() }
+        .onChange(of: cursorBlink) { _ in postChanged() }
+        .onChange(of: animations) { _ in postChanged() }
+        .onChange(of: cursorShapeRaw) { _ in postChanged() }
+        .onChange(of: ligatures) { _ in postChanged() }
+        .onChange(of: showScrollbar) { _ in postChanged() }
+        .onChange(of: activePaneRaw) { _ in postChanged() }
+        .onChange(of: backgroundOpacity) { _ in postChanged() }
+        .onChange(of: backgroundBlur) { _ in postChanged() }
+        .onChange(of: screenEffectRaw) { _ in postChanged() }
+        .onChange(of: screenEffectIntensity) { _ in postChanged() }
+        .onChange(of: themeName) { _ in postChanged() }
+        .onChange(of: autoUpdate) { _ in
+            // Sparkle updater에 즉시 반영 (config hot-reload 경로와 별개).
+            HaliteUpdater.shared.applyAutomaticChecksSetting()
+        }
+    }
+
+    // MARK: - Tabs
+
+    private var appearanceTab: some View {
         Form {
             Section("Font") {
                 HStack {
@@ -64,15 +97,6 @@ struct HaliteSettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-            Section("Scrollback") {
-                HStack {
-                    Text("Lines")
-                    Spacer()
-                    Stepper(value: $scrollbackLines, in: 1000...200_000, step: 1000) {
-                        Text("\(scrollbackLines)").monospacedDigit().frame(minWidth: 70)
-                    }
-                }
-            }
             Section("Theme") {
                 // 리스트에서 ↑↓로 훑으면 오른쪽 큰 미리보기 + 실제 터미널이 즉시 바뀐다.
                 ThemeBrowser(themeName: $themeName)
@@ -80,6 +104,13 @@ struct HaliteSettingsView: View {
                     CustomThemeEditor(onChange: { postChanged() })
                 }
             }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    private var windowTab: some View {
+        Form {
             Section("Window") {
                 Picker("Tab Bar", selection: $tabBarStyleRaw) {
                     ForEach(TabBarStyle.allCases, id: \.rawValue) { style in
@@ -105,6 +136,8 @@ struct HaliteSettingsView: View {
                 Text("새 탭 시작 위치. split(분할)은 항상 현재 pane의 디렉토리를 상속합니다. 셸 통합(zsh OSC 7)이 자동 주입됩니다.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+            Section("Transparency") {
                 HStack {
                     Text("Background Opacity")
                     Slider(value: $backgroundOpacity, in: 0.2...1.0)
@@ -118,8 +151,15 @@ struct HaliteSettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-            Section("Effects") {
-                Picker("Screen Effect", selection: $screenEffectRaw) {
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    private var effectsTab: some View {
+        Form {
+            Section("Screen Effect") {
+                Picker("Effect", selection: $screenEffectRaw) {
                     ForEach(ScreenEffect.allCases, id: \.rawValue) { e in
                         Text(e.displayName).tag(e.rawValue)
                     }
@@ -132,9 +172,25 @@ struct HaliteSettingsView: View {
                         .frame(width: 40, alignment: .trailing)
                 }
                 .disabled(screenEffectRaw == ScreenEffect.none.rawValue)
-                Text("화면 전체에 입히는 효과. CRT는 스캔라인·글로우·비네트를 더합니다(정적 — idle 시 추가 비용 없음).")
+                Text("화면 전체에 입히는 효과. CRT/인광/블룸 등(정적 — idle 시 추가 비용 없음).")
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    private var terminalTab: some View {
+        Form {
+            Section("Scrollback") {
+                HStack {
+                    Text("Lines")
+                    Spacer()
+                    Stepper(value: $scrollbackLines, in: 1000...200_000, step: 1000) {
+                        Text("\(scrollbackLines)").monospacedDigit().frame(minWidth: 70)
+                    }
+                }
             }
             Section("Cursor") {
                 Picker("Shape", selection: $cursorShapeRaw) {
@@ -152,6 +208,13 @@ struct HaliteSettingsView: View {
                     }
                 }
             }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    private var advancedTab: some View {
+        Form {
             Section("Updates") {
                 Toggle("Automatic Updates", isOn: $autoUpdate)
                 Text("켜면 백그라운드에서 새 버전을 확인합니다. \"Check for Updates…\"로 언제든 수동 확인 가능.")
@@ -161,27 +224,6 @@ struct HaliteSettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 500, height: 560)
-        .onChange(of: fontSize) { _ in postChanged() }
-        .onChange(of: fontFamily) { _ in postChanged() }
-        .onChange(of: scrollbackLines) { _ in postChanged() }
-        .onChange(of: tabBarStyleRaw) { _ in postChanged() }
-        .onChange(of: imeStyleRaw) { _ in postChanged() }
-        .onChange(of: cursorBlink) { _ in postChanged() }
-        .onChange(of: animations) { _ in postChanged() }
-        .onChange(of: cursorShapeRaw) { _ in postChanged() }
-        .onChange(of: ligatures) { _ in postChanged() }
-        .onChange(of: showScrollbar) { _ in postChanged() }
-        .onChange(of: activePaneRaw) { _ in postChanged() }
-        .onChange(of: backgroundOpacity) { _ in postChanged() }
-        .onChange(of: backgroundBlur) { _ in postChanged() }
-        .onChange(of: screenEffectRaw) { _ in postChanged() }
-        .onChange(of: screenEffectIntensity) { _ in postChanged() }
-        .onChange(of: themeName) { _ in postChanged() }
-        .onChange(of: autoUpdate) { _ in
-            // Sparkle updater에 즉시 반영 (config hot-reload 경로와 별개).
-            HaliteUpdater.shared.applyAutomaticChecksSetting()
-        }
     }
 
     private func postChanged() {
