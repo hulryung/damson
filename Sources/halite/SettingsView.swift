@@ -70,25 +70,8 @@ struct HaliteSettingsView: View {
                 }
             }
             Section("Theme") {
-                Picker("Color Theme", selection: $themeName) {
-                    ForEach(HaliteTheme.presets, id: \.name) { theme in
-                        Text(theme.name).tag(theme.name)
-                    }
-                    Text("Custom").tag(HaliteTheme.customName)
-                }
-                // 미리보기 — 현재 선택된 테마의 배경 위에 ANSI 8색 샘플.
-                let previewTheme = themeName == HaliteTheme.customName
-                    ? CustomTheme.load().toTheme()
-                    : (HaliteTheme.preset(named: themeName) ?? .defaultDark)
-                HStack(spacing: 0) {
-                    ForEach(0..<8, id: \.self) { i in
-                        Color(nsColor: previewTheme.ansi[i]).frame(width: 22, height: 18)
-                    }
-                }
-                .padding(4)
-                .background(Color(nsColor: previewTheme.background))
-                .cornerRadius(4)
-
+                // 리스트에서 ↑↓로 훑으면 오른쪽 큰 미리보기 + 실제 터미널이 즉시 바뀐다.
+                ThemeBrowser(themeName: $themeName)
                 if themeName == HaliteTheme.customName {
                     CustomThemeEditor(onChange: { postChanged() })
                 }
@@ -144,7 +127,7 @@ struct HaliteSettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 460, height: 480)
+        .frame(width: 500, height: 560)
         .onChange(of: fontSize) { _ in postChanged() }
         .onChange(of: fontFamily) { _ in postChanged() }
         .onChange(of: scrollbackLines) { _ in postChanged() }
@@ -170,6 +153,155 @@ struct HaliteSettingsView: View {
 
 extension Notification.Name {
     static let haliteSettingsChanged = Notification.Name("HaliteSettingsChanged")
+}
+
+/// 테마 브라우저 — 왼쪽 리스트(↑↓로 훑기) + 오른쪽 큰 미리보기. 선택이 바뀌면
+/// $themeName(@AppStorage)이 갱신되고, 상위 뷰의 onChange(themeName)가 실제 세션에
+/// hot-reload를 푸시한다(미리보기 = 실제 터미널도 즉시 반영).
+struct ThemeBrowser: View {
+    @Binding var themeName: String
+    @FocusState private var listFocused: Bool
+
+    private struct Entry: Identifiable {
+        let name: String
+        let theme: HaliteTheme
+        var id: String { name }
+    }
+
+    private var entries: [Entry] {
+        HaliteTheme.presets.map { Entry(name: $0.name, theme: $0) }
+            + [Entry(name: HaliteTheme.customName, theme: CustomTheme.load().toTheme())]
+    }
+
+    private var selectedTheme: HaliteTheme {
+        if themeName == HaliteTheme.customName { return CustomTheme.load().toTheme() }
+        return HaliteTheme.preset(named: themeName) ?? .defaultDark
+    }
+
+    /// 현재 선택에서 delta만큼 이동(범위 clamp). ↑↓ 키 브라우징.
+    private func moveSelection(_ delta: Int) {
+        let all = entries
+        guard !all.isEmpty else { return }
+        let idx = all.firstIndex { $0.name == themeName } ?? 0
+        let next = min(max(idx + delta, 0), all.count - 1)
+        themeName = all[next].name
+    }
+
+    private func row(_ e: Entry) -> some View {
+        HStack(spacing: 7) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color(nsColor: e.theme.background))
+                .frame(width: 16, height: 16)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3)
+                        .stroke(Color.secondary.opacity(0.35), lineWidth: 0.5))
+            Text(e.name).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(e.name == themeName
+                      ? Color.accentColor.opacity(listFocused ? 0.35 : 0.22)
+                      : Color.clear))
+        .contentShape(Rectangle())
+        .onTapGesture { themeName = e.name; listFocused = true }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 1) {
+                        ForEach(entries) { e in row(e).id(e.name) }
+                    }
+                    .padding(4)
+                }
+                .frame(width: 190, height: 210)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(nsColor: .textBackgroundColor)))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(listFocused ? Color.accentColor.opacity(0.8)
+                                            : Color.secondary.opacity(0.3),
+                                lineWidth: listFocused ? 1.5 : 0.5))
+                .focusable()
+                .focusRingDisabled()
+                .focused($listFocused)
+                .onMoveCommand { dir in
+                    switch dir {
+                    case .up: moveSelection(-1)
+                    case .down: moveSelection(1)
+                    default: break
+                    }
+                }
+                .onChange(of: themeName) { name in
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(name, anchor: .center)
+                    }
+                }
+                .onAppear { proxy.scrollTo(themeName, anchor: .center) }
+            }
+
+            ThemePreview(theme: selectedTheme)
+                .frame(maxWidth: .infinity)
+                .frame(height: 210)
+        }
+    }
+}
+
+private extension View {
+    /// 기본 파란 포커스 링 제거(macOS 14+). 13에선 그대로 둔다(컴파일만 보장).
+    @ViewBuilder func focusRingDisabled() -> some View {
+        if #available(macOS 14.0, *) { self.focusEffectDisabled() } else { self }
+    }
+}
+
+/// 미니 터미널 미리보기 — 배경 위에 색이 들어간 샘플 프롬프트/출력 + ANSI 16색 스와치.
+struct ThemePreview: View {
+    let theme: HaliteTheme
+    private func col(_ i: Int) -> Color { Color(nsColor: theme.ansi[i]) }
+    private var fg: Color { Color(nsColor: theme.foreground) }
+
+    private func swatch(_ i: Int) -> some View {
+        RoundedRectangle(cornerRadius: 2).fill(col(i))
+            .frame(maxWidth: .infinity).frame(height: 14)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Group {
+                Text("➜ ").foregroundColor(col(2))
+                    + Text("~/dev/halite ").foregroundColor(col(4))
+                    + Text("git:(").foregroundColor(fg)
+                    + Text("main").foregroundColor(col(1))
+                    + Text(")").foregroundColor(fg)
+                Text("$ ").foregroundColor(col(2))
+                    + Text("ls ").foregroundColor(fg)
+                    + Text("-la").foregroundColor(col(3))
+                Text("# building project…").foregroundColor(col(8))
+                Text("hello ").foregroundColor(fg)
+                    + Text("world ").foregroundColor(col(5))
+                    + Text("✓").foregroundColor(col(6))
+            }
+            .font(.system(size: 11, design: .monospaced))
+
+            Spacer(minLength: 6)
+            Text("ANSI").font(.system(size: 9)).foregroundColor(fg.opacity(0.6))
+            HStack(spacing: 3) { ForEach(0..<8, id: \.self) { swatch($0) } }
+            HStack(spacing: 3) { ForEach(8..<16, id: \.self) { swatch($0) } }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: theme.background))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.25), lineWidth: 0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
 }
 
 /// 커스텀 테마 19색(배경/글자/커서 + ANSI 16) ColorPicker 에디터.
