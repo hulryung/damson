@@ -99,6 +99,8 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     /// `anchor`는 mouseDown 위치, `head`는 mouseDragged 따라가는 끝점.
     private var selectionAnchor: (row: Int, col: Int)?
     private var selectionHead: (row: Int, col: Int)?
+    /// 트랙패드 정밀 휠 델타 누적(포인트). mouse-reporting 앱에 휠을 throttle 전달할 때 사용.
+    private var wheelReportAccum: CGFloat = 0
 
     /// DECSCUSR underline/bar 모양용 cursor overlay. 호스트 레이어에 둠 — 백엔드가
     /// 기하를 계산해 주면 여기에 위치시킨다 (좌표 basis가 원본과 일치). block 모양은
@@ -784,12 +786,9 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
            handleTabSwipe(event) {
             return
         }
-        // Mouse reporting 활성 시 휠은 button 64/65 코드로 PTY 전달 (tmux 등이 사용).
+        // Mouse reporting 활성 시 휠은 button 64/65 코드로 PTY 전달 (tmux/Claude Code 등).
         if isMouseReportingEvent(event) {
-            let delta = event.scrollingDeltaY
-            guard abs(delta) > 0.1 else { return }
-            let btn = delta > 0 ? 64 : 65
-            sendMouseEventToPTY(event: event, button: btn, pressed: true)
+            forwardWheelToMouseReporting(event)
             return
         }
         // Metal backend consumes the wheel itself (applies the delta + redraws).
@@ -797,6 +796,30 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         // whose didLiveScroll observer updates followingBottom.
         if !backend.handleScrollWheel(event) {
             super.scrollWheel(with: event)
+        }
+    }
+
+    /// Mouse-reporting 앱(TUI: Claude Code/tmux 등)에 휠을 button 64/65로 전달.
+    /// 트랙패드 정밀 델타는 이벤트가 매우 촘촘해서 이벤트당 1개씩 보내면 TUI가 폭주한다.
+    /// 포인트 델타를 누적해 ≈1줄(`scrollSpeed`로 조절)마다 한 번씩만 보낸다.
+    private func forwardWheelToMouseReporting(_ event: NSEvent) {
+        let delta = event.scrollingDeltaY
+        if !event.hasPreciseScrollingDeltas {
+            // 마우스 휠: 델타가 이미 줄/notch 단위 → 한 번씩.
+            guard abs(delta) > 0.1 else { return }
+            sendMouseEventToPTY(event: event, button: delta > 0 ? 64 : 65, pressed: true)
+            return
+        }
+        // 트랙패드 정밀 스크롤: 누적 후 임계치마다 한 번.
+        if event.phase.contains(.began) { wheelReportAccum = 0 }
+        wheelReportAccum += delta
+        let speed = max(0.25, min(4.0, session.config.scrollSpeed))
+        let pointsPerTick = max(2, cellMetrics.height / speed)
+        var ticks = 0
+        while abs(wheelReportAccum) >= pointsPerTick, ticks < 8 {
+            sendMouseEventToPTY(event: event, button: wheelReportAccum > 0 ? 64 : 65, pressed: true)
+            wheelReportAccum += wheelReportAccum > 0 ? -pointsPerTick : pointsPerTick
+            ticks += 1
         }
     }
 

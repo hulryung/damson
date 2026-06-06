@@ -54,6 +54,9 @@ public struct HaliteConfig {
     public var glyphDisappear: GlyphAnimStyle
     /// 텍스트를 선택하면(드래그/더블·트리플 클릭) 자동으로 클립보드에 복사. 기본 ON.
     public var copyOnSelect: Bool
+    /// mouse-reporting TUI(Claude Code 등)로 트랙패드 휠을 전달할 때의 속도 배율.
+    /// 1.0 = ≈1줄 이동마다 휠 1틱. 높을수록 빠름. 자체 scrollback 스크롤엔 영향 없음.
+    public var scrollSpeed: CGFloat
 
     // 색은 theme에서 파생 — 기존 호출처 호환용 computed property.
     public var backgroundColor: NSColor { theme.background }
@@ -84,6 +87,7 @@ public struct HaliteConfig {
         glyphAppear: GlyphAnimStyle = .none,
         glyphDisappear: GlyphAnimStyle = .none,
         copyOnSelect: Bool = true,
+        scrollSpeed: CGFloat = 1.0,
         argv: [String] = HaliteConfig.defaultArgv(),
         env: [String: String] = ProcessInfo.processInfo.environment,
         cwd: String? = nil
@@ -106,6 +110,7 @@ public struct HaliteConfig {
         self.glyphAppear = glyphAppear
         self.glyphDisappear = glyphDisappear
         self.copyOnSelect = copyOnSelect
+        self.scrollSpeed = scrollSpeed
         self.argv = argv
         self.env = env
         self.cwd = cwd

@@ -27,6 +27,7 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.glyphDisappear") private var glyphDisappearRaw: String = GlyphAnimStyle.none.rawValue
     @AppStorage("halite.pressAndHold") private var pressAndHold: Bool = false
     @AppStorage("halite.copyOnSelect") private var copyOnSelect: Bool = true
+    @AppStorage("halite.scrollSpeed") private var scrollSpeed: Double = 1.0
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
@@ -58,6 +59,7 @@ struct HaliteSettingsView: View {
         .onChange(of: glyphAppearRaw) { _ in postChanged() }
         .onChange(of: glyphDisappearRaw) { _ in postChanged() }
         .onChange(of: copyOnSelect) { _ in postChanged() }
+        .onChange(of: scrollSpeed) { _ in postChanged() }
         .onChange(of: pressAndHold) { v in
             // 시스템 키 즉시 갱신(완전 적용은 재시작 후). 끄면 키 반복, 켜면 악센트 팝업.
             UserDefaults.standard.set(v, forKey: "ApplePressAndHoldEnabled")
@@ -237,6 +239,18 @@ struct HaliteSettingsView: View {
             Section("Selection") {
                 Toggle("Copy on select", isOn: $copyOnSelect)
                 Text("켜면(기본) 텍스트를 선택(드래그/더블·트리플 클릭)하는 즉시 클립보드에 복사됩니다.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Section("Scroll") {
+                HStack {
+                    Text("TUI Scroll Speed")
+                    Slider(value: $scrollSpeed, in: 0.25...4.0)
+                    Text(String(format: "%.2fx", scrollSpeed))
+                        .monospacedDigit()
+                        .frame(width: 48, alignment: .trailing)
+                }
+                Text("Claude Code·tmux 등 마우스 추적 TUI에서 트랙패드 스크롤 속도. 낮추면 느리게. (일반 scrollback 스크롤엔 영향 없음)")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -533,6 +547,9 @@ extension HaliteConfig {
             config.glyphDisappear = s
         }
         config.copyOnSelect = d.object(forKey: "halite.copyOnSelect") as? Bool ?? true
+        if let s = d.object(forKey: "halite.scrollSpeed") as? Double {
+            config.scrollSpeed = CGFloat(max(0.25, min(4.0, s)))
+        }
         config.animations = d.object(forKey: "halite.animations") as? Bool ?? true
         if let raw = d.string(forKey: "halite.cursorShape"),
            let shape = Grid.CursorShape(rawValue: raw) {
