@@ -617,7 +617,19 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             selectionAnchor = nil
             selectionHead = nil
             scheduleRender()
+        } else if selectionAnchor != nil, selectionHead != nil {
+            // 드래그/더블·트리플 클릭으로 선택이 완성됨 → copy-on-select(옵션, 기본 ON).
+            copySelectionIfEnabled()
         }
+    }
+
+    /// copy-on-select가 켜져 있고 비어있지 않은 선택이 있으면 클립보드에 복사.
+    private func copySelectionIfEnabled() {
+        guard session.config.copyOnSelect,
+              let text = selectedText(), !text.isEmpty else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
     }
 
     // MARK: - Cmd-hover URL 강조 (iTerm2 / Terminal.app 와 동일 UX)

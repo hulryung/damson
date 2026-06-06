@@ -26,6 +26,7 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.glyphAppear") private var glyphAppearRaw: String = GlyphAnimStyle.none.rawValue
     @AppStorage("halite.glyphDisappear") private var glyphDisappearRaw: String = GlyphAnimStyle.none.rawValue
     @AppStorage("halite.pressAndHold") private var pressAndHold: Bool = false
+    @AppStorage("halite.copyOnSelect") private var copyOnSelect: Bool = true
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
@@ -56,6 +57,7 @@ struct HaliteSettingsView: View {
         .onChange(of: screenEffectIntensity) { _ in postChanged() }
         .onChange(of: glyphAppearRaw) { _ in postChanged() }
         .onChange(of: glyphDisappearRaw) { _ in postChanged() }
+        .onChange(of: copyOnSelect) { _ in postChanged() }
         .onChange(of: pressAndHold) { v in
             // 시스템 키 즉시 갱신(완전 적용은 재시작 후). 끄면 키 반복, 켜면 악센트 팝업.
             UserDefaults.standard.set(v, forKey: "ApplePressAndHoldEnabled")
@@ -231,6 +233,12 @@ struct HaliteSettingsView: View {
                         Text(style.displayName).tag(style.rawValue)
                     }
                 }
+            }
+            Section("Selection") {
+                Toggle("Copy on select", isOn: $copyOnSelect)
+                Text("켜면(기본) 텍스트를 선택(드래그/더블·트리플 클릭)하는 즉시 클립보드에 복사됩니다.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
             Section("Keyboard") {
                 Toggle("Press and hold for accents", isOn: $pressAndHold)
@@ -524,6 +532,7 @@ extension HaliteConfig {
            let s = GlyphAnimStyle(rawValue: raw) {
             config.glyphDisappear = s
         }
+        config.copyOnSelect = d.object(forKey: "halite.copyOnSelect") as? Bool ?? true
         config.animations = d.object(forKey: "halite.animations") as? Bool ?? true
         if let raw = d.string(forKey: "halite.cursorShape"),
            let shape = Grid.CursorShape(rawValue: raw) {
