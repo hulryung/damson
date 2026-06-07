@@ -43,12 +43,14 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     }
 
     private var tabBar: CompactTabBarView!
-    private var tabBarBackground: NSVisualEffectView!
+    private var tabBarBackground: NSVisualEffectView!   // 투명(frosted) 모드용
+    private var tabBarSolid: NSView!                    // 솔리드(테마색) 모드용 — vibrancy 위
     private var contentContainer: NSView!
     private static let tabBarHeight: CGFloat = 38
     /// 전체화면에서 탭바를 메뉴바 높이만큼 내리는 인셋(메뉴바가 떠도 탭을 안 가리게).
     private var tabBarTopConstraint: NSLayoutConstraint!
     private var tabBarBackgroundHeightConstraint: NSLayoutConstraint!
+    private var tabBarSolidHeightConstraint: NSLayoutConstraint!
     private var fullScreenTopInset: CGFloat {
         (window?.styleMask.contains(.fullScreen) ?? false)
             ? (NSApp.mainMenu?.menuBarHeight ?? 24) : 0
@@ -135,6 +137,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabBarBackground.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(tabBarBackground)
 
+        // 솔리드(테마색) 배경 — vibrancy 위, 탭 아래. 솔리드 모드에서 vibrancy를 덮는다.
+        tabBarSolid = NSView()
+        tabBarSolid.wantsLayer = true
+        tabBarSolid.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(tabBarSolid)
+
         // 커스텀 탭 바.
         tabBar = CompactTabBarView()
         tabBar.translatesAutoresizingMaskIntoConstraints = false
@@ -163,12 +171,19 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             equalTo: contentView.topAnchor, constant: inset)
         tabBarBackgroundHeightConstraint = tabBarBackground.heightAnchor.constraint(
             equalToConstant: tabBarHeight + inset)
+        tabBarSolidHeightConstraint = tabBarSolid.heightAnchor.constraint(
+            equalToConstant: tabBarHeight + inset)
 
         NSLayoutConstraint.activate([
             tabBarBackground.topAnchor.constraint(equalTo: contentView.topAnchor),
             tabBarBackground.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             tabBarBackground.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             tabBarBackgroundHeightConstraint,
+
+            tabBarSolid.topAnchor.constraint(equalTo: contentView.topAnchor),
+            tabBarSolid.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            tabBarSolid.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            tabBarSolidHeightConstraint,
 
             tabBarTopConstraint,
             tabBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
@@ -180,6 +195,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             contentContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             contentContainer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
         ])
+
+        applyTabBarBackground()
+        // 신호등 재배치는 윈도우 버튼이 배치된 뒤에. 다음 runloop에서.
+        DispatchQueue.main.async { [weak self] in self?.centerTrafficLights() }
     }
 
     /// 전체화면 진입/이탈 시 탭바 top 인셋과 배경 높이를 갱신.
@@ -187,7 +206,40 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         let inset = fullScreenTopInset
         tabBarTopConstraint?.constant = inset
         tabBarBackgroundHeightConstraint?.constant = Self.tabBarHeight + inset
+        tabBarSolidHeightConstraint?.constant = Self.tabBarHeight + inset
         tabBar.needsLayout = true
+    }
+
+    /// 탭바 배경: 기본은 테마 배경색의 솔리드, 설정으로 투명(frosted) 선택 가능.
+    func applyTabBarBackground() {
+        let transparent = UserDefaults.standard.bool(forKey: "halite.tabBarTransparent")
+        tabBarSolid?.isHidden = transparent
+        if !transparent {
+            // 현재 테마 배경색(활성 세션 → 없으면 설정값)으로 살짝 어둡게 해 타이틀바 느낌.
+            let theme = activeSession?.config.theme ?? HaliteConfig.fromUserDefaults().theme
+            let bg = (theme.background.usingColorSpace(.sRGB)) ?? theme.background
+            // 터미널 배경과 구분되게 약간 어둡게(어두운 테마) / 약간 밝게(밝은 테마).
+            let lum = 0.299 * bg.redComponent + 0.587 * bg.greenComponent + 0.114 * bg.blueComponent
+            let shade: CGFloat = lum < 0.5 ? 0.06 : -0.06
+            func adj(_ c: CGFloat) -> CGFloat { max(0, min(1, c + shade)) }
+            tabBarSolid?.layer?.backgroundColor = NSColor(
+                srgbRed: adj(bg.redComponent), green: adj(bg.greenComponent),
+                blue: adj(bg.blueComponent), alpha: 1).cgColor
+        }
+    }
+
+    /// 신호등을 탭바(38pt) 세로 중앙에 맞춘다. 시스템은 표준 타이틀바(~28pt) 중앙에
+    /// 그려 더 높게 보이므로, 버튼 origin을 내려 탭 라벨과 같은 높이로 정렬한다.
+    /// 전체화면에선 신호등이 숨겨지므로 건너뛴다. resize/full-screen 시 재적용.
+    func centerTrafficLights() {
+        guard let window, !window.styleMask.contains(.fullScreen) else { return }
+        let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { window.standardWindowButton($0) }
+        guard let container = buttons.first?.superview else { return }
+        for b in buttons {
+            let y = container.bounds.height - (Self.tabBarHeight + b.frame.height) / 2
+            b.setFrameOrigin(NSPoint(x: b.frame.origin.x, y: y))
+        }
     }
 
     // MARK: - Tab management
@@ -791,5 +843,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     }
     func windowDidExitFullScreen(_ notification: Notification) {
         updateFullScreenInset()
+        DispatchQueue.main.async { [weak self] in self?.centerTrafficLights() }
+    }
+    // 리사이즈 때 시스템이 신호등 위치를 되돌리므로 다시 중앙 정렬.
+    func windowDidResize(_ notification: Notification) {
+        centerTrafficLights()
     }
 }

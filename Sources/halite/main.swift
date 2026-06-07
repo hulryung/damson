@@ -339,6 +339,7 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
         for cc in compactControllers {
             for s in cc.sessions { s.updateConfig(newConfig) }
             cc.refreshPaneIndicators()
+            cc.applyTabBarBackground()   // 테마/투명 옵션 변경 반영
             if let w = cc.window { WindowChrome.applyFromDefaults(to: w) }
         }
     }

@@ -28,6 +28,7 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.pressAndHold") private var pressAndHold: Bool = false
     @AppStorage("halite.copyOnSelect") private var copyOnSelect: Bool = true
     @AppStorage("halite.scrollSpeed") private var scrollSpeed: Double = 1.0
+    @AppStorage("halite.tabBarTransparent") private var tabBarTransparent: Bool = false
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
@@ -54,6 +55,7 @@ struct HaliteSettingsView: View {
         .onChange(of: activePaneRaw) { _ in postChanged() }
         .onChange(of: backgroundOpacity) { _ in postChanged() }
         .onChange(of: backgroundBlur) { _ in postChanged() }
+        .onChange(of: tabBarTransparent) { _ in postChanged() }
         .onChange(of: screenEffectRaw) { _ in postChanged() }
         .onChange(of: screenEffectIntensity) { _ in postChanged() }
         .onChange(of: glyphAppearRaw) { _ in postChanged() }
@@ -130,6 +132,10 @@ struct HaliteSettingsView: View {
                         Text(style.displayName).tag(style.rawValue)
                     }
                 }
+                Toggle("Transparent tab bar", isOn: $tabBarTransparent)
+                Text("끄면(기본) 탭바가 테마 배경색의 솔리드, 켜면 frosted-glass 투명.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 Toggle("Show Scrollbar", isOn: $showScrollbar)
                 Picker("Tab Transition", selection: $tabTransitionRaw) {
                     ForEach(TabTransitionStyle.allCases, id: \.rawValue) { style in
