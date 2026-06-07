@@ -28,6 +28,9 @@ struct ScrollModel {
     /// Sub-pixel threshold at which the ease is considered settled.
     private let settleEpsilon: CGFloat = 0.5
 
+    /// Lines scrolled per mouse-wheel notch (non-precise). Trackpad is unaffected.
+    static let mouseWheelLines: CGFloat = 3
+
     /// Maximum offset (`contentHeight - viewportHeight`). Setting it re-clamps both
     /// `current` and `target` so a window grow / scrollback eviction can't strand
     /// the view (or an ease) past the new bottom. Negative (content shorter than
@@ -90,7 +93,9 @@ struct ScrollModel {
     mutating func applyWheel(deltaY: CGFloat, precise: Bool, lineHeight: CGFloat,
                              viewport: CGFloat = 0) -> Bool {
         animating = false
-        let pixels = precise ? deltaY : deltaY * lineHeight
+        // 트랙패드(precise)는 1:1. 마우스 휠(non-precise)은 노치당 deltaY가 ≈1이라 줄
+        // 높이만 곱하면 노치당 1줄로 너무 느림 → 표준대로 노치당 ~3줄.
+        let pixels = precise ? deltaY : deltaY * lineHeight * ScrollModel.mouseWheelLines
         let raw = current - pixels
         let hi = max(0, maxY)
         var next = raw

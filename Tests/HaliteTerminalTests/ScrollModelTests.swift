@@ -57,13 +57,13 @@ final class ScrollModelTests: XCTestCase {
         XCTAssertEqual(m.current, 510)
     }
 
-    /// Mouse wheel: deltas are lines, scaled by line height (else a notch moves ~2px).
+    /// Mouse wheel: deltas are lines, scaled by line height × per-notch lines (~3).
     func testLineDeltaScaledByLineHeight() {
         var m = ScrollModel()
         m.maxY = 1000
         m.jump(to: 500)
         m.applyWheel(deltaY: -3, precise: false, lineHeight: 16)
-        XCTAssertEqual(m.current, 500 + 48)
+        XCTAssertEqual(m.current, 500 + 3 * 16 * ScrollModel.mouseWheelLines)
     }
 
     func testWheelClampsAtTop() {
