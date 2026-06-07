@@ -40,7 +40,11 @@ final class CompactTabBarView: NSView {
     // the prior value and always restore it (release, window change, teardown).
     private var savedIsMovable: Bool?
 
-    private let leadingReservation: CGFloat = 80   // 신호등 자리
+    // 신호등(닫기/최소화/최대화 버튼) 자리. 전체화면에선 신호등이 숨겨지므로 예약을
+    // 없애 탭이 왼쪽 가장자리부터 시작하게 한다(빈 공간 어색함 제거).
+    private var leadingReservation: CGFloat {
+        (window?.styleMask.contains(.fullScreen) ?? false) ? 12 : 80
+    }
     private let trailingReservation: CGFloat = 12
     private let tabSpacing: CGFloat = 2
     private let maxTabWidth: CGFloat = 200

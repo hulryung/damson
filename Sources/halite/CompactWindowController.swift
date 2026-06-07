@@ -45,6 +45,14 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private var tabBar: CompactTabBarView!
     private var tabBarBackground: NSVisualEffectView!
     private var contentContainer: NSView!
+    private static let tabBarHeight: CGFloat = 38
+    /// 전체화면에서 탭바를 메뉴바 높이만큼 내리는 인셋(메뉴바가 떠도 탭을 안 가리게).
+    private var tabBarTopConstraint: NSLayoutConstraint!
+    private var tabBarBackgroundHeightConstraint: NSLayoutConstraint!
+    private var fullScreenTopInset: CGFloat {
+        (window?.styleMask.contains(.fullScreen) ?? false)
+            ? (NSApp.mainMenu?.menuBarHeight ?? 24) : 0
+    }
 
     // Interactive 2-finger swipe (TabSwipeHandler). During a horizontal swipe the
     // neighbor tab's live tree is added beside the current one and both follow the
@@ -146,18 +154,23 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         contentContainer.wantsLayer = true
         contentView.addSubview(contentContainer)
 
-        // titlebar 높이 측정 (대략 28pt). styleMask + fullSizeContentView 상태에서
-        // contentLayoutGuide의 top이 titlebar 아래임을 활용 가능하지만, 우리 탭바는
-        // titlebar 자리에 그려야 하므로 0부터 시작.
-        let tabBarHeight: CGFloat = 38
+        // 우리 탭바는 titlebar 자리에 그린다(0부터). 전체화면에선 메뉴바 높이만큼
+        // 내려(`tabBarTopConstraint.constant`) 메뉴바가 떠도 탭을 안 가리게 한다.
+        // tabBarBackground(vibrancy)는 맨 위부터 탭바 아래까지 한 띠로 덮는다.
+        let tabBarHeight = Self.tabBarHeight
+        let inset = fullScreenTopInset
+        tabBarTopConstraint = tabBar.topAnchor.constraint(
+            equalTo: contentView.topAnchor, constant: inset)
+        tabBarBackgroundHeightConstraint = tabBarBackground.heightAnchor.constraint(
+            equalToConstant: tabBarHeight + inset)
 
         NSLayoutConstraint.activate([
             tabBarBackground.topAnchor.constraint(equalTo: contentView.topAnchor),
             tabBarBackground.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             tabBarBackground.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            tabBarBackground.heightAnchor.constraint(equalToConstant: tabBarHeight),
+            tabBarBackgroundHeightConstraint,
 
-            tabBar.topAnchor.constraint(equalTo: contentView.topAnchor),
+            tabBarTopConstraint,
             tabBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             tabBar.heightAnchor.constraint(equalToConstant: tabBarHeight),
@@ -167,6 +180,14 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             contentContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             contentContainer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
         ])
+    }
+
+    /// 전체화면 진입/이탈 시 탭바 top 인셋과 배경 높이를 갱신.
+    private func updateFullScreenInset() {
+        let inset = fullScreenTopInset
+        tabBarTopConstraint?.constant = inset
+        tabBarBackgroundHeightConstraint?.constant = Self.tabBarHeight + inset
+        tabBar.needsLayout = true
     }
 
     // MARK: - Tab management
@@ -762,5 +783,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     func windowWillClose(_ notification: Notification) {
         for t in tabs { t.tree.root.terminateAll() }
+    }
+
+    // 전체화면 진입/이탈 시: leading 예약(신호등) + top 인셋(메뉴바) 갱신.
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        updateFullScreenInset()
+    }
+    func windowDidExitFullScreen(_ notification: Notification) {
+        updateFullScreenInset()
     }
 }
