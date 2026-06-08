@@ -63,6 +63,70 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     /// `TerminalRenderBackend` protocol so the host never touches Metal directly
     /// and the seam stays open for future backends.
     private let backend: TerminalRenderBackend
+    /// Concrete Metal backend (== `backend`), kept for perf-HUD wiring which is
+    /// Metal-specific and not part of the backend seam.
+    private let metalBackend: MetalTerminalBackend
+    /// Toggleable on-screen frame-time graph + FPS overlay (our own — Apple's MTL
+    /// HUD crashes on this OS). Shown while `isPerfHUDEnabled`.
+    private var perfHUDView: PerfHUDView?
+    /// Global perf-HUD on/off, flipped by `togglePerfHUD()`; every surface mirrors it.
+    public static var isPerfHUDEnabled = false
+
+    /// Flip the perf HUD for all surfaces (bound to a keyboard shortcut by the app).
+    public static func togglePerfHUD() {
+        isPerfHUDEnabled.toggle()
+        NotificationCenter.default.post(name: .halitePerfHUDToggled, object: nil)
+    }
+
+    /// Menu / responder-chain entry point for the toggle.
+    @objc public func togglePerformanceHUD(_ sender: Any?) {
+        HaliteSurfaceView.togglePerfHUD()
+    }
+
+    /// Apple Metal Performance HUD (native overlay w/ graph) — separate toggle from
+    /// our custom HUD, on its own shortcut. Uses CAMetalLayer.developerHUDProperties.
+    public static var isAppleHUDEnabled = false
+    public static func toggleAppleHUD() {
+        isAppleHUDEnabled.toggle()
+        NotificationCenter.default.post(name: .haliteAppleHUDToggled, object: nil)
+    }
+    @objc public func toggleAppleMetalHUD(_ sender: Any?) {
+        HaliteSurfaceView.toggleAppleHUD()
+    }
+    private func applyAppleHUD() {
+        metalBackend.setAppleHUD(HaliteSurfaceView.isAppleHUDEnabled)
+    }
+
+    /// Reflect the global perf-HUD flag on this surface: create/show the overlay and
+    /// start the backend's live measurement, or hide it.
+    private func applyPerfHUD() {
+        if HaliteSurfaceView.isPerfHUDEnabled {
+            if perfHUDView == nil {
+                let v = PerfHUDView(frame: .zero)
+                addSubview(v)
+                perfHUDView = v
+            }
+            perfHUDView?.isHidden = false
+            metalBackend.onPerfSample = { [weak self] dt in
+                self?.perfHUDView?.addSample(dt)
+            }
+            metalBackend.setPerfHUD(true)
+            positionPerfHUD()
+        } else {
+            metalBackend.setPerfHUD(false)
+            metalBackend.onPerfSample = nil
+            perfHUDView?.isHidden = true
+        }
+    }
+
+    /// Pin the HUD to the top-right corner (fixed size).
+    private func positionPerfHUD() {
+        guard let v = perfHUDView else { return }
+        let w: CGFloat = 220, h: CGFloat = 72
+        let x = bounds.maxX - w - 8
+        let y = isFlipped ? 8 : bounds.maxY - h - 8
+        v.frame = NSRect(x: x, y: y, width: w, height: h)
+    }
     private var gridSubscription: AnyCancellable?
     private var configSubscription: AnyCancellable?
     private var lastReportedSize: (cols: Int, rows: Int)? = nil
@@ -168,6 +232,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
             fatalError("HaliteSurfaceView: no Metal device available — cannot create the renderer.")
         }
         self.backend = metal
+        self.metalBackend = metal
 
         super.init(frame: .zero)
         wantsLayer = true
@@ -190,6 +255,15 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         backend.onUserScroll = { [weak self] in
             DispatchQueue.main.async { self?.refreshFollowingBottomFlag() }
         }
+        // perf HUD 토글 브로드캐스트 구독 — 켜지면 이 surface도 오버레이를 띄운다.
+        NotificationCenter.default.addObserver(
+            forName: .halitePerfHUDToggled, object: nil, queue: .main
+        ) { [weak self] _ in self?.applyPerfHUD() }
+        if HaliteSurfaceView.isPerfHUDEnabled { applyPerfHUD() }
+        NotificationCenter.default.addObserver(
+            forName: .haliteAppleHUDToggled, object: nil, queue: .main
+        ) { [weak self] _ in self?.applyAppleHUD() }
+        if HaliteSurfaceView.isAppleHUDEnabled { applyAppleHUD() }
 
         gridSubscription = session.gridChanged
             .receive(on: RunLoop.main)
@@ -294,6 +368,7 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
     public override func layout() {
         super.layout()
         backend.contentView.frame = bounds
+        if perfHUDView != nil { positionPerfHUD() }
         // 라이브 리사이즈 중에도 콘텐츠가 새 너비로 즉시 re-layout 되도록 강제.
         // 이게 없으면 드래그 중엔 옛 layout이 유지되어 화면이 안 갱신되어 보임.
         backend.ensureLayout()
@@ -1766,4 +1841,11 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         }
     }
 
+}
+
+extension Notification.Name {
+    /// Posted when the global perf HUD is toggled; every `HaliteSurfaceView` mirrors it.
+    static let halitePerfHUDToggled = Notification.Name("HalitePerfHUDToggled")
+    /// Posted when the Apple Metal HUD is toggled.
+    static let haliteAppleHUDToggled = Notification.Name("HaliteAppleHUDToggled")
 }

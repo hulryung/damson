@@ -52,6 +52,43 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     private var lastPresentTime: CFTimeInterval = 0
     private var coalesceScheduled = false
 
+    /// 스크롤/이즈 렌더 루프 상태. 스크롤 중에는 이벤트마다 동기 렌더하지 않고, 델타만
+    /// 적용한 뒤 이 플래그를 세워 디스플레이 링크(`animLink`)가 vsync마다 최신 위치를 한 번
+    /// 렌더하게 한다 — 프레임 간격이 균일해져 버벅임이 사라진다(asyncAfter 타이머 coalesce가
+    /// vsync에 안 맞아 생기던 judder 제거). 활동이 멎으면 몇 프레임 뒤 링크를 멈춘다.
+    private var scrollRenderPending = false
+    private var renderLoopIdleTicks = 0
+    private let renderLoopMaxIdleTicks = 4
+
+    /// 프레임 페이싱 측정. env `HALITE_FPS_LOG=1`면 1초마다 NSLog, perf HUD가 켜져 있으면
+    /// 0.25초마다 `onPerfStats`로 문자열을 보낸다. 디스플레이 링크 틱 간격을 재므로 링크가
+    /// 60인지 120인지, jitter가 있는지 그대로 드러난다.
+    private let fpsLogEnabled = ProcessInfo.processInfo.environment["HALITE_FPS_LOG"] != nil
+    private var perfHUDActive = false
+    /// 커스텀 perf HUD가 켜져 있을 때 **실제 present 간격**(초)을 보낸다 — 화면에 그려진
+    /// 프레임 기준이라 Apple HUD의 FPS와 같은 값을 잰다(디스플레이 링크 틱 ≠ present).
+    var onPerfSample: ((CFTimeInterval) -> Void)?
+    private var lastHUDPresentTime: CFTimeInterval = 0
+    private var fpsAccum: CFTimeInterval = 0
+    private var fpsTicks = 0
+    private var fpsRendered = 0
+    private var fpsMin: CFTimeInterval = .infinity
+    private var fpsMax: CFTimeInterval = 0
+
+    /// 우리 커스텀 그래프 HUD on/off. 켜면 present마다 프레임 간격을 HUD로 보낸다(렌더
+    /// 활동이 있을 때만 — Apple HUD와 동일하게 실제 화면 갱신 기준).
+    func setPerfHUD(_ on: Bool) {
+        perfHUDActive = on
+        lastHUDPresentTime = 0
+    }
+
+    /// Apple Metal Performance HUD on/off — 공식 per-layer API. `MTL_HUD_ENABLED` 환경
+    /// 변수(전역 주입) 대신 이걸 쓰면 앱에서 토글할 수 있고, env가 디스플레이 변경 시
+    /// libMTLHud에서 크래시하던 경로를 피한다. "default"=표시, "none"=숨김.
+    func setAppleHUD(_ on: Bool) {
+        metalView.metalLayer.developerHUDProperties = on ? ["mode": "default"] : ["mode": "none"]
+    }
+
     // MARK: glyph appear/disappear animation (cursor-area only)
 
     private struct GlyphAnimEntry {
@@ -141,6 +178,66 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         // 안전 플러시)가 그린다.
         if grid.inSyncOutputMode { return }
         render(grid: grid, config: config, state: lastState, metrics: metrics)
+    }
+
+    // MARK: - vsync-aligned scroll / ease render loop
+
+    /// 디스플레이 링크 루프를 (없으면) 시작한다. 스크롤 델타가 들어왔거나 프로그램적
+    /// 이즈가 시작될 때 호출. 이미 돌고 있으면 그대로 둔다.
+    private func ensureRenderLoop() {
+        guard !animLink.isRunning else { return }
+        renderLoopIdleTicks = 0
+        let started = animLink.start { [weak self] dt in
+            self?.renderLoopTick(dt: dt) ?? true
+        }
+        if !started {
+            // macOS < 14: 디스플레이 링크 없음 → 이즈는 즉시 안착시키고 한 번만 동기 렌더.
+            if scroll.animating { _ = scroll.step(dt: 10) }   // 큰 dt → 타깃으로 즉시 수렴
+            scrollRenderPending = false
+            redrawLast()
+            onScrollGeometryChanged?()
+        }
+    }
+
+    /// 한 vsync 프레임. 이즈가 진행 중이면 한 스텝 전진시키고, (이즈든 새 스크롤 델타든)
+    /// 변화가 있으면 최신 위치를 정확히 한 번 렌더한다. 활동이 멎으면 몇 프레임 뒤 멈춘다.
+    /// 반환값: 루프를 멈춰야 하면 true.
+    private func renderLoopTick(dt: CFTimeInterval) -> Bool {
+        let easing = scroll.animating
+        if easing { _ = scroll.step(dt: CGFloat(dt)) }
+
+        if fpsLogEnabled { measureFrame(dt: dt, rendered: easing || scrollRenderPending) }
+
+        if easing || scrollRenderPending {
+            scrollRenderPending = false
+            renderLoopIdleTicks = 0
+            // vsync에 이미 정렬됨 → throttle 없이 즉시 렌더.
+            if let grid = lastGrid, !grid.inSyncOutputMode {
+                render(grid: grid, config: config, state: lastState, metrics: metrics,
+                       throttled: false)
+            }
+            onScrollGeometryChanged?()
+        } else {
+            renderLoopIdleTicks += 1
+        }
+        // 이즈가 진행 중이면 계속. 아니면 유휴 유예가 지나면 멈춘다(제스처+모멘텀 종료).
+        if scroll.animating { return false }
+        return renderLoopIdleTicks > renderLoopMaxIdleTicks
+    }
+
+    /// env `HALITE_FPS_LOG=1`일 때 1초마다 NSLog (HUD는 onPerfSample로 별도 처리).
+    private func measureFrame(dt: CFTimeInterval, rendered: Bool) {
+        fpsAccum += dt
+        fpsTicks += 1
+        if rendered { fpsRendered += 1 }
+        fpsMin = min(fpsMin, dt)
+        fpsMax = max(fpsMax, dt)
+        guard fpsAccum >= 1.0 else { return }
+        let screenMax = metalView.window?.screen?.maximumFramesPerSecond ?? -1
+        NSLog("halite scroll: link %.0f Hz (avg %.1fms, min %.1f, max %.1f) — rendered %d/%d — screen %d Hz",
+              Double(fpsTicks) / fpsAccum, fpsAccum / Double(fpsTicks) * 1000,
+              fpsMin * 1000, fpsMax * 1000, fpsRendered, fpsTicks, screenMax)
+        fpsAccum = 0; fpsTicks = 0; fpsRendered = 0; fpsMin = .infinity; fpsMax = 0
     }
 
     // MARK: glyph appear/disappear
@@ -257,7 +354,13 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         return max(0, min(1, p))
     }
 
+    /// 프로토콜 진입점 — 타이핑/grid 변경 등 비주기 경로. throttle 적용.
     func render(grid: Grid, config: HaliteConfig, state: RenderState, metrics: CellMetrics) {
+        render(grid: grid, config: config, state: state, metrics: metrics, throttled: true)
+    }
+
+    func render(grid: Grid, config: HaliteConfig, state: RenderState, metrics: CellMetrics,
+                throttled: Bool) {
         self.config = config
         self.metrics = metrics
         self.lastGrid = grid
@@ -278,7 +381,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         // display 주사율 간격(120Hz→8.3ms, 60Hz→16.7ms). 그보다 자주 부르는 렌더는 스킵.
         let fps = max(60, metalView.window?.screen?.maximumFramesPerSecond ?? 60)
         let minRenderInterval = 1.0 / CFTimeInterval(fps)
-        if !syncPresent {
+        // 디스플레이 링크가 부르는 렌더(스크롤/이즈)는 이미 vsync에 정렬돼 있으므로
+        // throttle을 건너뛴다. throttle은 타이핑 등 비주기 입력의 nextDrawable 블록만 막는다.
+        if throttled, !syncPresent {
             let since = CACurrentMediaTime() - lastPresentTime
             if since < minRenderInterval {
                 if !coalesceScheduled {
@@ -413,6 +518,11 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             cmd.commit()
         }
         lastPresentTime = CACurrentMediaTime()
+        // perf HUD: 실제 present 간격을 보낸다(화면에 그려진 프레임 기준 = Apple HUD와 동일).
+        if perfHUDActive {
+            if lastHUDPresentTime > 0 { onPerfSample?(lastPresentTime - lastHUDPresentTime) }
+            lastHUDPresentTime = lastPresentTime
+        }
     }
 
     /// Build bg fills + glyph quads + line overlays (underline/strikethrough) for
@@ -477,8 +587,11 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                 // background fills caused by fractional cell width.
                 let x0 = snap(inset.width + CGFloat(col) * metrics.width)
                 let x1 = snap(inset.width + CGFloat(col + wcells) * metrics.width)
-                let y0 = snap(inset.height + CGFloat(row) * metrics.height - scrollY)
-                let y1 = snap(inset.height + CGFloat(row + 1) * metrics.height - scrollY)
+                // 스냅은 콘텐츠 위치에만 적용하고(인접 행이 같은 snap 인자 → seam 없음),
+                // scrollY는 스냅 밖에서 빼 서브픽셀로 남긴다 → 스크롤이 1px 양자화 없이 부드럽다.
+                // (docs/SMOOTH-SCROLL.md: scrollYPixels는 정수일 필요 없음.)
+                let y0 = snap(inset.height + CGFloat(row) * metrics.height) - scrollY
+                let y1 = snap(inset.height + CGFloat(row + 1) * metrics.height) - scrollY
                 let origin = SIMD2<Float>(Float(x0), Float(y0))
                 let size = SIMD2<Float>(Float(x1 - x0), Float(y1 - y0))
 
@@ -576,8 +689,8 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             let wide = Cell.isWide(a.cell.char)
             let x0 = snap(inset.width + CGFloat(pos.col) * metrics.width)
             let x1 = snap(inset.width + CGFloat(pos.col + (wide ? 2 : 1)) * metrics.width)
-            let y0 = snap(inset.height + CGFloat(pos.row) * metrics.height - scrollY)
-            let y1 = snap(inset.height + CGFloat(pos.row + 1) * metrics.height - scrollY)
+            let y0 = snap(inset.height + CGFloat(pos.row) * metrics.height) - scrollY
+            let y1 = snap(inset.height + CGFloat(pos.row + 1) * metrics.height) - scrollY
             guard let region = atlas?.region(for: a.cell.char, bold: a.cell.attrs.bold, wide: wide)
             else { continue }
             let fg = a.cell.attrs.resolvedColors(theme: config.theme).fg
@@ -829,25 +942,14 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             onScrollGeometryChanged?()
             return
         }
-        // Smooth ease toward the target via a transient display link (macOS 14+).
+        // Smooth ease toward the target, stepped by the unified vsync render loop.
         scroll.animate(to: y)
         guard scroll.animating else {        // already at target
             redrawLast()
             onScrollGeometryChanged?()
             return
         }
-        let started = animLink.start { [weak self] dt in
-            guard let self else { return true }
-            let settled = self.scroll.step(dt: CGFloat(dt))
-            self.redrawLast()
-            self.onScrollGeometryChanged?()
-            return settled
-        }
-        if !started {                        // macOS < 14: no display link → jump
-            scroll.jump(to: y)
-            redrawLast()
-            onScrollGeometryChanged?()
-        }
+        ensureRenderLoop()
     }
 
     /// Consume a wheel/trackpad event: apply its delta and redraw. macOS delivers
@@ -857,15 +959,16 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// (and its momentum) ends. Always returns true (Metal owns the wheel; the host
     /// won't fall through to a no-op `super.scrollWheel`).
     func handleScrollWheel(_ event: NSEvent) -> Bool {
-        animLink.stop()   // direct input cancels any in-flight programmatic ease
         scroll.maxY = max(0, contentHeight - viewportHeight)
+        // applyWheel은 animating=false로 in-flight 이즈를 취소한다(직접 입력이 우선).
         let moved = scroll.applyWheel(deltaY: event.scrollingDeltaY,
                                       precise: event.hasPreciseScrollingDeltas,
                                       lineHeight: max(metrics.height, 1),
                                       viewport: viewportHeight)
         if moved {
-            redrawLast()
-            onScrollGeometryChanged?()   // reposition cursor overlay
+            // 동기 렌더 대신 vsync 정렬 렌더를 요청 — 프레임 간격이 균일해 부드럽다.
+            scrollRenderPending = true
+            ensureRenderLoop()
             onUserScroll?()              // host updates followingBottom
         }
         // Spring a rubber-band overshoot back to the edge once the gesture ends.

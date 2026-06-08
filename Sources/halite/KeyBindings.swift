@@ -162,7 +162,7 @@ struct AppAction {
     enum ID: String, CaseIterable {
         case settings, newWindow, newTab, closeTab, closeWindow
         case copy, paste, find, findNext, findPrevious
-        case zoomIn, zoomOut, resetZoom, toggleFullScreen
+        case zoomIn, zoomOut, resetZoom, toggleFullScreen, togglePerfHUD, toggleAppleHUD
         case splitHorizontally, splitVertically
         case focusPaneLeft, focusPaneRight, focusPaneDown, focusPaneUp
         case swapPaneLeft, swapPaneRight, swapPaneDown, swapPaneUp
@@ -211,6 +211,8 @@ struct AppAction {
             a(.jumpPreviousPrompt, "Jump to Previous Prompt", "View", .s(.up, cmd), view: .jumpPreviousPrompt),
             a(.jumpNextPrompt, "Jump to Next Prompt", "View", .s(.down, cmd), view: .jumpNextPrompt),
             a(.toggleFullScreen, "Toggle Full Screen", "View", .c("f", cmdCtrl)),
+            a(.togglePerfHUD, "Toggle Performance HUD", "View", .c("h", cmdCtrl)),
+            a(.toggleAppleHUD, "Toggle Apple Metal HUD", "View", .c("j", cmdCtrl)),
 
             a(.splitHorizontally, "Split Horizontally", "Split", .c("d", cmd)),
             a(.splitVertically, "Split Vertically", "Split", .c("d", cmdShift)),

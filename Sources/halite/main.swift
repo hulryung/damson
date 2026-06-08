@@ -542,6 +542,11 @@ func installMainMenu() {
     viewMenu.addItem(NSMenuItem.separator())
     // 전체화면 토글 — macOS 표준 ⌃⌘F. toggleFullScreen:은 NSWindow가 구현 → responder chain.
     viewMenu.addItem(item("Toggle Full Screen", #selector(NSWindow.toggleFullScreen(_:)), .toggleFullScreen))
+    // 성능 HUD 토글 (⌃⌘H = 우리 커스텀 그래프, ⌃⌘J = Apple Metal HUD).
+    viewMenu.addItem(item("Toggle Performance HUD",
+                          #selector(HaliteSurfaceView.togglePerformanceHUD(_:)), .togglePerfHUD))
+    viewMenu.addItem(item("Toggle Apple Metal HUD",
+                          #selector(HaliteSurfaceView.toggleAppleMetalHUD(_:)), .toggleAppleHUD))
 
     // Split menu — pane splitting. responder chain으로 활성 윈도우 컨트롤러에 도달.
     let splitItem = NSMenuItem()
