@@ -50,7 +50,13 @@ if [[ ! -x "$SIGN" ]]; then
 fi
 
 # sign_update 출력: " sparkle:edSignature=\"...\" length=\"NNN\""
-SIG_LINE="$("$SIGN" "$DMG")"
+# 로컬: private key는 keychain에서 자동으로 읽음.
+# CI: keychain이 없으므로 SPARKLE_PRIVATE_KEY(base64 EdDSA private key)를 -s로 전달.
+SIGN_ARGS=("$DMG")
+if [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+    SIGN_ARGS+=(-s "$SPARKLE_PRIVATE_KEY")
+fi
+SIG_LINE="$("$SIGN" "${SIGN_ARGS[@]}")"
 # 그대로 attribute 형태로 사용 가능 (앞 공백 포함).
 
 SIZE="$(stat -f%z "$DMG")"
