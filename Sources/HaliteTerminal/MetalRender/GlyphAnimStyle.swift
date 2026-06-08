@@ -12,6 +12,7 @@ public enum GlyphAnimStyle: String, CaseIterable, Sendable {
     case pop      // scale: appear 0.6→1.0, disappear 1.0→0.6 (+fade)
     case slide    // 아래에서 올라오며(+fade)
     case dissolve // 픽셀 노이즈로 흩어지며/모이며 (셰이더 fx)
+    case burst    // 알록달록 색종이처럼 터지며/모이며 (셰이더 fx: 디졸브 + 무지개 색)
 
     public func appearDisplayName() -> String {
         switch self {
@@ -20,6 +21,7 @@ public enum GlyphAnimStyle: String, CaseIterable, Sendable {
         case .pop:      return "Pop (튀어나오며)"
         case .slide:    return "Slide up (올라오며)"
         case .dissolve: return "Dissolve (모이며)"
+        case .burst:    return "Burst (알록달록 모이며)"
         }
     }
 
@@ -30,16 +32,18 @@ public enum GlyphAnimStyle: String, CaseIterable, Sendable {
         case .pop:      return "Collapse (줄어들며)"
         case .slide:    return "Slide down (내려가며)"
         case .dissolve: return "Dissolve (흩어지며)"
+        case .burst:    return "Burst (알록달록 터지며)"
         }
     }
 
-    /// 디졸브는 셰이더(per-glyph fx)로 처리되므로 ghost 글리프를 끝까지 그려야 한다.
-    var usesShaderFX: Bool { self == .dissolve }
+    /// 디졸브/버스트는 셰이더(per-glyph fx)로 처리되므로 ghost 글리프를 끝까지 그려야 한다.
+    var usesShaderFX: Bool { self == .dissolve || self == .burst }
 
-    /// 효과·방향별 지속시간(초). 디졸브는 모이기(빠름)/흩어지기(느림)를 다르게.
+    /// 효과·방향별 지속시간(초). 디졸브/버스트는 모이기(빠름)/흩어지기(느림)를 다르게.
     func duration(appearing: Bool) -> CFTimeInterval {
         switch self {
         case .dissolve: return appearing ? 0.10 : 0.32   // 모이기 빠르게, 흩어지기 길게
+        case .burst:    return appearing ? 0.14 : 0.36   // 터지는 건 좀 더 길게
         default:        return 0.13
         }
     }
@@ -80,6 +84,10 @@ public enum GlyphAnimStyle: String, CaseIterable, Sendable {
             out.size = inst.size * s
             out.origin = SIMD2<Float>(cx - out.size.x * 0.5, cy - out.size.y * 0.5)
             out.fx.x = diss
+        case .burst:
+            // 원본 글리프는 빠르게 사라지고, 무지개 별 파티클(백엔드에서 방출)이
+            // 폭죽처럼 바깥으로 터져나간다.
+            out.color.w *= min(1, e * 2.2)         // 앞부분에 빠르게 페이드
         }
         return out
     }

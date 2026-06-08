@@ -587,6 +587,54 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                                      color: rgba(fg))
             inst = style.apply(to: inst, appearing: false, p: max(0, min(1, p)))
             if region.isColor { colorGlyphs.append(inst) } else { glyphs.append(inst) }
+
+            // Burst: 폭죽처럼 작은 무지개 별이 바깥으로 터져나간다.
+            if style == .burst {
+                appendBurstParticles(centerX: CGFloat(x0 + x1) / 2,
+                                     centerY: CGFloat(y0 + y1) / 2,
+                                     seedRow: pos.row, seedCol: pos.col,
+                                     p: max(0, min(1, p)), into: &glyphs)
+            }
+        }
+    }
+
+    /// burst 효과의 별 파티클 K개를 방출. 방향/속도는 (row,col,i) 해시로 결정(프레임마다
+    /// 일관). easeOut으로 빠르게 퍼지다 감속, 중력으로 살짝 떨어지며 페이드.
+    private func appendBurstParticles(centerX: CGFloat, centerY: CGFloat,
+                                      seedRow: Int, seedCol: Int, p: Float,
+                                      into glyphs: inout [GlyphInstance]) {
+        // "*"(별표) — 모든 폰트에 확실히 있는 모노크롬 글리프. (✦ 등은 폰트에 없으면
+        // 빈 칸으로 래스터돼 안 보였음.)
+        guard let star = atlas?.region(for: "*", bold: true, wide: false), !star.isColor
+        else { return }
+        let cellH = max(metrics.height, 1)
+        let count = 7
+        let eased = 1 - (1 - p) * (1 - p)            // easeOut
+        let maxDist = cellH * 2.4
+        let starBase = cellH * 0.5
+        func hashf(_ i: Int, _ salt: Int) -> Float {
+            let v = sin(Float(seedRow * 73 + seedCol * 131 + i * 977 + salt * 17)
+                        * 12.9898) * 43758.5453
+            return v - floor(v)                       // 0..1
+        }
+        for i in 0..<count {
+            let angle = (Float(i) / Float(count) + hashf(i, 1) * 0.12) * 2 * .pi
+            let speed = 0.6 + 0.4 * hashf(i, 2)       // 0.6..1.0
+            let dist = CGFloat(eased * speed) * maxDist
+            let gravity = cellH * 1.1 * CGFloat(p * p)
+            let px = centerX + CGFloat(cos(angle)) * dist
+            let py = centerY + CGFloat(sin(angle)) * dist + gravity
+            let sz = starBase * CGFloat(1 - 0.45 * p)
+            guard sz > 0.5 else { continue }
+            let alpha = CGFloat(max(0, 1 - p))        // 날아가며 페이드
+            let hue = CGFloat(hashf(i, 3))
+            let color = NSColor(hue: hue, saturation: 0.85, brightness: 1, alpha: 1)
+            var rgbaColor = rgba(color)
+            rgbaColor.w = Float(alpha)
+            glyphs.append(GlyphInstance(
+                origin: SIMD2<Float>(Float(px - sz / 2), Float(py - sz / 2)),
+                size: SIMD2<Float>(Float(sz), Float(sz)),
+                uvOrigin: star.uv.origin, uvSize: star.uv.size, color: rgbaColor))
         }
     }
 
