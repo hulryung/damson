@@ -13,6 +13,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private struct Tab {
         let tree: PaneTreeView
         var titleSub: AnyCancellable
+        /// 더블클릭으로 지정한 사용자 제목. nil이면 세션(프로세스/OSC) 제목을 따름.
+        var customTitle: String? = nil
     }
 
     /// Animation intent threaded through `selectTab` / `addTab`. `.none` = instant
@@ -104,9 +106,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         WindowChrome.applyFromDefaults(to: window)
 
         if let restore = restoring, !restore.tabs.isEmpty {
-            for paneRestore in restore.tabs {
+            for (i, paneRestore) in restore.tabs.enumerated() {
                 let root = PaneNode.from(restorable: paneRestore)
-                addTab(tree: PaneTreeView(restoredRoot: root))
+                let title = (restore.tabTitles.map { i < $0.count ? $0[i] : nil }) ?? nil
+                addTab(tree: PaneTreeView(restoredRoot: root), customTitle: title)
             }
             let sel = restore.selectedTab
             if sel >= 0 && sel < tabs.count { selectTab(sel) }
@@ -122,7 +125,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     func toRestorableWindow() -> RestorableWindow {
         RestorableWindow(
             tabs: tabs.map { $0.tree.root.toRestorable() },
-            selectedTab: currentIndex
+            selectedTab: currentIndex,
+            tabTitles: tabs.map { $0.customTitle }
         )
     }
 
@@ -157,6 +161,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabBar.onTabClosed = { [weak self] idx in self?.closeTab(idx) }
         tabBar.onNewTab = { [weak self] in self?.addNewTab() }
         tabBar.onTabReordered = { [weak self] from, to in self?.reorderTab(from: from, to: to) }
+        tabBar.onTabRenamed = { [weak self] idx, title in self?.renameTab(idx, to: title) }
         contentView.addSubview(tabBar)
 
         // 세션 surface가 들어가는 컨테이너 — 탭 바 아래 채움.
@@ -262,7 +267,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     }
 
     /// 이미 구성된 PaneTreeView를 새 탭으로 추가 (신규 또는 복원된 트리).
-    private func addTab(tree: PaneTreeView, transition: TabTransition = .none) {
+    private func addTab(tree: PaneTreeView, transition: TabTransition = .none,
+                        customTitle: String? = nil) {
         tree.translatesAutoresizingMaskIntoConstraints = false
         // 마지막 pane이 닫히면 이 탭을 닫음. tabs 배열의 현재 인덱스가 아니라
         // tree 참조로 찾아야 함 (탭이 재배열돼도 정확).
@@ -272,16 +278,20 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             else { return }
             self.closeTab(idx)
         }
-        // 탭 제목은 root pane의 첫 leaf 세션 title을 따름.
+        // 탭 제목은 root pane의 첫 leaf 세션 title을 따름. 명시적 OSC 제목이 없으면
+        // 현재 디렉토리를 보여주므로, cwd 변경(OSC 7)에도 갱신되도록 함께 구독한다.
         let titleSub: AnyCancellable
         if let session = tree.root.leaves().first?.session {
             titleSub = session.$title.receive(on: RunLoop.main).sink { [weak self] _ in
                 self?.refreshTabBar()
             }
+            session.onCwdChanged = { [weak self] _ in
+                DispatchQueue.main.async { self?.refreshTabBar() }
+            }
         } else {
             titleSub = AnyCancellable {}
         }
-        tabs.append(Tab(tree: tree, titleSub: titleSub))
+        tabs.append(Tab(tree: tree, titleSub: titleSub, customTitle: customTitle))
         selectTab(tabs.count - 1, transition: transition)
         refreshTabBar()
     }
@@ -324,9 +334,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         ])
         // 마지막 사용 pane으로 active + first responder 복원 (위 onFocus 오염을 되돌림).
         tree.setActive(restoreTarget)
-        if let firstSession = tree.root.leaves().first?.session {
-            let title = firstSession.title
-            window?.title = title.isEmpty ? "halite" : title
+        if index < tabs.count {
+            window?.title = displayTitle(tabs[index])
         }
         refreshTabBar()
 
@@ -843,10 +852,40 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     }
 
     private func refreshTabBar() {
-        let titles = tabs.map { tab in
-            tab.tree.root.leaves().first?.session.title ?? "halite"
-        }
+        let titles = tabs.map { displayTitle($0) }
         tabBar.update(titles: titles, selectedIndex: currentIndex)
+    }
+
+    /// 탭에 표시할 제목: 사용자 지정 제목 > 세션(OSC/프로세스) 제목 > 현재 디렉토리 > "halite".
+    private func displayTitle(_ tab: Tab) -> String {
+        if let custom = tab.customTitle, !custom.isEmpty { return custom }
+        guard let session = tab.tree.root.leaves().first?.session else { return "halite" }
+        if !session.title.isEmpty { return session.title }
+        // OSC 7로 추적한 cwd가 없으면 실제 프로세스 cwd(proc_pidinfo)로 폴백.
+        if let dir = session.currentDirectory ?? session.currentWorkingDirectory {
+            return Self.prettyDir(dir)
+        }
+        return "halite"
+    }
+
+    /// 경로를 탭에 보기 좋게 — 홈은 "~", 그 외엔 마지막 경로 요소(폴더명).
+    static func prettyDir(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == home { return "~" }
+        let base = (path as NSString).lastPathComponent
+        return base.isEmpty ? path : base
+    }
+
+    /// 탭 더블클릭 → 인라인 편집 결과. 빈 문자열이면 사용자 제목을 지우고 자동 제목으로 복귀.
+    private func renameTab(_ index: Int, to title: String) {
+        guard index >= 0, index < tabs.count else { return }
+        tabs[index].customTitle = title.isEmpty ? nil : title
+        refreshTabBar()
+        // 편집 종료로 잃은 포커스를 활성 pane으로 되돌림.
+        if currentIndex < tabs.count,
+           case .leaf(_, let surface) = tabs[currentIndex].tree.activeLeaf.kind {
+            window?.makeFirstResponder(surface)
+        }
     }
 
     // MARK: - NSWindowDelegate

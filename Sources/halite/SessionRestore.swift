@@ -18,6 +18,9 @@ indirect enum RestorablePane: Codable {
 struct RestorableWindow: Codable {
     var tabs: [RestorablePane]
     var selectedTab: Int
+    /// 탭별 사용자 지정 제목(더블클릭 rename). `tabs`와 같은 순서·길이. 옵셔널이라
+    /// 이 필드가 없던 구버전 저장 데이터도 그대로 디코드된다(전부 자동 제목으로 복원).
+    var tabTitles: [String?]?
 }
 
 /// 전체 복원 상태.

@@ -20,6 +20,8 @@ final class CompactTabBarView: NSView {
     var onNewTab: (() -> Void)?
     /// Reorder result after a drag: move the tab from `from` to `to`.
     var onTabReordered: ((Int, Int) -> Void)?
+    /// Double-click rename result: set tab `index`'s title to `title` ("" = revert to auto).
+    var onTabRenamed: ((Int, String) -> Void)?
 
     private var tabButtons: [TabButton] = []
     private let newTabButton = NSButton()
@@ -91,6 +93,7 @@ final class CompactTabBarView: NSView {
                                 isSelected: i == selectedIndex)
             btn.onClick = { [weak self] in self?.onTabSelected?(i) }
             btn.onClose = { [weak self] in self?.onTabClosed?(i) }
+            btn.onRename = { [weak self] title in self?.onTabRenamed?(i, title) }
             btn.isReorderActive = { [weak self] in self?.reorderModeActive ?? false }
             btn.onDragBegan = { [weak self] in self?.beginDrag(i) }
             btn.onDragMoved = { [weak self] dx in self?.updateDrag(dx) }
@@ -312,6 +315,8 @@ final class CompactTabBarView: NSView {
 private final class TabButton: NSView {
     var onClick: (() -> Void)?
     var onClose: (() -> Void)?
+    /// Committed inline rename (Return or focus loss). "" reverts to the auto title.
+    var onRename: ((String) -> Void)?
     /// Returns whether the bar is in Cmd+Shift reorder mode right now.
     var isReorderActive: (() -> Bool)?
     /// Drag-to-reorder callbacks. `dx` is the cursor's horizontal offset from
@@ -445,6 +450,9 @@ private final class TabButton: NSView {
     override func mouseUp(with event: NSEvent) {
         if didDrag {
             onDragEnded?()
+        } else if event.clickCount >= 2, isReorderActive?() != true {
+            // 더블클릭 → 인라인 제목 편집. (단일 클릭은 selection.)
+            beginEditing()
         } else {
             onClick?()
         }
@@ -454,5 +462,64 @@ private final class TabButton: NSView {
 
     @objc private func closeClicked() {
         onClose?()
+    }
+
+    // MARK: - Inline rename
+
+    private var editField: NSTextField?
+
+    private func beginEditing() {
+        guard editField == nil else { return }
+        let f = NSTextField(string: titleLabel.stringValue)
+        f.font = titleLabel.font
+        f.isBezeled = false
+        f.drawsBackground = true
+        f.backgroundColor = .textBackgroundColor
+        f.textColor = .labelColor
+        f.focusRingType = .none
+        f.usesSingleLineMode = true
+        f.lineBreakMode = .byTruncatingTail
+        f.delegate = self
+        f.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(f)
+        NSLayoutConstraint.activate([
+            f.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            f.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
+            f.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        editField = f
+        titleLabel.isHidden = true
+        window?.makeFirstResponder(f)
+        f.currentEditor()?.selectAll(nil)
+    }
+
+    /// 편집 종료 — 필드 제거 + label 복원. editField를 먼저 nil로 해 재진입(controlTextDidEndEditing)을 막는다.
+    private func endEditing() -> String? {
+        guard let f = editField else { return nil }
+        editField = nil
+        let text = f.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        f.removeFromSuperview()
+        titleLabel.isHidden = false
+        return text
+    }
+}
+
+extension TabButton: NSTextFieldDelegate {
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        switch sel {
+        case #selector(NSResponder.insertNewline(_:)):
+            if let text = endEditing() { onRename?(text) }
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            _ = endEditing()   // Esc — 변경 취소
+            return true
+        default:
+            return false
+        }
+    }
+
+    // 포커스 상실(다른 곳 클릭)로 끝나면 현재 값으로 커밋.
+    func controlTextDidEndEditing(_ obj: Notification) {
+        if let text = endEditing() { onRename?(text) }
     }
 }
