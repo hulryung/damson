@@ -19,6 +19,7 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.showScrollbar") private var showScrollbar: Bool = false
     @AppStorage("damson.tabTransition") private var tabTransitionRaw: String = TabTransitionStyle.slide.rawValue
     @AppStorage("damson.activePaneIndicator") private var activePaneRaw: String = ActivePaneIndicator.dimInactive.rawValue
+    @AppStorage("damson.focusFollowsMouse") private var focusFollowsMouse: Bool = true
     @AppStorage("damson.newTabDirectory") private var newTabDirRaw: String = NewTabDirectory.home.rawValue
     @AppStorage("damson.backgroundOpacity") private var backgroundOpacity: Double = 1.0
     @AppStorage("damson.backgroundBlur") private var backgroundBlur: Bool = false
@@ -149,6 +150,10 @@ struct DamsonSettingsView: View {
                         Text(style.displayName).tag(style.rawValue)
                     }
                 }
+                Toggle("Focus follows mouse", isOn: $focusFollowsMouse)
+                Text("켜면(기본) 클릭 없이 마우스 커서가 올라간 pane이 활성화됩니다. 분할(split)된 창에서만 의미가 있습니다.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 Picker("New Tab Directory", selection: $newTabDirRaw) {
                     ForEach(NewTabDirectory.allCases, id: \.rawValue) { policy in
                         Text(policy.displayName).tag(policy.rawValue)

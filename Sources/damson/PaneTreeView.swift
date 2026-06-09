@@ -569,10 +569,32 @@ private final class PaneLeafWrapper: NSView {
         borderLayer.borderWidth = 0
         layer?.addSublayer(dimLayer)
         layer?.addSublayer(borderLayer)
+
+        // Focus-follows-mouse: hover over a pane to activate it. The terminal
+        // surface sits on top with its own tracking areas, but tracking areas are
+        // per-view and independent, so this one still fires when the cursor crosses
+        // into the wrapper. `.inVisibleRect` keeps it sized across splits/resizes.
+        let tracking = NSTrackingArea(
+            rect: .zero,
+            options: [.activeInActiveApp, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self, userInfo: nil
+        )
+        addTrackingArea(tracking)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    /// 커서가 이 pane에 들어오면(설정 켜짐 + 키 윈도우) 활성 pane으로 만든다 — 클릭과
+    /// 동일 경로. 마우스 버튼을 누른 채 다른 pane으로 끌고 가는(드래그 선택/divider)
+    /// 동안엔 이벤트가 원래 뷰에 캡처돼 enter가 안 와 방해하지 않는다.
+    override func mouseEntered(with event: NSEvent) {
+        guard FocusFollowsMouse.enabled,
+              window?.isKeyWindow == true,
+              owner?.activeLeaf !== leaf
+        else { return }
+        owner?.setActive(leaf)
+    }
 
     override func layout() {
         super.layout()
