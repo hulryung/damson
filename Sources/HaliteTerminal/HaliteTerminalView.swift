@@ -263,7 +263,9 @@ public final class HaliteSurfaceView: NSView, NSTextInputClient {
         NotificationCenter.default.addObserver(
             forName: .haliteAppleHUDToggled, object: nil, queue: .main
         ) { [weak self] _ in self?.applyAppleHUD() }
-        if HaliteSurfaceView.isAppleHUDEnabled { applyAppleHUD() }
+        // 초기 상태를 항상 명시 적용 — MTL_HUD_ENABLED env로 자동 켜진 Apple HUD를
+        // 시작 시엔 꺼둔다(⌃⌘J로만 켜지도록). 기본 isAppleHUDEnabled == false.
+        applyAppleHUD()
 
         gridSubscription = session.gridChanged
             .receive(on: RunLoop.main)
