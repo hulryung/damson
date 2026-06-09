@@ -176,6 +176,34 @@ final class CompactTabBarView: NSView {
         return event
     }
 
+    // MARK: - 타이틀바 더블클릭
+
+    /// 탭이 아닌 빈 영역(신호등 옆 / 탭 사이 / 우측 여백)을 더블클릭하면 네이티브
+    /// 타이틀바처럼 동작한다. 이 뷰가 `.fullSizeContentView` 창의 타이틀바 자리를
+    /// 덮고 있어 시스템 기본 더블클릭이 닿지 않으므로 직접 처리한다.
+    /// 탭 버튼/닫기/+버튼은 별도 서브뷰라 hitTest가 그쪽으로 보내므로 여기엔 안 온다.
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2, !reorderModeActive {
+            performTitlebarDoubleClickAction()
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// 시스템 환경설정 "제목 막대 두 번 클릭 시"(AppleActionOnDoubleClick)를 따른다.
+    /// 미설정 기본값은 확대(zoom)다 — 사용자가 원한 최대화 동작.
+    private func performTitlebarDoubleClickAction() {
+        guard let window else { return }
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+        case "Minimize":
+            window.performMiniaturize(nil)
+        case "None":
+            break
+        default:   // "Maximize" 또는 미설정 → 확대.
+            window.performZoom(nil)
+        }
+    }
+
     private func tabBaseX(_ i: Int) -> CGFloat {
         leadingReservation + CGFloat(i) * (perTab + tabSpacing)
     }
