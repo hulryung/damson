@@ -46,27 +46,32 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// Recreated when the drawable size changes.
     private var sceneTexture: MTLTexture?
 
-    /// 렌더 레이트 리밋. `nextDrawable()`은 드로어블 풀(3)이 차면 다음 vsync까지 메인
-    /// 스레드를 막아 PTY 입력을 starve한다. 직전 present 시각을 기억해 주사율 간격보다
-    /// 자주 부르는 렌더는 coalesce(한 번만 예약 후 스킵)한다.
+    /// Render rate limiting. `nextDrawable()` blocks the main thread until the next
+    /// vsync once the drawable pool (3) fills, starving PTY input. We remember the
+    /// last present time and coalesce renders called more often than the refresh
+    /// interval (schedule once, then skip).
     private var lastPresentTime: CFTimeInterval = 0
     private var coalesceScheduled = false
 
-    /// 스크롤/이즈 렌더 루프 상태. 스크롤 중에는 이벤트마다 동기 렌더하지 않고, 델타만
-    /// 적용한 뒤 이 플래그를 세워 디스플레이 링크(`animLink`)가 vsync마다 최신 위치를 한 번
-    /// 렌더하게 한다 — 프레임 간격이 균일해져 버벅임이 사라진다(asyncAfter 타이머 coalesce가
-    /// vsync에 안 맞아 생기던 judder 제거). 활동이 멎으면 몇 프레임 뒤 링크를 멈춘다.
+    /// Scroll / ease render-loop state. While scrolling, we don't render
+    /// synchronously per event; instead we apply only the delta and set this flag so
+    /// the display link (`animLink`) renders the latest position once per vsync —
+    /// frame intervals become uniform and the stutter disappears (it removes the
+    /// judder caused by asyncAfter-timer coalescing not aligning to vsync). Once
+    /// activity stops, the link is halted a few frames later.
     private var scrollRenderPending = false
     private var renderLoopIdleTicks = 0
     private let renderLoopMaxIdleTicks = 4
 
-    /// 프레임 페이싱 측정. env `DAMSON_FPS_LOG=1`면 1초마다 NSLog, perf HUD가 켜져 있으면
-    /// 0.25초마다 `onPerfStats`로 문자열을 보낸다. 디스플레이 링크 틱 간격을 재므로 링크가
-    /// 60인지 120인지, jitter가 있는지 그대로 드러난다.
+    /// Frame-pacing measurement. With env `DAMSON_FPS_LOG=1` it NSLogs once per
+    /// second; when the perf HUD is on it sends a string via `onPerfStats` every
+    /// 0.25s. It measures the display-link tick interval, so whether the link runs
+    /// at 60 or 120 — and any jitter — shows through directly.
     private let fpsLogEnabled = ProcessInfo.processInfo.environment["DAMSON_FPS_LOG"] != nil
     private var perfHUDActive = false
-    /// 커스텀 perf HUD가 켜져 있을 때 **실제 present 간격**(초)을 보낸다 — 화면에 그려진
-    /// 프레임 기준이라 Apple HUD의 FPS와 같은 값을 잰다(디스플레이 링크 틱 ≠ present).
+    /// When the custom perf HUD is on, sends the **actual present interval**
+    /// (seconds) — measured against frames drawn to screen, so it matches Apple
+    /// HUD's FPS (display-link tick ≠ present).
     var onPerfSample: ((CFTimeInterval) -> Void)?
     private var lastHUDPresentTime: CFTimeInterval = 0
     private var fpsAccum: CFTimeInterval = 0
@@ -75,16 +80,18 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     private var fpsMin: CFTimeInterval = .infinity
     private var fpsMax: CFTimeInterval = 0
 
-    /// 우리 커스텀 그래프 HUD on/off. 켜면 present마다 프레임 간격을 HUD로 보낸다(렌더
-    /// 활동이 있을 때만 — Apple HUD와 동일하게 실제 화면 갱신 기준).
+    /// Our custom graph HUD on/off. When on, it sends the frame interval to the HUD
+    /// on every present (only while there's render activity — keyed to actual screen
+    /// refreshes, same as the Apple HUD).
     func setPerfHUD(_ on: Bool) {
         perfHUDActive = on
         lastHUDPresentTime = 0
     }
 
-    /// Apple Metal Performance HUD on/off — 공식 per-layer API. `MTL_HUD_ENABLED` 환경
-    /// 변수(전역 주입) 대신 이걸 쓰면 앱에서 토글할 수 있고, env가 디스플레이 변경 시
-    /// libMTLHud에서 크래시하던 경로를 피한다. "default"=표시, "none"=숨김.
+    /// Apple Metal Performance HUD on/off — the official per-layer API. Using this
+    /// instead of the `MTL_HUD_ENABLED` env var (global injection) lets the app
+    /// toggle it, and avoids the path where the env var crashed libMTLHud on a
+    /// display change. "default"=show, "none"=hide.
     func setAppleHUD(_ on: Bool) {
         metalView.metalLayer.developerHUDProperties = on ? ["mode": "default"] : ["mode": "none"]
     }
@@ -105,15 +112,16 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     private var prevCursorRow: [Cell] = []
     private var prevCursorRowIndex: Int = -1
     private var lastGlyphDiffVersion: UInt64 = .max
-    /// reveal 페이싱 시계. 글자 애니메이션 시작 시각을 일정 간격으로 흘려보내 버스트
-    /// 입력을 매끄러운 흐름으로 만든다. 입력이 멈추면 now보다 뒤처져 즉시 재생으로 복귀.
+    /// Reveal-pacing clock. Spaces out glyph-animation start times at a fixed
+    /// interval so bursty input becomes a smooth flow. When input stops, the clock
+    /// falls behind `now` and reverts to instant playback.
     private var glyphRevealClock: CFTimeInterval = 0
-    private static let glyphRevealPace: CFTimeInterval = 0.022   // 글자 간 reveal 간격
-    private static let glyphRevealMaxLead: CFTimeInterval = 0.07 // 커서 뒤 최대 지연(상한)
+    private static let glyphRevealPace: CFTimeInterval = 0.022   // reveal interval between glyphs
+    private static let glyphRevealMaxLead: CFTimeInterval = 0.07 // max lag behind the cursor (cap)
     private lazy var glyphAnimLink = AnimationLink(view: metalView)
-    /// 애니메이션 렌더를 ~60fps로 상한(주사율 무관). 120Hz면 격 프레임, 60Hz면 매
-    /// 프레임 → 둘 다 60fps. 매 프레임 풀 렌더가 메인 스레드를 점유해 PTY 입력을
-    /// starve하는 것을 막는다.
+    /// Cap animation rendering at ~60fps (independent of refresh rate). At 120Hz
+    /// every other frame, at 60Hz every frame → 60fps either way. Prevents a full
+    /// render every frame from monopolizing the main thread and starving PTY input.
     private var lastGlyphRenderTime: CFTimeInterval = 0
     private static let glyphRenderMinInterval: CFTimeInterval = 0.013
     /// Ligature shaper, rebuilt alongside the atlas (same font). Used only when
@@ -172,18 +180,19 @@ final class MetalTerminalBackend: TerminalRenderBackend {
 
     private func redrawLast() {
         guard let grid = lastGrid else { return }
-        // 동기 출력(DEC 2026 BSU…ESU) 진행 중엔 백엔드 자체 재그리기(coalesce/애니메이션/
-        // 레이아웃)를 건너뛴다. 그러지 않으면 redraw burst 중간의 불완전한 grid가
-        // present돼 화면이 깜빡인다. 완성된 프레임은 ESU 후 host의 renderNow(또는 150ms
-        // 안전 플러시)가 그린다.
+        // While synchronized output (DEC 2026 BSU…ESU) is in progress, skip
+        // backend-initiated redraws (coalesce / animation / layout). Otherwise an
+        // incomplete grid mid-redraw-burst gets presented and the screen flickers.
+        // The completed frame is drawn by the host's renderNow after ESU (or a 150ms
+        // safety flush).
         if grid.inSyncOutputMode { return }
         render(grid: grid, config: config, state: lastState, metrics: metrics)
     }
 
     // MARK: - vsync-aligned scroll / ease render loop
 
-    /// 디스플레이 링크 루프를 (없으면) 시작한다. 스크롤 델타가 들어왔거나 프로그램적
-    /// 이즈가 시작될 때 호출. 이미 돌고 있으면 그대로 둔다.
+    /// Start the display-link loop (if not already running). Called when a scroll
+    /// delta arrives or a programmatic ease begins. If it's already running, leave it.
     private func ensureRenderLoop() {
         guard !animLink.isRunning else { return }
         renderLoopIdleTicks = 0
@@ -191,17 +200,18 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             self?.renderLoopTick(dt: dt) ?? true
         }
         if !started {
-            // macOS < 14: 디스플레이 링크 없음 → 이즈는 즉시 안착시키고 한 번만 동기 렌더.
-            if scroll.animating { _ = scroll.step(dt: 10) }   // 큰 dt → 타깃으로 즉시 수렴
+            // macOS < 14: no display link → settle the ease immediately and render once synchronously.
+            if scroll.animating { _ = scroll.step(dt: 10) }   // large dt → converge to target instantly
             scrollRenderPending = false
             redrawLast()
             onScrollGeometryChanged?()
         }
     }
 
-    /// 한 vsync 프레임. 이즈가 진행 중이면 한 스텝 전진시키고, (이즈든 새 스크롤 델타든)
-    /// 변화가 있으면 최신 위치를 정확히 한 번 렌더한다. 활동이 멎으면 몇 프레임 뒤 멈춘다.
-    /// 반환값: 루프를 멈춰야 하면 true.
+    /// One vsync frame. If an ease is in flight, advance it one step; if anything
+    /// changed (whether an ease or a new scroll delta), render the latest position
+    /// exactly once. Once activity stops, halt a few frames later. Returns true when
+    /// the loop should stop.
     private func renderLoopTick(dt: CFTimeInterval) -> Bool {
         let easing = scroll.animating
         if easing { _ = scroll.step(dt: CGFloat(dt)) }
@@ -211,7 +221,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         if easing || scrollRenderPending {
             scrollRenderPending = false
             renderLoopIdleTicks = 0
-            // vsync에 이미 정렬됨 → throttle 없이 즉시 렌더.
+            // Already aligned to vsync → render immediately, no throttle.
             if let grid = lastGrid, !grid.inSyncOutputMode {
                 render(grid: grid, config: config, state: lastState, metrics: metrics,
                        throttled: false)
@@ -220,12 +230,12 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         } else {
             renderLoopIdleTicks += 1
         }
-        // 이즈가 진행 중이면 계속. 아니면 유휴 유예가 지나면 멈춘다(제스처+모멘텀 종료).
+        // Keep going while an ease is in flight. Otherwise stop once the idle grace period passes (gesture + momentum ended).
         if scroll.animating { return false }
         return renderLoopIdleTicks > renderLoopMaxIdleTicks
     }
 
-    /// env `DAMSON_FPS_LOG=1`일 때 1초마다 NSLog (HUD는 onPerfSample로 별도 처리).
+    /// NSLogs once per second when env `DAMSON_FPS_LOG=1` (the HUD is handled separately via onPerfSample).
     private func measureFrame(dt: CFTimeInterval, rendered: Bool) {
         fpsAccum += dt
         fpsTicks += 1
@@ -242,9 +252,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
 
     // MARK: glyph appear/disappear
 
-    /// 그리드가 바뀐 프레임에 커서 행을 직전 스냅샷과 비교해, 소량(≤4) 변화면
-    /// 생성/소멸 애니메이션을 등록한다. 행이 바뀌었거나(Enter/스크롤) 대량 변화면
-    /// (라인 redraw/붙여넣기) 건너뛴다 — 타이핑/지우기만 잡기 위해서.
+    /// On a frame where the grid changed, compare the cursor row against the
+    /// previous snapshot and, for small (≤4) changes, register appear/disappear
+    /// animations. Skip when the row changed (Enter/scroll) or there's a large
+    /// change (line redraw/paste) — the goal is to catch only typing/deleting.
     private func diffGlyphChanges(grid: Grid) {
         let appear = config.glyphAppear
         let disappear = config.glyphDisappear
@@ -252,7 +263,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             prevCursorRowIndex = -1
             return
         }
-        // grid 버전이 그대로면(애니메이션 틱 등) 재diff하지 않는다.
+        // If the grid version is unchanged (e.g. an animation tick), don't re-diff.
         guard grid.version != lastGlyphDiffVersion else { return }
         lastGlyphDiffVersion = grid.version
 
@@ -260,11 +271,11 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let cur: [Cell] = (0..<grid.cols).map { grid.cell(row: grid.cursorRow, col: $0) }
         defer { prevCursorRow = cur; prevCursorRowIndex = urow }
 
-        // 직전과 같은 커서 행일 때만 비교(행이 바뀌면 타이핑이 아님).
+        // Only compare when it's the same cursor row as before (a row change isn't typing).
         guard prevCursorRowIndex == urow, prevCursorRow.count == cur.count else { return }
 
-        var appears: [Int] = []                 // 글리프가 새로 생긴 열
-        var disappears: [Int: Cell] = [:]       // 글리프가 사라진 열 → 옛 셀
+        var appears: [Int] = []                 // columns where a glyph newly appeared
+        var disappears: [Int: Cell] = [:]       // columns where a glyph disappeared → the old cell
         for c in 0..<cur.count {
             let beforeBlank = prevCursorRow[c].char == " "
             let afterBlank = cur[c].char == " "
@@ -276,28 +287,31 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         }
         guard !appears.isEmpty || !disappears.isEmpty else { return }
 
-        // 키를 누르고 있으면 에코가 묶여 한 프레임에 여러 글자가 한꺼번에 들어온다.
-        // 커서에 인접한 연속(run)이면 최대 16자까지 애니메이션하되, 시작 시각을 reveal
-        // 시계로 일정 간격(pace) 흘려보내 버스트를 매끄러운 흐름으로 만든다. 입력이
-        // 멈추면 시계가 now보다 뒤처져 즉시 재생으로 복귀한다(단발 입력은 지연 0).
+        // Holding a key down batches the echo, so several characters arrive at once
+        // in a single frame. For a contiguous run adjacent to the cursor, animate up
+        // to 16 characters, but space their start times via the reveal clock at a
+        // fixed pace so the burst becomes a smooth flow. When input stops, the clock
+        // falls behind `now` and reverts to instant playback (a single keystroke has
+        // zero delay).
         let cap = 16
         let cursorCol = grid.cursorCol
         let now = CACurrentMediaTime()
 
-        // 타이핑: 커서 왼쪽으로 cursorCol-1에서 끝나는 연속 run (커서 우측 변화 =
-        // autosuggestion 등은 무시).
+        // Typing: a contiguous run ending at cursorCol-1, to the left of the cursor
+        // (changes right of the cursor = autosuggestion etc. are ignored).
         let typed = appears.filter { $0 < cursorCol }.sorted()
         let typingRun = !typed.isEmpty && typed.last! == cursorCol - 1
             && (typed.last! - typed.first!) == typed.count - 1 && typed.count <= cap
-        // 백스페이스: 커서에서 시작하는 연속 run.
+        // Backspace: a contiguous run starting at the cursor.
         let cleared = disappears.keys.filter { $0 >= cursorCol }.sorted()
         let backRun = !cleared.isEmpty && cleared.first! == cursorCol
             && (cleared.last! - cleared.first!) == cleared.count - 1 && cleared.count <= cap
 
-        // 지연이 상한을 넘으면 배치 시작에서만 시계를 now로 리셋(catch-up)해 지연을
-        // 묶는다. 배치 안에서는 항상 pace 간격으로 진행시켜 글자들이 한꺼번에 뭉치지
-        // 않게 한다. (예전엔 글자마다 now+상한으로 clamp해서 상한에 닿은 배치가 통째로
-        // 풀려 ~4자씩 멈칫거렸다.)
+        // When the lag exceeds the cap, reset the clock to `now` only at the start of
+        // the batch (catch-up), bounding the lag. Within a batch, always advance by
+        // the pace interval so the characters don't clump together at once.
+        // (Previously each character was clamped to now+cap, so a batch that hit the
+        // cap released all at once and stuttered ~4 chars at a time.)
         if glyphRevealClock > now + Self.glyphRevealMaxLead { glyphRevealClock = now }
         func nextRevealStart() -> CFTimeInterval {
             let start = max(now, glyphRevealClock)
@@ -307,14 +321,14 @@ final class MetalTerminalBackend: TerminalRenderBackend {
 
         if appear != .none, typingRun {
             let dur = appear.duration(appearing: true)
-            for c in typed {                    // 왼쪽(오래된 글자)부터 차례로
+            for c in typed {                    // left to right (oldest character first)
                 glyphAnims[CellPos(row: urow, col: c)] = GlyphAnimEntry(
                     appearing: true, start: nextRevealStart(), duration: dur, style: appear, cell: cur[c])
             }
         }
         if disappear != .none, backRun {
             let dur = disappear.duration(appearing: false)
-            for c in cleared.reversed() {       // 오른쪽(먼저 지워진 글자)부터 차례로
+            for c in cleared.reversed() {       // right to left (first-deleted character first)
                 glyphAnims[CellPos(row: urow, col: c)] = GlyphAnimEntry(
                     appearing: false, start: nextRevealStart(), duration: dur, style: disappear, cell: disappears[c]!)
             }
@@ -333,10 +347,11 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             guard let self else { return true }
             self.pruneGlyphAnims()
             if self.glyphAnims.isEmpty { return true }
-            // 매 프레임 풀 렌더는 메인 스레드를 점유해 PTY 입력을 starve한다(입력이
-            // 6~9자씩 버스트로 풀림). 시간 기반 ~60fps 상한으로 입력에 메인 스레드를
-            // 양보하면 키 반복 자연 속도로 한 글자씩 매끄럽게 흐른다. (주사율 무관 —
-            // 120Hz는 격 프레임, 60Hz는 매 프레임.)
+            // A full render every frame monopolizes the main thread and starves PTY
+            // input (input releases in bursts of 6–9 chars). A time-based ~60fps cap
+            // yields the main thread to input, so characters flow one at a time
+            // smoothly at the natural key-repeat rate. (Refresh-rate independent —
+            // 120Hz every other frame, 60Hz every frame.)
             let t = CACurrentMediaTime()
             if t - self.lastGlyphRenderTime >= Self.glyphRenderMinInterval {
                 self.lastGlyphRenderTime = t
@@ -347,14 +362,14 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         if !ok { glyphAnims.removeAll() }   // macOS < 14: no link → instant (no anim)
     }
 
-    /// (row,col) 셀의 생성 애니메이션 진행도(0~1). 없으면 nil.
+    /// The appear-animation progress (0~1) for cell (row,col). nil if none.
     private func appearProgress(row: Int, col: Int) -> Float? {
         guard let a = glyphAnims[CellPos(row: row, col: col)], a.appearing else { return nil }
         let p = Float((CACurrentMediaTime() - a.start) / a.duration)
         return max(0, min(1, p))
     }
 
-    /// 프로토콜 진입점 — 타이핑/grid 변경 등 비주기 경로. throttle 적용.
+    /// Protocol entry point — aperiodic paths like typing / grid changes. Throttled.
     func render(grid: Grid, config: DamsonConfig, state: RenderState, metrics: CellMetrics) {
         render(grid: grid, config: config, state: state, metrics: metrics, throttled: true)
     }
@@ -371,18 +386,21 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         scroll.maxY = max(0, contentHeight - viewportHeight)
 
         let layer = metalView.metalLayer
-        // 리사이즈 중엔 레이아웃 트랜잭션과 함께 동기 present — 레이트 리밋 미적용.
+        // During resize, present synchronously with the layout transaction — no rate limit.
         let syncPresent = layer.presentsWithTransaction
-        // 렌더를 display 주사율로 cap한다. nextDrawable()은 드로어블 풀(3)이 차면 다음
-        // vsync까지 메인 스레드를 막는데(타이핑 중 ~16ms 블록 → 입력 starve), 빠른
-        // 연속 입력이 vsync보다 자주 렌더를 부르면 풀이 고갈돼 블록이 잦아진다. 직전
-        // present로부터 주사율 간격이 안 지났으면 이번 렌더는 한 번만 coalesce 예약하고
-        // 건너뛴다(단발 입력은 간격이 충분해 즉시 렌더 → 저지연 유지).
-        // display 주사율 간격(120Hz→8.3ms, 60Hz→16.7ms). 그보다 자주 부르는 렌더는 스킵.
+        // Cap rendering at the display refresh rate. nextDrawable() blocks the main
+        // thread until the next vsync once the drawable pool (3) fills (a ~16ms block
+        // while typing → input starvation), and fast successive input that calls
+        // render more often than vsync drains the pool and blocks frequently. If the
+        // refresh interval hasn't elapsed since the last present, this render is
+        // skipped after scheduling a single coalesce (a single keystroke leaves
+        // enough of a gap to render immediately → low latency preserved).
+        // Display refresh interval (120Hz→8.3ms, 60Hz→16.7ms). Renders called more often than that are skipped.
         let fps = max(60, metalView.window?.screen?.maximumFramesPerSecond ?? 60)
         let minRenderInterval = 1.0 / CFTimeInterval(fps)
-        // 디스플레이 링크가 부르는 렌더(스크롤/이즈)는 이미 vsync에 정렬돼 있으므로
-        // throttle을 건너뛴다. throttle은 타이핑 등 비주기 입력의 nextDrawable 블록만 막는다.
+        // Renders driven by the display link (scroll/ease) are already vsync-aligned,
+        // so skip throttling. The throttle only guards the nextDrawable block for
+        // aperiodic input such as typing.
         if throttled, !syncPresent {
             let since = CACurrentMediaTime() - lastPresentTime
             if since < minRenderInterval {
@@ -400,10 +418,11 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         }
 
         ensureAtlas()
-        // 커서 근처 타이핑/지우기를 감지해 글자 생성/소멸 애니메이션을 등록(grid가
-        // 바뀐 프레임에만). 이후 buildInstances가 이 진행도를 반영한다.
+        // Detect typing/deleting near the cursor and register glyph appear/disappear
+        // animations (only on frames where the grid changed). buildInstances then
+        // reflects that progress.
         diffGlyphChanges(grid: grid)
-        // 배경 불투명도 < 1이면 레이어를 투명으로 둬 뒤(데스크톱/블러)가 비치게 한다.
+        // When background opacity < 1, leave the layer transparent so what's behind (desktop/blur) shows through.
         let opacity = max(0.2, min(1.0, config.backgroundOpacity))
         layer.isOpaque = opacity >= 1.0
         guard layer.drawableSize.width > 0, let drawable = layer.nextDrawable() else {
@@ -414,8 +433,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             buildInstances(grid: grid, state: state)
         let bgInstances = fadeBackgrounds(rawBg, opacity: opacity)
 
-        // 화면 효과(CRT 등)가 켜져 있으면 터미널을 오프스크린 sceneTexture에 그린 뒤
-        // 전체화면 post-fx 패스로 drawable에 합성한다. 꺼져 있으면 drawable에 직접.
+        // When a screen effect (CRT etc.) is on, draw the terminal into the
+        // offscreen sceneTexture, then composite onto the drawable with a fullscreen
+        // post-fx pass. When off, draw directly to the drawable.
         let effect = config.screenEffect
         let sceneTarget: MTLTexture = effect.isActive
             ? ensureSceneTexture(matching: drawable.texture)
@@ -518,7 +538,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             cmd.commit()
         }
         lastPresentTime = CACurrentMediaTime()
-        // perf HUD: 실제 present 간격을 보낸다(화면에 그려진 프레임 기준 = Apple HUD와 동일).
+        // perf HUD: send the actual present interval (keyed to frames drawn to screen = same as Apple HUD).
         if perfHUDActive {
             if lastHUDPresentTime > 0 { onPerfSample?(lastPresentTime - lastHUDPresentTime) }
             lastHUDPresentTime = lastPresentTime
@@ -587,9 +607,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                 // background fills caused by fractional cell width.
                 let x0 = snap(inset.width + CGFloat(col) * metrics.width)
                 let x1 = snap(inset.width + CGFloat(col + wcells) * metrics.width)
-                // 스냅은 콘텐츠 위치에만 적용하고(인접 행이 같은 snap 인자 → seam 없음),
-                // scrollY는 스냅 밖에서 빼 서브픽셀로 남긴다 → 스크롤이 1px 양자화 없이 부드럽다.
-                // (docs/SMOOTH-SCROLL.md: scrollYPixels는 정수일 필요 없음.)
+                // Snap only the content position (adjacent rows share the same snap
+                // input → no seam); subtract scrollY outside the snap to keep it
+                // sub-pixel → scrolling is smooth with no 1px quantization.
+                // (docs/SMOOTH-SCROLL.md: scrollYPixels need not be an integer.)
                 let y0 = snap(inset.height + CGFloat(row) * metrics.height) - scrollY
                 let y1 = snap(inset.height + CGFloat(row + 1) * metrics.height) - scrollY
                 let origin = SIMD2<Float>(Float(x0), Float(y0))
@@ -599,9 +620,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                                        activeFind: activeFind, isCursor: isCursor) {
                     let bgi = BgInstance(origin: origin, size: size, color: rgba(color))
                     bg.append(bgi)
-                    // 빈 셀 위의 블록 커서는 overlay 패스(glyph 위)에도 한 번 더 그린다.
-                    // 그래야 백스페이스로 사라지는 ghost 글리프가 커서를 가리지 않고,
-                    // 셀 밖으로 미끄러지거나 퍼지는 부분만 커서 옆으로 보인다.
+                    // Draw the block cursor over a blank cell once more in the
+                    // overlay pass (on top of glyphs). That way a ghost glyph fading
+                    // out on backspace doesn't cover the cursor — only the parts that
+                    // slide or spread outside the cell show next to the cursor.
                     if isCursor, blockCursorOn, cell.char == " ", config.glyphDisappear != .none {
                         overlay.append(bgi)
                     }
@@ -628,7 +650,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                     var inst = GlyphInstance(origin: origin, size: size,
                                              uvOrigin: region.uv.origin, uvSize: region.uv.size,
                                              color: rgba(fg))
-                    // 생성 애니메이션(커서 근처): 진행도만큼 fade/scale.
+                    // Appear animation (near the cursor): fade/scale by progress.
                     if config.glyphAppear != .none, let p = appearProgress(row: row, col: col) {
                         inst = config.glyphAppear.apply(to: inst, appearing: true, p: p)
                     }
@@ -667,7 +689,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                                  startCol: grid.cursorCol, gridCols: grid.cols,
                                  map: map, bg: &bg, glyphs: &glyphs, colorGlyphs: &colorGlyphs)
         }
-        // 소멸 애니메이션: grid엔 더 이상 없는 글자를 기억해 ghost로 fade/collapse.
+        // Disappear animation: remember characters no longer in the grid and fade/collapse them as ghosts.
         if config.glyphDisappear != .none, !glyphAnims.isEmpty {
             appendDisappearingGlyphs(first: first, last: last, glyphs: &glyphs,
                                      colorGlyphs: &colorGlyphs)
@@ -676,7 +698,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         return (bg, glyphs, colorGlyphs, overlay)
     }
 
-    /// grid에서 사라진 글자를 기억해둔 셀로 ghost glyph를 그려 소멸 애니메이션을 낸다.
+    /// Draw ghost glyphs from remembered cells for characters that left the grid, producing the disappear animation.
     private func appendDisappearingGlyphs(first: Int, last: Int,
                                           glyphs: inout [GlyphInstance],
                                           colorGlyphs: inout [GlyphInstance]) {
@@ -701,7 +723,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             inst = style.apply(to: inst, appearing: false, p: max(0, min(1, p)))
             if region.isColor { colorGlyphs.append(inst) } else { glyphs.append(inst) }
 
-            // Burst: 폭죽처럼 작은 무지개 별이 바깥으로 터져나간다.
+            // Burst: tiny rainbow stars burst outward like fireworks.
             if style == .burst {
                 appendBurstParticles(centerX: CGFloat(x0 + x1) / 2,
                                      centerY: CGFloat(y0 + y1) / 2,
@@ -711,13 +733,14 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         }
     }
 
-    /// burst 효과의 별 파티클 K개를 방출. 방향/속도는 (row,col,i) 해시로 결정(프레임마다
-    /// 일관). easeOut으로 빠르게 퍼지다 감속, 중력으로 살짝 떨어지며 페이드.
+    /// Emit K star particles for the burst effect. Direction/speed are derived from
+    /// a (row,col,i) hash (consistent frame to frame). They spread fast then slow via
+    /// easeOut, drop slightly under gravity, and fade out.
     private func appendBurstParticles(centerX: CGFloat, centerY: CGFloat,
                                       seedRow: Int, seedCol: Int, p: Float,
                                       into glyphs: inout [GlyphInstance]) {
-        // "*"(별표) — 모든 폰트에 확실히 있는 모노크롬 글리프. (✦ 등은 폰트에 없으면
-        // 빈 칸으로 래스터돼 안 보였음.)
+        // "*" (asterisk) — a monochrome glyph reliably present in every font. (✦ and
+        // such rasterized to a blank and didn't show when the font lacked them.)
         guard let star = atlas?.region(for: "*", bold: true, wide: false), !star.isColor
         else { return }
         let cellH = max(metrics.height, 1)
@@ -739,7 +762,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             let py = centerY + CGFloat(sin(angle)) * dist + gravity
             let sz = starBase * CGFloat(1 - 0.45 * p)
             guard sz > 0.5 else { continue }
-            let alpha = CGFloat(max(0, 1 - p))        // 날아가며 페이드
+            let alpha = CGFloat(max(0, 1 - p))        // fade as it flies out
             let hue = CGFloat(hashf(i, 3))
             let color = NSColor(hue: hue, saturation: 0.85, brightness: 1, alpha: 1)
             var rgbaColor = rgba(color)
@@ -960,13 +983,13 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// won't fall through to a no-op `super.scrollWheel`).
     func handleScrollWheel(_ event: NSEvent) -> Bool {
         scroll.maxY = max(0, contentHeight - viewportHeight)
-        // applyWheel은 animating=false로 in-flight 이즈를 취소한다(직접 입력이 우선).
+        // applyWheel sets animating=false to cancel any in-flight ease (direct input wins).
         let moved = scroll.applyWheel(deltaY: event.scrollingDeltaY,
                                       precise: event.hasPreciseScrollingDeltas,
                                       lineHeight: max(metrics.height, 1),
                                       viewport: viewportHeight)
         if moved {
-            // 동기 렌더 대신 vsync 정렬 렌더를 요청 — 프레임 간격이 균일해 부드럽다.
+            // Request a vsync-aligned render instead of a synchronous one — uniform frame intervals make it smooth.
             scrollRenderPending = true
             ensureRenderLoop()
             onUserScroll?()              // host updates followingBottom
@@ -987,8 +1010,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
 
     // MARK: - Color
 
-    /// 화면 효과용 오프스크린 씬 텍스처를 drawable 크기에 맞춰 보장(없거나 크기가
-    /// 다르면 재생성). drawable과 같은 픽셀 포맷 + render target/shader read.
+    /// Ensure the offscreen scene texture for screen effects matches the drawable
+    /// size (recreate it if missing or sized differently). Same pixel format as the
+    /// drawable + render target / shader read.
     private func ensureSceneTexture(matching target: MTLTexture) -> MTLTexture {
         if let t = sceneTexture, t.width == target.width, t.height == target.height {
             return t
@@ -1003,7 +1027,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         return tex
     }
 
-    /// post-fx 패스 디스크립터. fullscreen 삼각형이 모든 픽셀을 덮어쓰므로 load는 dontCare.
+    /// post-fx pass descriptor. The fullscreen triangle overwrites every pixel, so loadAction is dontCare.
     private func postfxPass(_ drawable: MTLTexture) -> MTLRenderPassDescriptor {
         let p = MTLRenderPassDescriptor()
         p.colorAttachments[0].texture = drawable
@@ -1012,8 +1036,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         return p
     }
 
-    /// 배경 clear 색. `opacity` < 1이면 premultiplied 투명 배경(rgb×O, a=O)으로 만들어
-    /// 레이어가 뒤(데스크톱/블러)와 합성하게 한다. opacity=1이면 기존과 동일(불투명).
+    /// Background clear color. When `opacity` < 1, produce a premultiplied
+    /// transparent background (rgb×O, a=O) so the layer composites with what's behind
+    /// (desktop/blur). At opacity=1 it's unchanged (opaque).
     private func clearColor(_ c: NSColor, opacity: CGFloat = 1.0) -> MTLClearColor {
         let s = c.usingColorSpace(.sRGB) ?? c
         let o = Double(max(0, min(1, opacity)))
@@ -1021,8 +1046,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                              blue: Double(s.blueComponent) * o, alpha: o)
     }
 
-    /// 배경 fill 인스턴스(배경/선택/커서)의 알파에만 불투명도를 곱한다. 텍스트·이모지·
-    /// 밑줄 overlay는 건드리지 않아 불투명하게 남는다. opacity=1이면 입력 그대로 반환.
+    /// Multiply opacity into the alpha of background fill instances
+    /// (background/selection/cursor) only. Text, emoji, and underline overlays are
+    /// left untouched so they stay opaque. At opacity=1, return the input as-is.
     private func fadeBackgrounds(_ insts: [BgInstance], opacity: CGFloat) -> [BgInstance] {
         guard opacity < 1.0 else { return insts }
         let o = Float(max(0, min(1, opacity)))

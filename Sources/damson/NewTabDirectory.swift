@@ -1,12 +1,12 @@
 import Foundation
 
-/// 새 탭을 열 때 시작 작업 디렉토리 정책. UserDefaults("damson.newTabDirectory")에
-/// raw string으로 저장. (split은 이 설정과 무관하게 항상 현재 pane의 cwd를 상속한다.)
+/// Policy for the starting working directory when opening a new tab. Stored as a raw string in
+/// UserDefaults("damson.newTabDirectory"). (Splits always inherit the current pane's cwd regardless of this setting.)
 enum NewTabDirectory: String, CaseIterable {
-    /// 항상 홈 디렉토리에서 시작. **디폴트.**
+    /// Always start in the home directory. **Default.**
     case home
 
-    /// 현재 활성 탭/pane의 작업 디렉토리를 상속(셸 통합 OSC 7 보고 기반).
+    /// Inherit the working directory of the currently active tab/pane (based on shell-integration OSC 7 reports).
     case inheritCwd
 
     var displayName: String {

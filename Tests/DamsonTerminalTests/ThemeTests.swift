@@ -4,7 +4,7 @@ import XCTest
 final class ThemeTests: XCTestCase {
     func testPresetCountAndIntegrity() {
         let presets = DamsonTheme.presets
-        // 번들 테마는 30개 이상 (v1 기준).
+        // At least 30 bundled themes (as of v1).
         XCTAssertGreaterThanOrEqual(presets.count, 30, "기대보다 적은 번들 테마")
         for t in presets {
             XCTAssertEqual(t.ansi.count, 16, "\(t.name)의 ANSI 색 개수가 16이 아님")
@@ -21,7 +21,7 @@ final class ThemeTests: XCTestCase {
         for t in DamsonTheme.presets {
             XCTAssertEqual(DamsonTheme.preset(named: t.name)?.name, t.name)
         }
-        // 커스텀 이름은 프리셋이 아니어야 한다.
+        // The custom name must not be a preset.
         XCTAssertNil(DamsonTheme.preset(named: DamsonTheme.customName))
     }
 }

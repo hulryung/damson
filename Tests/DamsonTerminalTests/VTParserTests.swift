@@ -91,7 +91,7 @@ final class VTParserTests: XCTestCase {
     }
 
     func testOSC7CwdSplit() {
-        // OSC 7 ; file://host/path — host에 일반 문자가 있어도 한 토큰으로 유지.
+        // OSC 7 ; file://host/path — keep it as a single token even if the host has ordinary characters.
         let events = parse("\u{1B}]7;file://mac/Users/dk/dev\u{07}")
         XCTAssertEqual(events, [.osc(["7", "file://mac/Users/dk/dev"])])
     }
@@ -100,15 +100,15 @@ final class VTParserTests: XCTestCase {
         XCTAssertEqual(
             DamsonSession.parseFileURLPath("file://mac/Users/dk/dev"),
             "/Users/dk/dev")
-        // host 생략(file:///path)
+        // host omitted (file:///path)
         XCTAssertEqual(
             DamsonSession.parseFileURLPath("file:///tmp/x"),
             "/tmp/x")
-        // 퍼센트 인코딩된 공백
+        // percent-encoded space
         XCTAssertEqual(
             DamsonSession.parseFileURLPath("file://h/Users/dk/My%20Code"),
             "/Users/dk/My Code")
-        // file:// 아님 → nil
+        // not file:// → nil
         XCTAssertNil(DamsonSession.parseFileURLPath("http://x/y"))
     }
 
@@ -135,10 +135,10 @@ final class VTParserTests: XCTestCase {
     }
 
     func testCSIWithGTIntermediateCapturesPrivateMarker() {
-        // Claude Code 시작 시 보내는 \x1b[>4;2m (xterm modifyOtherKeys /
-        // Kitty 키보드 프로토콜). privateMarker '>' (0x3E)가 정확히 captured
-        // 되어야 DamsonSession이 SGR로 오인하지 않음.
-        // 미러: anthropics/claude-code#23698, halite Rust 40bd82f.
+        // \x1b[>4;2m sent by Claude Code at startup (xterm modifyOtherKeys /
+        // Kitty keyboard protocol). privateMarker '>' (0x3E) must be captured
+        // exactly so that DamsonSession does not misinterpret it as SGR.
+        // Mirror: anthropics/claude-code#23698, halite Rust 40bd82f.
         let events = parse("\u{1B}[>4;2m")
         XCTAssertEqual(events, [
             .csi(params: [4, 2], finalByte: 0x6D, privateMarker: 0x3E),

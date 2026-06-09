@@ -1,23 +1,23 @@
 import AppKit
 import Foundation
 
-/// IME 조합 중인 텍스트(한글 / 일본어 / 중국어 등)의 시각적 표시 방식.
-/// `DamsonConfig.imeStyle`로 설정.
+/// How text being composed by the IME (Korean / Japanese / Chinese, etc.) is displayed visually.
+/// Configured via `DamsonConfig.imeStyle`.
 public enum IMECompositionStyle: String, Codable, CaseIterable, Sendable {
-    /// 얇은 underline만 (가장 subtle, 디폴트).
+    /// Thin underline only (the most subtle option, the default).
     case underline
-    /// 두꺼운 underline. macOS 기본 IME 표시와 비슷.
+    /// Thick underline. Similar to macOS's default IME presentation.
     case thickUnderline
-    /// 배경 하이라이트만.
+    /// Background highlight only.
     case background
-    /// 배경 + 두꺼운 underline (이전 동작).
+    /// Background + thick underline (the previous behavior).
     case both
-    /// 표시 없음 — 텍스트만 다른 색으로.
+    /// No indicator — just a different text color.
     case none
 }
 
-/// 한 `DamsonSession`에 주입되는 설정 스냅샷.
-/// 값 타입. 변경하려면 새 값을 만들어 `DamsonSession.updateConfig(_:)` 호출.
+/// A configuration snapshot injected into a single `DamsonSession`.
+/// A value type. To change it, build a new value and call `DamsonSession.updateConfig(_:)`.
 public struct DamsonConfig {
     public var fontFamily: String
     public var fontSize: CGFloat
@@ -26,39 +26,40 @@ public struct DamsonConfig {
     public var scrollbackLines: Int
     public var imeStyle: IMECompositionStyle
     public var cursorBlink: Bool
-    /// 탭/페인 라이프사이클 모션을 켤지. 기본 ON. macOS Reduce Motion은 이와 무관하게 항상 우선.
+    /// Whether to enable tab/pane lifecycle motion. Default ON. macOS Reduce Motion always takes precedence regardless.
     public var animations: Bool
-    /// 기본 cursor 모양. 셸/앱이 DECSCUSR로 바꾸면 그게 우선, ps=0(reset)이면 이 값으로 복귀.
+    /// Default cursor shape. If the shell/app changes it via DECSCUSR that wins; ps=0 (reset) reverts to this value.
     public var cursorShape: Grid.CursorShape
-    /// 프로그래밍 리가처(=>, !=, ->, === 등)를 셀 정렬해 렌더할지. 기본 OFF.
-    /// 폰트 자체의 OpenType liga/calt 테이블에 의존 — 리가처 없는 폰트(Menlo 등)는
-    /// 켜도 변화 없음. Fira Code / JetBrains Mono / D2CodingLigature 등에서 보임.
+    /// Whether to render programming ligatures (=>, !=, ->, ===, etc.) cell-aligned. Default OFF.
+    /// Depends on the font's own OpenType liga/calt tables — fonts without ligatures (Menlo, etc.)
+    /// show no change even when enabled. Visible with Fira Code / JetBrains Mono / D2CodingLigature, etc.
     public var ligatures: Bool
-    /// 오른쪽 가장자리에 스크롤 위치 인디케이터(thumb)를 표시할지. 기본 OFF.
-    /// 스크롤백이 viewport보다 길 때만 보인다.
+    /// Whether to show a scroll-position indicator (thumb) on the right edge. Default OFF.
+    /// Only visible when the scrollback is longer than the viewport.
     public var showScrollbar: Bool
-    /// 터미널 배경 불투명도(0.2~1.0). 1.0이면 완전 불투명(기존 동작). 1 미만이면
-    /// 배경/선택/커서 fill만 그만큼 투명해지고(텍스트·이모지·밑줄은 불투명 유지),
-    /// 창 뒤가 비친다. 창 쪽 isOpaque/블러는 앱(window controller)이 같이 맞춘다.
+    /// Terminal background opacity (0.2~1.0). 1.0 is fully opaque (the existing behavior). Below 1,
+    /// only the background/selection/cursor fills become that translucent (text, emoji, and underlines
+    /// stay opaque) and what's behind the window shows through. The window's isOpaque/blur is matched
+    /// alongside by the app (window controller).
     public var backgroundOpacity: CGFloat
-    /// 투명 배경 뒤에 frosted-glass 블러(NSVisualEffectView)를 깔지. 기본 OFF.
-    /// backgroundOpacity가 1.0이면 보이지 않는다(배경이 불투명이라).
+    /// Whether to lay a frosted-glass blur (NSVisualEffectView) behind the translucent background. Default OFF.
+    /// Not visible when backgroundOpacity is 1.0 (the background is opaque).
     public var backgroundBlur: Bool
-    /// 화면 전체 post-processing 효과(CRT 등). 기본 none(=비용 0). [[ScreenEffect]].
+    /// Full-screen post-processing effect (CRT, etc.). Default none (= zero cost). [[ScreenEffect]].
     public var screenEffect: ScreenEffect
-    /// 화면 효과 강도(0~1). 1이면 효과 기본값 그대로, 낮추면 약하게.
+    /// Screen-effect intensity (0~1). 1 uses the effect's default values; lower softens it.
     public var screenEffectIntensity: CGFloat
-    /// 커서 근처에서 글자가 새로 생길 때의 애니메이션. 기본 none. [[GlyphAnimStyle]].
+    /// Animation for characters appearing near the cursor. Default none. [[GlyphAnimStyle]].
     public var glyphAppear: GlyphAnimStyle
-    /// 커서 근처에서 글자가 지워질 때의 애니메이션. 기본 none.
+    /// Animation for characters being erased near the cursor. Default none.
     public var glyphDisappear: GlyphAnimStyle
-    /// 텍스트를 선택하면(드래그/더블·트리플 클릭) 자동으로 클립보드에 복사. 기본 ON.
+    /// Automatically copy to the clipboard when text is selected (drag / double- or triple-click). Default ON.
     public var copyOnSelect: Bool
-    /// mouse-reporting TUI(Claude Code 등)로 트랙패드 휠을 전달할 때의 속도 배율.
-    /// 1.0 = ≈1줄 이동마다 휠 1틱. 높을수록 빠름. 자체 scrollback 스크롤엔 영향 없음.
+    /// Speed multiplier when forwarding trackpad-wheel events to a mouse-reporting TUI (Claude Code, etc.).
+    /// 1.0 = ≈one wheel tick per line of movement. Higher is faster. No effect on native scrollback scrolling.
     public var scrollSpeed: CGFloat
 
-    // 색은 theme에서 파생 — 기존 호출처 호환용 computed property.
+    // Colors are derived from the theme — computed properties for backward compatibility with existing call sites.
     public var backgroundColor: NSColor { theme.background }
     public var foregroundColor: NSColor { theme.foreground }
     public var cursorColor: NSColor { theme.cursor }
@@ -116,16 +117,16 @@ public struct DamsonConfig {
         self.cwd = cwd
     }
 
-    /// spawn할 자식 프로세스의 기본 환경. 부모 환경을 상속하되 터미널 타입을 선언한다.
+    /// Default environment for the child process to spawn. Inherits the parent environment but declares the terminal type.
     ///
-    /// 터미널 에뮬레이터는 자신이 어떤 터미널을 흉내내는지 `TERM`으로 declare해야 한다
-    /// (Terminal.app/iTerm2/Ghostty 모두 상속에 기대지 않고 직접 set한다). GUI 앱이
-    /// LaunchServices로 실행되면 상속 환경에 `TERM`/`COLORTERM`이 아예 없어서, Claude
-    /// Code 등 capability를 env로 감지하는 TUI가 컬러 지원을 못 알아채고 색을 떨군다.
-    /// (셸 프롬프트는 raw ANSI escape라 영향 없음 — 그래서 프롬프트만 색이 나왔다.)
+    /// A terminal emulator must declare which terminal it emulates via `TERM`
+    /// (Terminal.app/iTerm2/Ghostty all set it directly rather than relying on inheritance). When a GUI app is
+    /// launched via LaunchServices, the inherited environment has no `TERM`/`COLORTERM` at all, so a TUI that
+    /// detects capabilities from env (Claude Code, etc.) fails to recognize color support and drops colors.
+    /// (The shell prompt is unaffected since it's raw ANSI escapes — which is why only the prompt was colored.)
     ///
-    /// 렌더러가 256색·truecolor(24-bit)를 지원하므로 둘 다 선언한다. 자체 terminfo를
-    /// ship하지 않으니 어디에나 설치돼 있는 `xterm-256color`를 TERM 값으로 쓴다.
+    /// Since the renderer supports 256-color and truecolor (24-bit), declare both. We don't ship our own terminfo,
+    /// so we use `xterm-256color`, which is installed everywhere, as the TERM value.
     public static func defaultEnv() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
@@ -134,16 +135,16 @@ public struct DamsonConfig {
     }
 
     public static func defaultArgv() -> [String] {
-        // 로그인 셸(-l)로 spawn — 그래야 /etc/zprofile의 path_helper가 돌아서
-        // Homebrew(/opt/homebrew/bin) 등이 PATH에 들어감. GUI 앱(LaunchServices로
-        // 실행)이 spawn하는 셸은 기본적으로 non-login이라 PATH가 시스템 기본만 잡혀
-        // starship 등 brew 설치 도구를 "command not found"로 못 찾는 문제가 있음.
-        // Terminal.app/iTerm2도 로그인 셸로 띄운다.
+        // Spawn a login shell (-l) so that /etc/zprofile's path_helper runs and
+        // Homebrew (/opt/homebrew/bin) etc. get added to PATH. A shell spawned by a GUI
+        // app (launched via LaunchServices) is non-login by default, so PATH holds only the
+        // system defaults and brew-installed tools like starship can't be found
+        // ("command not found"). Terminal.app/iTerm2 also launch a login shell.
         return [loginShellPath(), "-l"]
     }
 
-    /// 사용자의 로그인 셸 경로. SHELL 환경변수 우선, GUI 앱에선 비어있을 수 있으므로
-    /// passwd DB(getpwuid)로 폴백, 그래도 없으면 /bin/zsh.
+    /// The user's login shell path. Prefers the SHELL env var; since it may be empty in a GUI
+    /// app, falls back to the passwd DB (getpwuid), and to /bin/zsh if that's also unavailable.
     public static func loginShellPath() -> String {
         if let s = ProcessInfo.processInfo.environment["SHELL"], !s.isEmpty {
             return s

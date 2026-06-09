@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# build-dmg.sh — dist/Damson.app을 drag-to-Applications 형태의 .dmg로 묶음.
+# build-dmg.sh — packages dist/Damson.app into a drag-to-Applications .dmg.
 #
-# 산출물: dist/Damson-<version>.dmg
+# Artifact: dist/Damson-<version>.dmg
 #
-# hdiutil만 사용 (additional tool 의존 없음). 더 예쁜 결과 원하면 `create-dmg`로
-# 교체 가능 (brew install create-dmg).
+# Uses hdiutil only (no additional tool dependencies). For a nicer result, you can
+# swap in `create-dmg` (brew install create-dmg).
 
 set -euo pipefail
 
@@ -16,7 +16,7 @@ if [[ ! -d "$APP" ]]; then
     exit 1
 fi
 
-# Info.plist에서 marketing version 읽기.
+# Read the marketing version from Info.plist.
 VERSION="$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist" 2>/dev/null || echo "0.0.0")"
 
 DMG="$REPO_ROOT/dist/Damson-$VERSION.dmg"
@@ -25,7 +25,7 @@ trap 'rm -rf "$STAGE_DIR"' EXIT
 
 echo "==> staging at $STAGE_DIR"
 cp -R "$APP" "$STAGE_DIR/Damson.app"
-# /Applications 심볼릭 링크 — drag-to-install UX.
+# /Applications symlink — drag-to-install UX.
 ln -s /Applications "$STAGE_DIR/Applications"
 
 rm -f "$DMG"
@@ -37,11 +37,11 @@ hdiutil create -volname "Damson $VERSION" \
     -imagekey zlib-level=9 \
     "$DMG"
 
-# 서명되어 있다면 .dmg도 codesign 추천. APPLE_SIGNING_IDENTITY set이면 진행.
+# If signed, codesigning the .dmg too is recommended. Proceeds if APPLE_SIGNING_IDENTITY is set.
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
     echo "==> codesign dmg"
     codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG"
-    # .dmg는 notarytool 별도 제출 권장 (Gatekeeper online check)
+    # Submitting the .dmg separately to notarytool is recommended (Gatekeeper online check)
     if [[ "${SKIP_NOTARIZE:-0}" != "1" ]]; then
         echo "==> notarize dmg"
         NOTARY_ARGS=()

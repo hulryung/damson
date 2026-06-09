@@ -100,10 +100,11 @@ final class GlyphFallbackTests: XCTestCase {
     }
 
     /// Regression: decomposed (NFD) Hangul must render. The terminal can receive
-    /// Hangul as Jamo — notably syllables with a final consonant (받침) arrive as
-    /// 초성+중성+종성 — and the per-glyph cmap path can't compose Jamo (it drew
-    /// nothing, so 받침 syllables like 한/글 went blank). draw() normalizes to NFC
-    /// first; this asserts decomposed syllables now rasterize at full 2-cell width.
+    /// Hangul as Jamo — notably syllables with a final consonant (jongseong) arrive
+    /// as leading + medial + trailing Jamo — and the per-glyph cmap path can't
+    /// compose Jamo (it drew nothing, so syllables with a final consonant like
+    /// 한/글 went blank). draw() normalizes to NFC first; this asserts decomposed
+    /// syllables now rasterize at full 2-cell width.
     func testDecomposedHangulRendersViaNFC() throws {
         let family = "JetBrainsMono Nerd Font Mono"
         guard NSFont(name: family, size: 17) != nil, cjkFallbackFont(size: 17) != nil else {
@@ -112,7 +113,7 @@ final class GlyphFallbackTests: XCTestCase {
         let renderFont = fontWithNerdFallback(family: family, size: 17)
         let cellW = ("M" as NSString).size(withAttributes: [.font: renderFont]).width
         let r = GlyphRasterizer(font: renderFont, cellW: cellW, cellH: cellW * 2, scale: 2)
-        // "한글" decomposed → both syllables carry a 받침 (final consonant).
+        // "한글" decomposed → both syllables carry a final consonant (jongseong).
         let nfd = "한글".decomposedStringWithCanonicalMapping
         for ch in nfd {
             XCTAssertGreaterThan(ch.unicodeScalars.count, 1, "precondition: '\(ch)' must be decomposed Jamo")

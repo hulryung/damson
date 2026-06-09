@@ -3,9 +3,9 @@ import Foundation
 import Darwin
 #endif
 
-/// 클라이언트가 한 명령을 보내고 한 응답을 읽는 단일 라운드트립.
-/// timeout은 connect / read / write 각각에 적용.
-/// `socketPath`에 connect → JSON line write → 한 줄 read → 파싱.
+/// A single round-trip where the client sends one command and reads one response.
+/// The timeout applies to connect / read / write individually.
+/// Connect to `socketPath` → write a JSON line → read one line → parse.
 public enum SocketIOError: Error, CustomStringConvertible {
     case connect(String)
     case write(String)
@@ -59,7 +59,7 @@ public func sendCommand(
         sent += n
     }
 
-    // Read until \n (or EOF). 응답 한 개만이므로 64KB 충분.
+    // Read until \n (or EOF). Only one response, so 64KB is plenty.
     var buf = [UInt8](repeating: 0, count: 65_536)
     var got = 0
     while got < buf.count {
@@ -83,8 +83,8 @@ public func sendCommand(
     }
 }
 
-/// `sockaddr_un` 채우기. listen=false면 connect, true면 bind+listen.
-/// 성공 시 nil, 실패 시 에러 메시지.
+/// Fills in `sockaddr_un`. listen=false → connect, true → bind+listen.
+/// Returns nil on success, an error message on failure.
 public func bindOrConnectUnix(fd: Int32, path: String, listen doListen: Bool) -> String? {
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
@@ -93,13 +93,13 @@ public func bindOrConnectUnix(fd: Int32, path: String, listen doListen: Bool) ->
     guard bytes.count < cap else {
         return "path too long (\(bytes.count) >= \(cap) bytes)"
     }
-    // 1단계: addr.sun_path 채움 (& 단독 접근).
+    // Step 1: fill in addr.sun_path (standalone & access).
     withUnsafeMutablePointer(to: &addr.sun_path) { tuplePtr in
         let dst = UnsafeMutableRawPointer(tuplePtr).assumingMemoryBound(to: CChar.self)
         for (i, b) in bytes.enumerated() { dst[i] = CChar(bitPattern: b) }
         dst[bytes.count] = 0
     }
-    // 2단계: addr 전체 포인터를 sockaddr로 reinterpret해서 syscall (별도 접근).
+    // Step 2: reinterpret the whole addr pointer as sockaddr for the syscall (separate access).
     let len = socklen_t(MemoryLayout<sockaddr_un>.size)
     let result: Int32 = withUnsafePointer(to: &addr) { ap -> Int32 in
         ap.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa -> Int32 in

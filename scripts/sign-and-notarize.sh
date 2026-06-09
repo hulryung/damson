@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# sign-and-notarize.sh — dist/Damson.app을 codesign으로 Developer ID
-# Application 서명 → notarytool로 Apple에 노타라이즈 제출 → 결과를 stapler로
-# 번들에 박음.
+# sign-and-notarize.sh — codesign dist/Damson.app with a Developer ID Application
+# identity → submit to Apple for notarization via notarytool → staple the result
+# into the bundle.
 #
-# 필요한 환경변수 (필수):
-#   APPLE_SIGNING_IDENTITY  — 예: "Developer ID Application: Daekeun Kang (TEAMID)"
-#                             (security find-identity -p codesigning -v 로 확인)
-#   APPLE_TEAM_ID           — 예: "ABCDE12345"
+# Required environment variables:
+#   APPLE_SIGNING_IDENTITY  — e.g. "Developer ID Application: Daekeun Kang (TEAMID)"
+#                             (check with security find-identity -p codesigning -v)
+#   APPLE_TEAM_ID           — e.g. "ABCDE12345"
 #
-#   다음 둘 중 하나:
+#   One of the following two:
 #   (a) APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD
-#       app-specific password는 https://appleid.apple.com 에서 발급
+#       Issue an app-specific password at https://appleid.apple.com
 #   (b) NOTARY_KEYCHAIN_PROFILE
-#       먼저 `xcrun notarytool store-credentials <profile>` 로 keychain에 저장
+#       First store it in the keychain via `xcrun notarytool store-credentials <profile>`
 #
-# 사용:
+# Usage:
 #   ./scripts/build-app.sh
 #   ./scripts/sign-and-notarize.sh
 #
-# 옵션:
-#   SKIP_NOTARIZE=1  — codesign만 하고 stapler/notarytool은 건너뜀.
-#                      (로컬 테스트용; 배포본은 반드시 노타라이즈 필요)
+# Options:
+#   SKIP_NOTARIZE=1  — only codesign, skip stapler/notarytool.
+#                      (for local testing; distribution builds must be notarized)
 
 set -euo pipefail
 
@@ -46,14 +46,14 @@ fi
 
 echo "==> codesign nested executables + frameworks (inner → outer)"
 
-# Sparkle.framework — nested 컴포넌트를 inner → outer 순으로 모두 서명.
-# Sparkle 2.x 구조 (Versions/Current/):
+# Sparkle.framework — sign all nested components in inner → outer order.
+# Sparkle 2.x structure (Versions/Current/):
 #   XPCServices/Downloader.xpc, Installer.xpc
-#   Updater.app  (nested app — 그 안의 MacOS/Updater 바이너리 포함)
-#   Autoupdate   (helper 바이너리)
-#   Sparkle      (framework 본체)
-# 하나라도 빠지면 notarization이 "not signed with valid Developer ID" / "no
-# secure timestamp"로 Invalid 처리됨.
+#   Updater.app  (nested app — includes its MacOS/Updater binary)
+#   Autoupdate   (helper binary)
+#   Sparkle      (the framework proper)
+# If any one is missing, notarization fails as Invalid with "not signed with valid
+# Developer ID" / "no secure timestamp".
 SPARKLE_FW="$APP/Contents/Frameworks/Sparkle.framework"
 if [[ -d "$SPARKLE_FW" ]]; then
     SV="$SPARKLE_FW/Versions/Current"
@@ -100,7 +100,7 @@ if [[ "${SKIP_NOTARIZE:-0}" == "1" ]]; then
     exit 0
 fi
 
-# 노타라이즈는 .zip 또는 .dmg를 받음. 여기선 임시 .zip으로 제출 (가장 빠름).
+# Notarization accepts a .zip or .dmg. Here we submit a temporary .zip (fastest).
 ZIP="$REPO_ROOT/dist/Damson-notarize.zip"
 rm -f "$ZIP"
 echo "==> ditto $APP -> $ZIP"

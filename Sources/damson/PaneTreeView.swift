@@ -1,13 +1,13 @@
 import AppKit
 import DamsonTerminal
 
-/// Pane focus 이동 방향 (Cmd+Opt+화살표).
+/// Pane focus move direction (Cmd+Opt+arrow).
 enum PaneFocusDirection {
     case left, right, up, down
 }
 
-/// PaneNode 트리를 화면에 배치하는 NSView. divider drag로 ratio 조정 + leaf 클릭으로
-/// active pane 선택. Cmd+D / Cmd+Shift+D 로 split, Cmd+W 로 active pane 닫기.
+/// NSView that lays out the PaneNode tree on screen. Divider drag adjusts the ratio,
+/// clicking a leaf selects the active pane. Cmd+D / Cmd+Shift+D split, Cmd+W closes the active pane.
 final class PaneTreeView: NSView {
     private(set) var root: PaneNode
     private(set) var activeLeaf: PaneNode
@@ -15,7 +15,7 @@ final class PaneTreeView: NSView {
     /// surfaces being re-added are ignored so they don't clobber the active pane.
     private var rebuilding = false
 
-    /// 마지막 leaf가 닫혔을 때 호출 (호스트 — 탭 컨트롤러 — 가 탭/윈도우를 닫음).
+    /// Called when the last leaf is closed (the host — the tab controller — closes the tab/window).
     var onAllPanesClosed: (() -> Void)?
 
     /// Pane lifecycle animation intent threaded through `rebuild`. `.none` is the
@@ -31,12 +31,12 @@ final class PaneTreeView: NSView {
         case swap(snapA: NSImage, frameA: NSRect, snapB: NSImage, frameB: NSRect)
     }
 
-    /// 닫히는 pane이 슬라이드해 사라질 방향(바깥 edge). self는 non-flipped(y up).
+    /// Direction (the outer edge) the closing pane slides toward as it disappears. self is non-flipped (y up).
     private enum ClosingEdge {
         case left, right, top, bottom
 
-        /// `size`(닫히는 frame의 가로/세로)에 0.06을 곱한 nudge 만큼의 (dx, dy) translation.
-        /// self가 y-up이므로 bottom은 -y, top은 +y.
+        /// (dx, dy) translation equal to a nudge of `size` (the closing frame's width/height) times 0.06.
+        /// Since self is y-up, bottom is -y and top is +y.
         func offset(in size: CGSize) -> CGSize {
             let nudgeX = size.width * 0.06
             let nudgeY = size.height * 0.06
@@ -58,7 +58,7 @@ final class PaneTreeView: NSView {
         rebuild()
     }
 
-    /// 세션 복원 — 이미 구성된 PaneNode 트리로 생성. active는 첫 leaf.
+    /// Session restore — construct from an already-built PaneNode tree. active is the first leaf.
     init(restoredRoot: PaneNode) {
         self.root = restoredRoot
         self.activeLeaf = PaneTreeView.firstLeafStatic(of: restoredRoot)
@@ -85,14 +85,15 @@ final class PaneTreeView: NSView {
 
     func split(direction: SplitDirection) {
         guard case .leaf(let activeSession, _) = activeLeaf.kind else { return }
-        // split은 항상 현재 pane의 작업 디렉토리를 상속(셸 통합 OSC 7 보고 → 없으면
-        // spawn 당시 cwd). 같은 프로젝트 안에서 옆에 pane을 여는 게 일반적이라.
+        // A split always inherits the current pane's working directory (shell-integration
+        // OSC 7 report → falling back to the cwd at spawn time), since opening a pane
+        // alongside within the same project is the common case.
         var config = DamsonConfig.fromUserDefaults()
         if let cwd = activeSession.currentDirectory { config.cwd = cwd }
         let newSession = DamsonSession(config: config)
         let newLeaf = PaneNode.leaf(newSession)
         let oldKind = activeLeaf.kind
-        // activeLeaf의 kind를 split으로 교체. activeLeaf 인스턴스는 그대로 (parent 링크 보존).
+        // Replace activeLeaf's kind with a split. The activeLeaf instance stays the same (preserving the parent link).
         let oldLeafCopy = PaneNode(kind: oldKind)
         oldLeafCopy.parent = activeLeaf
         newLeaf.parent = activeLeaf
@@ -111,19 +112,19 @@ final class PaneTreeView: NSView {
 
     func closeActive() { closeLeaf(activeLeaf) }
 
-    /// 세션이 종료(셸 exit)됐을 때 그 세션을 가진 leaf를 닫는다. 종료 콜백은 다른
-    /// 스레드일 수 있어 main에서 호출되도록 한다.
+    /// Closes the leaf holding a session when that session ends (shell exit). The exit
+    /// callback may arrive on another thread, so ensure this is invoked on main.
     func closeSession(_ session: DamsonSession) {
         guard let leaf = leafNode(for: session, in: root) else { return }
         closeLeaf(leaf)
     }
 
-    /// 지정한 leaf를 닫는다 (마지막 pane이면 onAllPanesClosed). closeActive와 셸
-    /// exit가 공유한다.
+    /// Closes the given leaf (fires onAllPanesClosed if it was the last pane). Shared by
+    /// closeActive and shell exit.
     func closeLeaf(_ leaf: PaneNode) {
         guard case .leaf(let s, _) = leaf.kind else { return }
 
-        // --- 애니메이션 의도 계산 (트리 변경 전에). 비활성/스냅샷 실패 시 .none로 즉시 경로. ---
+        // --- Compute the animation intent (before mutating the tree). On disabled/snapshot-failure, .none → instant path. ---
         var animation: PaneAnimation = .none
         if Motion.enabled,
            let parent = leaf.parent,
@@ -134,35 +135,35 @@ final class PaneTreeView: NSView {
             let isFirst = (first === leaf)
             let edge: ClosingEdge
             switch dir {
-            case .horizontal: edge = isFirst ? .left : .right   // first=좌, second=우
-            case .vertical:   edge = isFirst ? .top  : .bottom  // first=위, second=아래
+            case .horizontal: edge = isFirst ? .left : .right   // first=left, second=right
+            case .vertical:   edge = isFirst ? .top  : .bottom  // first=top, second=bottom
             }
             animation = .close(snapshot: snap, closingFrame: closingFrame, edge: edge)
         }
 
-        // session terminate (셸 exit면 이미 죽었지만 idempotent).
+        // Terminate the session (already dead on a shell exit, but idempotent).
         s.terminate()
-        // 부모의 다른 child가 그 부모 자리로 promote.
+        // The parent's other child is promoted into the parent's slot.
         guard let parent = leaf.parent,
               case .split(_, let first, let second, _) = parent.kind
         else {
-            // root leaf 닫은 경우 — 전체 종료.
+            // Closed the root leaf — shut everything down.
             onAllPanesClosed?()
             return
         }
         let sibling = (first === leaf) ? second : first
         parent.kind = sibling.kind
-        // sibling이 split이었으면 그 자식들의 parent를 갱신.
+        // If the sibling was a split, update its children's parent links.
         if case .split(_, let a, let b, _) = parent.kind {
             a.parent = parent
             b.parent = parent
         }
-        // 새 active를 promote된 sub-tree의 첫 leaf로 설정.
+        // Set the new active to the first leaf of the promoted sub-tree.
         activeLeaf = firstLeaf(of: parent)
         rebuild(animation: animation)
     }
 
-    /// 트리에서 주어진 세션을 가진 leaf 노드를 찾는다 (=== 식별).
+    /// Find the leaf node in the tree holding the given session (by === identity).
     private func leafNode(for session: DamsonSession, in node: PaneNode) -> PaneNode? {
         switch node.kind {
         case .leaf(let s, _):
@@ -172,7 +173,7 @@ final class PaneTreeView: NSView {
         }
     }
 
-    /// 마우스 클릭 등으로 외부에서 active pane 변경 호출.
+    /// Externally invoked to change the active pane (e.g. on a mouse click).
     func setActive(_ leaf: PaneNode) {
         guard case .leaf(_, let surface) = leaf.kind else { return }
         let changed = activeLeaf !== leaf
@@ -185,15 +186,17 @@ final class PaneTreeView: NSView {
         }
     }
 
-    /// ⌘⇧+클릭 — 클릭한 pane과 현재 active pane의 *위치*를 맞바꾼다. 두 leaf 노드의
-    /// payload(session+surface)만 교환하므로 트리 형태/parent 링크/ratio는 그대로 유지된다.
-    /// active 세션이 새 위치로 옮겨가고 focus도 그 세션을 따라간다.
+    /// ⌘⇧+click — swap the *positions* of the clicked pane and the current active pane.
+    /// Only the two leaf nodes' payloads (session+surface) are exchanged, so the tree
+    /// shape/parent links/ratio stay intact. The active session moves to the new position
+    /// and focus follows that session.
     func swapActive(with target: PaneNode) {
         guard target !== activeLeaf, target.isLeaf, activeLeaf.isLeaf else { return }
 
-        // 스왑 전, 두 pane의 현재 위치 + 스냅샷(Metal surface 포함)을 잡아둔다. rebuild가
-        // 콘텐츠를 즉시 새 슬롯에 배치하므로, 이 스냅샷들을 옛 위치에 얹고 서로의 위치로
-        // 미끄러뜨려 '두 pane이 자리를 바꾸는' 모션을 만든다.
+        // Before the swap, capture each pane's current position + snapshot (including the
+        // Metal surface). Since rebuild places the content into the new slots instantly,
+        // we lay these snapshots over the old positions and slide them to each other's
+        // position to create the 'two panes trading places' motion.
         var animation: PaneAnimation = .none
         if Motion.enabled,
            let wrapperA = findWrapper(for: activeLeaf, in: self),
@@ -209,24 +212,24 @@ final class PaneTreeView: NSView {
         let activeKind = activeLeaf.kind
         activeLeaf.kind = target.kind
         target.kind = activeKind
-        // active 세션이 이제 target 노드에 있으므로 focus가 따라가도록 active를 옮긴다.
+        // The active session now lives in the target node, so move active there for focus to follow.
         activeLeaf = target
         rebuild(animation: animation)
     }
 
-    /// Cmd+Opt+화살표 — 현재 active pane의 화면 위치 기준으로 방향상 가장 가까운
-    /// 인접 pane으로 focus 이동.
+    /// Cmd+Opt+arrow — move focus to the nearest adjacent pane in the given direction,
+    /// relative to the current active pane's on-screen position.
     func moveFocus(_ dir: PaneFocusDirection) {
         if let target = directionalNeighbor(dir) { setActive(target) }
     }
 
-    /// Cmd+Shift+화살표 — 방향상 가장 가까운 인접 pane과 *위치*를 맞바꾼다.
+    /// Cmd+Shift+arrow — swap *positions* with the nearest adjacent pane in the given direction.
     func swapDirectional(_ dir: PaneFocusDirection) {
         if let target = directionalNeighbor(dir) { swapActive(with: target) }
     }
 
-    /// active pane 기준으로 `dir` 방향에 화면상 가장 가까운 leaf를 찾는다.
-    /// leaf wrapper들의 self 좌표계 frame을 사용. (focus 이동/스왑 공용.)
+    /// Find the leaf closest on screen in the `dir` direction relative to the active pane.
+    /// Uses the leaf wrappers' frames in self's coordinate space. (Shared by focus move/swap.)
     private func directionalNeighbor(_ dir: PaneFocusDirection) -> PaneNode? {
         var wrappers: [PaneLeafWrapper] = []
         func collect(_ v: NSView) {
@@ -241,7 +244,7 @@ final class PaneTreeView: NSView {
         let cur = current.convert(current.bounds, to: self)
         let curMid = NSPoint(x: cur.midX, y: cur.midY)
 
-        // 방향에 맞는 후보만 추리고 (해당 축으로 분명히 떨어진 것), 중심 거리 최소 선택.
+        // Keep only candidates matching the direction (clearly offset along that axis), then pick the smallest center distance.
         var best: PaneLeafWrapper?
         var bestDist = CGFloat.greatestFiniteMagnitude
         for w in wrappers where w !== current {
@@ -249,7 +252,7 @@ final class PaneTreeView: NSView {
             let mid = NSPoint(x: f.midX, y: f.midY)
             let dx = mid.x - curMid.x
             let dy = mid.y - curMid.y
-            // self는 non-flipped(y up). up = y 증가, down = y 감소.
+            // self is non-flipped (y up). up = increasing y, down = decreasing y.
             let matches: Bool
             switch dir {
             case .left: matches = dx < -1
@@ -264,7 +267,7 @@ final class PaneTreeView: NSView {
         return best?.leaf
     }
 
-    // MARK: - Tree → NSView 재구성
+    // MARK: - Tree → NSView rebuild
 
     private func rebuild(animation: PaneAnimation = .none) {
         // Re-adding surfaces fires their viewDidMoveToWindow → makeFirstResponder →
@@ -279,26 +282,27 @@ final class PaneTreeView: NSView {
             window?.makeFirstResponder(surface)
         }
         needsLayout = true
-        // 라이브 계층은 위에서 최종 상태로 재구성됨 (sibling이 full로 snap). 이제 의도별 오버레이 처리.
+        // The live hierarchy was rebuilt to its final state above (the sibling snaps to full). Now handle the per-intent overlays.
         switch animation {
         case .none:
             break
 
         case .split(let newLeaf):
-            // (Task 3) 새 pane이 divider edge에서 밀어내려 나타나는 모션 — 부모 split에서
-            // 방향 도출 후 2-arg 호출.
+            // (Task 3) Motion of the new pane sliding in from the divider edge — derive the
+            // direction from the parent split, then make the 2-arg call.
             guard let parent = newLeaf.parent,
                   case .split(let dir, _, _, _) = parent.kind
             else { break }
             animateSplitIn(newLeaf: newLeaf, direction: dir)
 
         case .close(let snapshot, let closingFrame, let edge):
-            // (Task 5) 닫힌 pane 스냅샷이 옛 frame에서 바깥 edge로 nudge + fade out 되며
-            // 사라지는 모션 — 헬퍼로 추출 (animateSplitIn과 대칭).
+            // (Task 5) Motion of the closed pane's snapshot disappearing — nudging from its
+            // old frame toward the outer edge while fading out — extracted into a helper
+            // (symmetric with animateSplitIn).
             animateCloseOut(snapshot: snapshot, closingFrame: closingFrame, edge: edge)
 
         case .swap(let snapA, let frameA, let snapB, let frameB):
-            // 두 pane 스냅샷이 서로의 슬롯으로 직선 크로스 슬라이드.
+            // The two pane snapshots cross-slide in straight lines into each other's slots.
             animateSwap(snapA: snapA, frameA: frameA, snapB: snapB, frameB: frameB)
         }
     }
@@ -306,15 +310,15 @@ final class PaneTreeView: NSView {
     private func addSubviewsForNode(_ node: PaneNode, into container: NSView) {
         switch node.kind {
         case .leaf(let session, let surface):
-            // leaf 컨테이너 — border 표시용 wrapper. frame + autoresizing 으로 fill.
+            // leaf container — wrapper used to show the border. Fills via frame + autoresizing.
             let wrapper = PaneLeafWrapper(leaf: node, owner: self)
             wrapper.translatesAutoresizingMaskIntoConstraints = true
             wrapper.autoresizingMask = [.width, .height]
             wrapper.frame = container.bounds
             container.addSubview(wrapper)
-            // surface가 wrapper를 꽉 채움 — 활성 표시(dim/테두리)는 위에 얹은
-            // overlay 레이어로 그리므로 inset 불필요. 인접 pane끼리 맞붙어 seam은
-            // divider 1px 선만 보인다.
+            // The surface fills the wrapper completely — the active indicator (dim/border)
+            // is drawn by an overlay layer on top, so no inset is needed. Adjacent panes
+            // butt together, so the only visible seam is the 1px divider line.
             surface.translatesAutoresizingMaskIntoConstraints = false
             wrapper.addSubview(surface)
             NSLayoutConstraint.activate([
@@ -342,8 +346,8 @@ final class PaneTreeView: NSView {
             }
 
         case .split(_, let first, let second, _):
-            // split — 두 sub-area + divider. SplitContainer의 layout()이 frame 계산
-            // (direction/ratio는 node.kind에서 직접 읽으므로 여기선 바인딩 불필요).
+            // split — two sub-areas + divider. SplitContainer.layout() computes the frames
+            // (direction/ratio are read directly from node.kind, so no binding is needed here).
             let splitContainer = SplitContainer(node: node, owner: self)
             splitContainer.translatesAutoresizingMaskIntoConstraints = true
             splitContainer.autoresizingMask = [.width, .height]
@@ -443,15 +447,15 @@ final class PaneTreeView: NSView {
         // before the snapshot covers it, so the snap is complete on frame 0.
         layoutSubtreeIfNeeded()
 
-        // 오버레이는 self.layer의 sublayer라 rebuild()의 subviews teardown이 건드리지 않음 →
-        // 빠른/중첩 rebuild에도 stranding 없이 asyncAfter에서만 제거됨.
+        // The overlay is a sublayer of self.layer, so rebuild()'s subviews teardown doesn't
+        // touch it → even under rapid/nested rebuilds it isn't stranded and is only removed in asyncAfter.
         let overlay = Motion.overlay(image: snapshot, frame: closingFrame, in: self)
         let off = edge.offset(in: closingFrame.size)
         let fromPos = overlay.position
         let toPos = CGPoint(x: fromPos.x + off.width, y: fromPos.y + off.height)
 
-        // closeTab과 같은 명시적 CABasicAnimation 관용구: delegate 없는 vanilla CALayer라
-        // bare 모델 대입은 CA의 기본 암시적 애니메이션을 유발 — add() 전후로 모델을 건드리지 않는다.
+        // Same explicit CABasicAnimation idiom as closeTab: on a vanilla CALayer with no
+        // delegate, a bare model assignment triggers CA's default implicit animation — so we don't touch the model before/after add().
         let slide = CABasicAnimation(keyPath: "position")
         slide.fromValue = NSValue(point: fromPos)
         slide.toValue = NSValue(point: toPos)
@@ -467,24 +471,24 @@ final class PaneTreeView: NSView {
         group.isRemovedOnCompletion = false
         group.fillMode = .forwards
 
-        // 모델값을 따로 쓰지 않는다. fillMode = .forwards 가 종료~제거 사이 동안
-        // 슬라이드/페이드된 최종 상태를 그대로 고정하므로 모델 갱신이 불필요하다.
+        // We don't write the model values separately. fillMode = .forwards pins the
+        // slid/faded final state from completion until removal, so no model update is needed.
         overlay.add(group, forKey: "damson.pane-close")
 
-        // 애니메이션 후 오버레이 제거. 각 close는 자기 오버레이만 캡처하므로
-        // 빠른 연속 닫기에도 공유 상태 없이 안전.
+        // Remove the overlay after the animation. Each close captures only its own overlay,
+        // so rapid successive closes are safe with no shared state.
         DispatchQueue.main.asyncAfter(deadline: .now() + Motion.duration) {
             overlay.removeFromSuperlayer()
         }
     }
 
-    /// 크로스 슬라이드 스왑: A 스냅샷은 frameA→frameB, B 스냅샷은 frameB→frameA 로 직선
-    /// 이동. 두 pane 크기가 다르면 position과 함께 bounds.size 도 보간하므로(콘텐츠는
-    /// `.resize` gravity로 늘어남) 도착 시 라이브 콘텐츠 크기와 정확히 맞아 떨어진다 →
-    /// 오버레이 제거가 매끄럽다. close와 같은 오버레이 관용구(명시 CABasicAnimation +
-    /// fillMode forwards + asyncAfter 제거).
+    /// Cross-slide swap: the A snapshot moves in a straight line frameA→frameB and the B
+    /// snapshot frameB→frameA. If the two panes differ in size, bounds.size is interpolated
+    /// along with position (content stretches via `.resize` gravity), so on arrival it
+    /// matches the live content size exactly → the overlay removal is seamless. Same overlay
+    /// idiom as close (explicit CABasicAnimation + fillMode forwards + asyncAfter removal).
     private func animateSwap(snapA: NSImage, frameA: NSRect, snapB: NSImage, frameB: NSRect) {
-        // rebuild가 막 배치한 라이브 콘텐츠를 최종 위치/크기로 settle (스냅샷이 덮기 전에).
+        // Settle the live content rebuild just placed into its final position/size (before the snapshot covers it).
         layoutSubtreeIfNeeded()
         let overlayA = Motion.overlay(image: snapA, frame: frameA, in: self)
         let overlayB = Motion.overlay(image: snapB, frame: frameB, in: self)
@@ -496,7 +500,7 @@ final class PaneTreeView: NSView {
         }
     }
 
-    /// 오버레이 레이어를 `from`→`to`(self 좌표 frame)로 position+size 동시 애니메이트.
+    /// Animate the overlay layer's position+size together from `from`→`to` (frames in self's coordinates).
     private func slideOverlay(_ layer: CALayer, from: NSRect, to: NSRect, key: String) {
         let pos = CABasicAnimation(keyPath: "position")
         pos.fromValue = NSValue(point: CGPoint(x: from.midX, y: from.midY))
@@ -515,7 +519,7 @@ final class PaneTreeView: NSView {
         layer.add(group, forKey: key)
     }
 
-    // MARK: - Border 색 갱신
+    // MARK: - Border color update
 
     private func updateBorderColors() {
         func walk(_ view: NSView) {
@@ -527,7 +531,7 @@ final class PaneTreeView: NSView {
         walk(self)
     }
 
-    /// 활성 pane 표시 설정이 바뀌었을 때 모든 wrapper를 다시 적용 (active 여부는 그대로).
+    /// Re-apply to every wrapper when the active-pane indicator setting changes (active state unchanged).
     func refreshIndicators() {
         func walk(_ view: NSView) {
             (view as? PaneLeafWrapper)?.applyIndicator()
@@ -536,7 +540,7 @@ final class PaneTreeView: NSView {
         walk(self)
     }
 
-    /// node가 leaf면 그대로, split이면 첫 leaf까지 내려감.
+    /// If node is a leaf, return it; if a split, descend to the first leaf.
     private func firstLeaf(of node: PaneNode) -> PaneNode {
         switch node.kind {
         case .leaf: return node
@@ -545,12 +549,12 @@ final class PaneTreeView: NSView {
     }
 }
 
-/// Leaf wrapper view — 활성 pane을 설정된 방식(dim / 테두리)으로 표시.
+/// Leaf wrapper view — shows the active pane in the configured style (dim / border).
 private final class PaneLeafWrapper: NSView {
     let leaf: PaneNode
     weak var owner: PaneTreeView?
-    /// 터미널 Metal 레이어 위에 올라가는 오버레이들 (zPosition 높게).
-    /// dimLayer = 비활성 pane scrim, borderLayer = 활성 pane 테두리.
+    /// Overlays that sit above the terminal's Metal layer (with a high zPosition).
+    /// dimLayer = inactive-pane scrim, borderLayer = active-pane border.
     private let dimLayer = CALayer()
     private let borderLayer = CALayer()
     var isActive: Bool = false {
@@ -585,9 +589,10 @@ private final class PaneLeafWrapper: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 커서가 이 pane에 들어오면(설정 켜짐 + 키 윈도우) 활성 pane으로 만든다 — 클릭과
-    /// 동일 경로. 마우스 버튼을 누른 채 다른 pane으로 끌고 가는(드래그 선택/divider)
-    /// 동안엔 이벤트가 원래 뷰에 캡처돼 enter가 안 와 방해하지 않는다.
+    /// When the cursor enters this pane (setting on + key window), make it the active
+    /// pane — same path as a click. While the mouse button is held and dragged into
+    /// another pane (drag-selection/divider), events are captured by the originating
+    /// view so no enter arrives and it doesn't interfere.
     override func mouseEntered(with event: NSEvent) {
         guard FocusFollowsMouse.enabled,
               window?.isKeyWindow == true,
@@ -605,7 +610,7 @@ private final class PaneLeafWrapper: NSView {
         CATransaction.commit()
     }
 
-    /// 설정값을 다시 읽어 표시를 갱신 (active 변경 또는 설정 변경 시).
+    /// Re-read the settings and refresh the indicator (on active change or settings change).
     func applyIndicator() {
         let mode = ActivePaneIndicator.current
         CATransaction.begin()
@@ -623,7 +628,7 @@ private final class PaneLeafWrapper: NSView {
         CATransaction.commit()
     }
 
-    /// 배경색에서 살짝 이동한 은은한 테두리색 (어두운 테마 → 약간 밝게, 밝은 테마 → 약간 어둡게).
+    /// A subtle border color shifted slightly from the background (dark theme → a bit lighter, light theme → a bit darker).
     private static func subtleBorderColor(leaf: PaneNode) -> NSColor {
         guard case .leaf(let session, _) = leaf.kind else { return .clear }
         let bg = (session.config.backgroundColor.usingColorSpace(.sRGB)) ?? .black
@@ -649,7 +654,7 @@ private final class PaneLeafWrapper: NSView {
     override func mouseDown(with event: NSEvent) {
         let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
         if mods == [.command, .shift] {
-            // ⌘⇧+클릭 — 이 pane을 active pane과 위치 교환. surface로 전달하지 않는다.
+            // ⌘⇧+click — swap this pane's position with the active pane. Don't forward to the surface.
             owner?.swapActive(with: leaf)
             return
         }
@@ -658,14 +663,14 @@ private final class PaneLeafWrapper: NSView {
     }
 }
 
-/// Split container — 두 sub-area + 가운데 divider. divider drag로 ratio 조정.
+/// Split container — two sub-areas + a divider in the middle. Divider drag adjusts the ratio.
 private final class SplitContainer: NSView {
     let node: PaneNode
     weak var owner: PaneTreeView?
     let firstContainer = NSView()
     let secondContainer = NSView()
     private let divider = DividerView()
-    /// 드래그를 잡기 쉬운 hit zone 폭. divider는 이만큼 넓지만 가운데 1px 선만 그린다.
+    /// Width of the easy-to-grab hit zone. The divider is this wide but draws only a 1px line in the center.
     private let dividerDrag: CGFloat = 10
 
     init(node: PaneNode, owner: PaneTreeView) {
@@ -677,7 +682,7 @@ private final class SplitContainer: NSView {
             addSubview(v)
         }
         divider.wantsLayer = true
-        addSubview(divider)   // 패널 위에 올려 경계의 drag zone을 차지
+        addSubview(divider)   // place above the panels to occupy the drag zone at the boundary
         divider.onDrag = { [weak self] delta in self?.applyDrag(delta) }
     }
 
@@ -687,21 +692,21 @@ private final class SplitContainer: NSView {
     override func layout() {
         super.layout()
         guard case .split(let dir, _, _, let ratio) = node.kind else { return }
-        // 패널을 맞붙이고(틈 없음) divider를 경계에 겹쳐 둔다 → 가는 1px 선만 보이고
-        // 넓은 hit zone으로 드래그는 쉬움.
+        // Butt the panels together (no gap) and overlay the divider on the boundary → only
+        // a thin 1px line shows, while the wide hit zone keeps dragging easy.
         switch dir {
-        case .horizontal:  // 좌우 분할
+        case .horizontal:  // left/right split
             let total = bounds.width
             let firstW = (total * ratio).rounded()
             firstContainer.frame = NSRect(x: 0, y: 0, width: firstW, height: bounds.height)
             secondContainer.frame = NSRect(x: firstW, y: 0, width: total - firstW, height: bounds.height)
             divider.frame = NSRect(x: firstW - dividerDrag / 2, y: 0, width: dividerDrag, height: bounds.height)
             divider.orientation = .vertical
-        case .vertical:    // 위아래 분할
+        case .vertical:    // top/bottom split
             let total = bounds.height
             let secondH = (total * (1 - ratio)).rounded()
             let firstH = total - secondH
-            // bottom-up 좌표계 — first가 위, second가 아래로 보이도록.
+            // bottom-up coordinate system — so first appears on top and second on the bottom.
             secondContainer.frame = NSRect(x: 0, y: 0, width: bounds.width, height: secondH)
             firstContainer.frame = NSRect(x: 0, y: secondH, width: bounds.width, height: firstH)
             divider.frame = NSRect(x: 0, y: secondH - dividerDrag / 2, width: bounds.width, height: dividerDrag)
@@ -727,7 +732,7 @@ private final class SplitContainer: NSView {
     }
 }
 
-/// 드래그 가능한 divider.
+/// Draggable divider.
 private final class DividerView: NSView {
     enum Orientation { case horizontal, vertical }
     var orientation: Orientation = .vertical {
@@ -738,14 +743,14 @@ private final class DividerView: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        wantsLayer = true   // 배경은 clear — drag zone은 넓지만 가운데 1px 선만 그림.
+        wantsLayer = true   // background is clear — the drag zone is wide but only a 1px line is drawn in the center.
         updateCursor()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 넓은 hit zone 가운데에 가는 1px 구분선만 그린다 (얇고 은은하게).
+    /// Draw only a thin 1px separator line in the center of the wide hit zone (thin and subtle).
     override func draw(_ dirtyRect: NSRect) {
         NSColor.separatorColor.setFill()
         switch orientation {
@@ -757,7 +762,7 @@ private final class DividerView: NSView {
     }
 
     private func updateCursor() {
-        // 트래킹 영역 + cursor — 마우스 hover 시 적절한 drag cursor.
+        // Tracking area + cursor — show the appropriate drag cursor on mouse hover.
         let opts: NSTrackingArea.Options = [
             .activeInActiveApp, .inVisibleRect, .cursorUpdate,
         ]

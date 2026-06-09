@@ -1,14 +1,14 @@
 import AppKit
 import DamsonTerminal
 
-/// 커스텀 테마의 hex 색 저장 모델. UserDefaults("damson.customTheme")에 JSON.
+/// Storage model for a custom theme's hex colors. JSON in UserDefaults("damson.customTheme").
 struct CustomThemeData: Codable, Equatable {
     var background: String
     var foreground: String
     var cursor: String
-    var ansi: [String]   // 16개
+    var ansi: [String]   // 16 entries
 
-    /// 기본 커스텀 — Default Dark를 시작점으로.
+    /// Default custom theme — Default Dark as the starting point.
     static var defaultData: CustomThemeData {
         let h = DamsonTheme.defaultDark.toHexColors()
         return CustomThemeData(background: h.bg, foreground: h.fg, cursor: h.cursor, ansi: h.ansi)
@@ -26,7 +26,7 @@ enum CustomTheme {
         guard let data = UserDefaults.standard.data(forKey: key),
               let decoded = try? JSONDecoder().decode(CustomThemeData.self, from: data)
         else { return .defaultData }
-        // ansi가 16개가 아니면 패딩/절단.
+        // Pad or truncate if ansi isn't exactly 16 entries.
         var d = decoded
         while d.ansi.count < 16 { d.ansi.append("#000000") }
         if d.ansi.count > 16 { d.ansi = Array(d.ansi.prefix(16)) }

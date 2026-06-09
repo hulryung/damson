@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# sparkle-appcast.sh — 한 개의 .dmg에 대해 appcast.xml entry를 출력.
+# sparkle-appcast.sh — prints an appcast.xml entry for a single .dmg.
 #
-# Sparkle 2.x의 sign_update가 dmg를 EdDSA로 서명하고 그 결과를 sparkle:edSignature
-# 어트리뷰트로 박는다. private key는 macOS keychain에 있어야 함 (sparkle-keygen.sh가
-# 1회 생성).
+# Sparkle 2.x's sign_update signs the dmg with EdDSA and embeds the result in the
+# sparkle:edSignature attribute. The private key must be in the macOS keychain
+# (sparkle-keygen.sh generates it once).
 #
-# 사용:
+# Usage:
 #   ./scripts/sparkle-appcast.sh \
 #       --dmg dist/Damson-0.1.0.dmg \
 #       --version 0.1.0 \
@@ -13,8 +13,8 @@
 #       --url https://github.com/hulryung/damson/releases/download/v0.1.0/Damson-0.1.0.dmg \
 #       > entry.xml
 #
-# entry.xml 내용을 기존 appcast.xml의 <channel> 안에 추가하거나, full appcast를
-# 새로 생성하려면 sparkle-full-appcast.sh 사용.
+# Add the contents of entry.xml inside the <channel> of an existing appcast.xml, or
+# use sparkle-full-appcast.sh to generate a full appcast from scratch.
 
 set -euo pipefail
 
@@ -49,15 +49,15 @@ if [[ ! -x "$SIGN" ]]; then
     exit 1
 fi
 
-# sign_update 출력: " sparkle:edSignature=\"...\" length=\"NNN\""
-# 로컬: private key는 keychain에서 자동으로 읽음.
-# CI: keychain이 없으므로 SPARKLE_PRIVATE_KEY(base64 EdDSA private key)를 -s로 전달.
+# sign_update output: " sparkle:edSignature=\"...\" length=\"NNN\""
+# Local: the private key is read automatically from the keychain.
+# CI: no keychain, so pass SPARKLE_PRIVATE_KEY (base64 EdDSA private key) via -s.
 SIGN_ARGS=("$DMG")
 if [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
     SIGN_ARGS+=(-s "$SPARKLE_PRIVATE_KEY")
 fi
 SIG_LINE="$("$SIGN" "${SIGN_ARGS[@]}")"
-# 그대로 attribute 형태로 사용 가능 (앞 공백 포함).
+# Can be used as-is in attribute form (including the leading whitespace).
 
 SIZE="$(stat -f%z "$DMG")"
 PUBDATE="$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")"

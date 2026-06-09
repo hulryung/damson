@@ -1,15 +1,15 @@
 import AppKit
 import DamsonTerminal
 
-/// Split 방향. horizontal = 좌우로 나란히 (vertical divider),
-/// vertical = 위아래로 쌓임 (horizontal divider). 명칭은 iTerm2 관행.
+/// Split direction. horizontal = side by side (vertical divider),
+/// vertical = stacked top/bottom (horizontal divider). Naming follows iTerm2 convention.
 enum SplitDirection {
-    case horizontal  // 좌/우
-    case vertical    // 위/아래
+    case horizontal  // left/right
+    case vertical    // top/bottom
 }
 
-/// Split tree 노드. leaf(단일 session) 또는 split(direction + 두 child + ratio).
-/// reference 의미가 필요하므로 class 기반.
+/// Split tree node. leaf (a single session) or split (direction + two children + ratio).
+/// Class-based since reference semantics are required.
 final class PaneNode {
     enum Kind {
         case leaf(session: DamsonSession, surface: DamsonSurfaceView)
@@ -33,7 +33,7 @@ final class PaneNode {
         return false
     }
 
-    /// 트리의 모든 leaf를 in-order로 순회.
+    /// Traverse all leaves in the tree in-order.
     func leaves() -> [(session: DamsonSession, surface: DamsonSurfaceView)] {
         switch kind {
         case .leaf(let s, let v):
@@ -43,7 +43,7 @@ final class PaneNode {
         }
     }
 
-    /// 이 노드의 모든 session terminate.
+    /// Terminate every session under this node.
     func terminateAll() {
         for (s, _) in leaves() { s.terminate() }
     }

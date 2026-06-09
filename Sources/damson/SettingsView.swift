@@ -2,7 +2,7 @@ import AppKit
 import DamsonTerminal
 import SwiftUI
 
-/// SwiftUI 최소 설정창. @AppStorage로 영속, 변경 시 notification으로 활성 세션에 hot-reload.
+/// Minimal SwiftUI settings window. Persisted via @AppStorage; on change, hot-reloads active sessions via notification.
 struct DamsonSettingsView: View {
     @AppStorage("damson.fontSize") private var fontSize: Double = 13
     @AppStorage("damson.fontFamily") private var fontFamily: String = FontDiscovery.defaultFamily()
@@ -66,12 +66,12 @@ struct DamsonSettingsView: View {
         .onChange(of: copyOnSelect) { _ in postChanged() }
         .onChange(of: scrollSpeed) { _ in postChanged() }
         .onChange(of: pressAndHold) { v in
-            // 시스템 키 즉시 갱신(완전 적용은 재시작 후). 끄면 키 반복, 켜면 악센트 팝업.
+            // Update the system key immediately (full effect after restart). Off = key repeat, on = accent popup.
             UserDefaults.standard.set(v, forKey: "ApplePressAndHoldEnabled")
         }
         .onChange(of: themeName) { _ in postChanged() }
         .onChange(of: autoUpdate) { _ in
-            // Sparkle updater에 즉시 반영 (config hot-reload 경로와 별개).
+            // Apply to the Sparkle updater immediately (separate from the config hot-reload path).
             DamsonUpdater.shared.applyAutomaticChecksSetting()
         }
     }
@@ -102,7 +102,7 @@ struct DamsonSettingsView: View {
                         }
                     }
                 }
-                // 미리보기 — 선택된 폰트로 글리프 샘플 (powerline 분리자, 아이콘 등 포함).
+                // Preview — a glyph sample in the selected font (includes powerline separators, icons, etc.).
                 HStack {
                     Text("Preview")
                     Spacer()
@@ -116,7 +116,7 @@ struct DamsonSettingsView: View {
                     .foregroundColor(.secondary)
             }
             Section("Theme") {
-                // 리스트에서 ↑↓로 훑으면 오른쪽 큰 미리보기 + 실제 터미널이 즉시 바뀐다.
+                // Browsing the list with ↑↓ instantly updates the large preview on the right and the live terminal.
                 ThemeBrowser(themeName: $themeName)
                 if themeName == DamsonTheme.customName {
                     CustomThemeEditor(onChange: { postChanged() })
@@ -303,9 +303,9 @@ extension Notification.Name {
     static let damsonSettingsChanged = Notification.Name("DamsonSettingsChanged")
 }
 
-/// 테마 브라우저 — 왼쪽 리스트(↑↓로 훑기) + 오른쪽 큰 미리보기. 선택이 바뀌면
-/// $themeName(@AppStorage)이 갱신되고, 상위 뷰의 onChange(themeName)가 실제 세션에
-/// hot-reload를 푸시한다(미리보기 = 실제 터미널도 즉시 반영).
+/// Theme browser — a list on the left (browse with ↑↓) plus a large preview on the right.
+/// When the selection changes, $themeName (@AppStorage) updates and the parent view's
+/// onChange(themeName) pushes a hot-reload to the live sessions (preview = live terminal, updated instantly).
 struct ThemeBrowser: View {
     @Binding var themeName: String
     @FocusState private var listFocused: Bool
@@ -326,7 +326,7 @@ struct ThemeBrowser: View {
         return DamsonTheme.preset(named: themeName) ?? .defaultDark
     }
 
-    /// 현재 선택에서 delta만큼 이동(범위 clamp). ↑↓ 키 브라우징.
+    /// Move the selection by delta from the current position (clamped to range). For ↑↓ key browsing.
     private func moveSelection(_ delta: Int) {
         let all = entries
         guard !all.isEmpty else { return }
@@ -402,13 +402,13 @@ struct ThemeBrowser: View {
 }
 
 private extension View {
-    /// 기본 파란 포커스 링 제거(macOS 14+). 13에선 그대로 둔다(컴파일만 보장).
+    /// Remove the default blue focus ring (macOS 14+). On 13 it's left as-is (compile-only guarantee).
     @ViewBuilder func focusRingDisabled() -> some View {
         if #available(macOS 14.0, *) { self.focusEffectDisabled() } else { self }
     }
 }
 
-/// 미니 터미널 미리보기 — 배경 위에 색이 들어간 샘플 프롬프트/출력 + ANSI 16색 스와치.
+/// Mini terminal preview — colored sample prompt/output over the background, plus 16 ANSI color swatches.
 struct ThemePreview: View {
     let theme: DamsonTheme
     private func col(_ i: Int) -> Color { Color(nsColor: theme.ansi[i]) }
@@ -452,8 +452,8 @@ struct ThemePreview: View {
     }
 }
 
-/// 커스텀 테마 19색(배경/글자/커서 + ANSI 16) ColorPicker 에디터.
-/// 변경 즉시 UserDefaults에 저장 + onChange로 hot-reload 트리거.
+/// ColorPicker editor for the 19 custom-theme colors (background/foreground/cursor + 16 ANSI).
+/// Saves to UserDefaults immediately on change and triggers a hot-reload via onChange.
 struct CustomThemeEditor: View {
     let onChange: () -> Void
     @State private var data: CustomThemeData = CustomTheme.load()
@@ -466,7 +466,7 @@ struct CustomThemeEditor: View {
     ]
 
     var body: some View {
-        // 프리셋에서 색 복사 시작점.
+        // Starting point for copying colors from a preset.
         HStack {
             Text("Start from")
             Spacer()
@@ -522,7 +522,7 @@ struct CustomThemeEditor: View {
 }
 
 extension DamsonConfig {
-    /// UserDefaults에 저장된 설정값으로 채워진 DamsonConfig 반환. 미설정 키는 기본값.
+    /// Returns a DamsonConfig populated from the settings saved in UserDefaults. Unset keys use defaults.
     static func fromUserDefaults() -> DamsonConfig {
         let d = UserDefaults.standard
         var config = DamsonConfig()
@@ -531,7 +531,7 @@ extension DamsonConfig {
         if let family = d.string(forKey: "damson.fontFamily"), !family.isEmpty {
             config.fontFamily = family
         } else {
-            // 미설정 → FontDiscovery가 정한 디폴트 (Nerd Font 우선).
+            // Unset → the default chosen by FontDiscovery (Nerd Font preferred).
             config.fontFamily = FontDiscovery.defaultFamily()
         }
         let sb = d.integer(forKey: "damson.scrollbackLines")
@@ -578,11 +578,12 @@ extension DamsonConfig {
                 config.theme = theme
             }
         }
-        // 새 터미널의 시작 디렉토리는 사용자의 홈 디렉토리. 그렇지 않으면 damson을 띄운
-        // working directory(예: Xcode 빌드, /tmp, 어딘가에서 cmd 실행)가 그대로 상속되어
-        // 매번 cd를 쳐야 함. (호출처에서 "현재 디렉토리 상속" 정책 시 덮어쓸 수 있음.)
+        // A new terminal's starting directory is the user's home directory. Otherwise it would
+        // inherit the working directory Damson was launched from (e.g. an Xcode build, /tmp, a
+        // command run from somewhere), forcing a cd every time. (The caller may override this
+        // under an "inherit current directory" policy.)
         config.cwd = NSHomeDirectory()
-        // 셸이 OSC 7로 cwd를 보고하도록 셸 통합 주입(zsh만). split/새 탭 cwd 상속의 소스.
+        // Inject shell integration so the shell reports cwd via OSC 7 (zsh only). The source of split/new-tab cwd inheritance.
         config.env.merge(
             ShellIntegration.envOverrides(forShellPath: config.argv.first)
         ) { _, new in new }

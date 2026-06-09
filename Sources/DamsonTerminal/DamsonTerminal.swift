@@ -1,8 +1,8 @@
 import Foundation
 
-/// `DamsonTerminal` 라이브러리 공용 진입점.
+/// Public entry point for the `DamsonTerminal` library.
 ///
-/// 모듈 구조와 milestone은 `docs/ARCHITECTURE.md` 참조.
+/// See `docs/ARCHITECTURE.md` for the module structure and milestones.
 public enum DamsonTerminal {
     public static let version = "0.0.0"
 }

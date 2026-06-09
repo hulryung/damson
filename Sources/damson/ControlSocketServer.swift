@@ -5,26 +5,26 @@ import DamsonControl
 import Darwin
 #endif
 
-/// damson-cli ↔ damson 통신용 Unix domain socket 서버.
+/// Unix domain socket server for damson-cli ↔ damson communication.
 ///
-/// 라이프사이클:
-///   1. `start(handler:)` — runtime dir 생성(0o700), stale socket sweep,
-///      자기 PID 파일 unlink, bind, chmod 0o600, accept thread spawn.
-///   2. accept thread는 한 connection = 한 command 패턴으로 동작.
-///      JSON 한 줄 read → handler → 응답 한 줄 write → close.
-///   3. handler는 worker thread에서 호출되므로 main actor 작업은 직접
-///      DispatchQueue.main으로 hop 시키는 책임이 handler에 있음. 여기서는
-///      thread 안전성 책임 안 짐.
+/// Lifecycle:
+///   1. `start(handler:)` — create the runtime dir (0o700), sweep stale sockets,
+///      unlink our own PID file, bind, chmod 0o600, spawn the accept thread.
+///   2. The accept thread follows a one-connection = one-command pattern.
+///      Read one JSON line → handler → write one response line → close.
+///   3. The handler is called on a worker thread, so it's the handler's responsibility
+///      to hop main-actor work onto DispatchQueue.main itself. This class takes no
+///      responsibility for thread safety.
 final class ControlSocketServer {
     private var listenFd: Int32 = -1
     private var socketPath: String = ""
     private var thread: Thread?
     private var stopped = false
 
-    /// handler: command → response. worker thread에서 호출됨.
+    /// handler: command → response. Called on a worker thread.
     typealias Handler = (ControlCommand) -> ControlResponse
 
-    /// 실패 시 throw. socketPath는 `damsonRuntimeDir()/{pid}.sock` 형태.
+    /// Throws on failure. socketPath has the form `damsonRuntimeDir()/{pid}.sock`.
     @discardableResult
     func start(handler: @escaping Handler) throws -> String {
         let dir = damsonRuntimeDir()
@@ -33,7 +33,7 @@ final class ControlSocketServer {
 
         let pid = ProcessInfo.processInfo.processIdentifier
         let path = (dir as NSString).appendingPathComponent("\(pid).sock")
-        // 자기 PID와 같은 파일이 남아있으면 (이전 SIGKILL 후 pid 재사용) 미리 제거.
+        // If a file with our own PID is left behind (pid reuse after a prior SIGKILL), remove it first.
         unlink(path)
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -46,7 +46,7 @@ final class ControlSocketServer {
             close(fd)
             throw ControlSocketError(err)
         }
-        // 다른 사용자 접근 차단.
+        // Block access by other users.
         chmod(path, 0o600)
 
         self.listenFd = fd
@@ -65,7 +65,7 @@ final class ControlSocketServer {
     func stop() {
         stopped = true
         if listenFd >= 0 {
-            // shutdown으로 accept를 깨움.
+            // Wake the accept call with shutdown.
             shutdown(listenFd, SHUT_RDWR)
             close(listenFd)
             listenFd = -1
@@ -83,7 +83,7 @@ final class ControlSocketServer {
             atPath: dir, withIntermediateDirectories: true,
             attributes: [.posixPermissions: NSNumber(value: 0o700)]
         )
-        // 기존 디렉토리가 있어도 권한 조이기.
+        // Tighten permissions even if the directory already exists.
         try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else {
@@ -115,7 +115,7 @@ final class ControlSocketServer {
                 if stopped { return }
                 if errno == EINTR { continue }
                 if errno == EBADF || errno == EINVAL { return }
-                // 일시적 에러 — 잠시 쉬고 재시도.
+                // Transient error — pause briefly and retry.
                 Thread.sleep(forTimeInterval: 0.01)
                 continue
             }

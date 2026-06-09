@@ -1,20 +1,20 @@
 import AppKit
 import Foundation
 
-/// 윈도우 탭 표시 스타일. UserDefaults("damson.tabBarStyle")에 raw string으로 저장.
-/// DamsonWindowController가 init + settings 변경 시 이걸 읽어서 윈도우 chrome에 적용.
+/// Window tab display style. Stored as a raw string in UserDefaults("damson.tabBarStyle").
+/// DamsonWindowController reads this on init and on settings changes, applying it to the window chrome.
 enum TabBarStyle: String, CaseIterable {
-    /// 투명 titlebar + NSVisualEffectView(.hudWindow material)로 진짜 frosted-glass
-    /// 효과. 신호등 영역이 dark blur material로 그려짐. surface는 titlebar 높이만큼
-    /// 아래로 inset되어 텍스트가 가려지지 않음. **디폴트.**
+    /// Transparent titlebar + NSVisualEffectView(.hudWindow material) for a true frosted-glass
+    /// effect. The traffic-light area is rendered with a dark blur material. The surface is inset
+    /// downward by the titlebar height so its text is never obscured. **Default.**
     case compact
 
-    /// 일반 타이틀바. 탭바가 1탭일 때도 항상 보이도록 NSTitlebarAccessoryViewController
-    /// 로 가짜 single-tab 바를 띄움. 2+ 탭이면 진짜 NSWindow 탭바가 자동으로 자리를
-    /// 차지하므로 accessory를 hide.
+    /// Standard titlebar. Shows a fake single-tab bar via NSTitlebarAccessoryViewController so the
+    /// tab bar is always visible even with a single tab. With 2+ tabs the real NSWindow tab bar
+    /// automatically takes that space, so the accessory is hidden.
     case standard
 
-    /// 일반 타이틀바 + macOS 기본 동작 (2+ 탭일 때만 탭바 보임).
+    /// Standard titlebar + default macOS behavior (tab bar shown only with 2+ tabs).
     case auto
 
     var displayName: String {
@@ -34,9 +34,9 @@ enum TabBarStyle: String, CaseIterable {
     }
 }
 
-/// DamsonWindowController의 윈도우에 TabBarStyle을 적용. Compact는 fullSizeContentView
-/// + 투명 titlebar + NSVisualEffectView를 컨테이너 최상단에 깔아 진짜 glass 효과.
-/// Standard는 accessory placeholder. Auto는 macOS 기본.
+/// Applies a TabBarStyle to a DamsonWindowController's window. Compact uses fullSizeContentView
+/// + a transparent titlebar + an NSVisualEffectView laid over the top of the container for a true
+/// glass effect. Standard uses an accessory placeholder. Auto is the macOS default.
 final class TabBarStyleApplier {
     private let window: NSWindow
     private let container: NSView
@@ -63,7 +63,7 @@ final class TabBarStyleApplier {
     }
 
     func apply(_ style: TabBarStyle) {
-        // 1) neutral 상태로 reset
+        // 1) reset to a neutral state
         window.titlebarAppearsTransparent = false
         window.titleVisibility = .visible
         window.styleMask.remove(.fullSizeContentView)
@@ -72,7 +72,7 @@ final class TabBarStyleApplier {
         removeVibrancy()
         surfaceTopConstraint.constant = 0
 
-        // 2) selected mode 적용
+        // 2) apply the selected mode
         switch style {
         case .compact:
             window.appearance = NSAppearance(named: .darkAqua)
@@ -80,7 +80,7 @@ final class TabBarStyleApplier {
             window.titleVisibility = .hidden
             window.styleMask.insert(.fullSizeContentView)
             installVibrancy()
-            // surface는 titlebar height만큼 아래로 inset해서 VFX 영역 비워둠.
+            // Inset the surface downward by the titlebar height to leave the VFX area clear.
             surfaceTopConstraint.constant = titlebarHeight()
 
         case .standard:
@@ -89,7 +89,7 @@ final class TabBarStyleApplier {
             refreshAccessoryVisibility()
 
         case .auto:
-            break // macOS 기본
+            break // macOS default
         }
     }
 
@@ -97,14 +97,14 @@ final class TabBarStyleApplier {
 
     private func installVibrancy() {
         let vfx = NSVisualEffectView()
-        // .hudWindow는 dark frosted material로 솔리드 배경 위에서도 visible.
-        // .titlebar는 chrome material과 비슷한데 솔리드 배경에선 거의 안 보임.
+        // .hudWindow is a dark frosted material that stays visible even over a solid background.
+        // .titlebar resembles the chrome material but is nearly invisible over a solid background.
         vfx.material = .hudWindow
         vfx.blendingMode = .behindWindow
         vfx.state = .followsWindowActiveState
         vfx.translatesAutoresizingMaskIntoConstraints = false
-        // surface 위에 (z-order) 깔아서 surface가 가리지 않도록.
-        // surface가 inset되어 있으므로 사실 겹치지는 않지만 안전하게 above로.
+        // Place it above the surface in z-order so the surface doesn't cover it.
+        // The surface is inset so they don't actually overlap, but use above to be safe.
         container.addSubview(vfx, positioned: .above, relativeTo: surface)
         NSLayoutConstraint.activate([
             vfx.topAnchor.constraint(equalTo: container.topAnchor),
@@ -120,12 +120,12 @@ final class TabBarStyleApplier {
         vibrancyView = nil
     }
 
-    /// 현재 윈도우의 titlebar 영역 높이. styleMask와 상관 없이 결정적.
+    /// Height of the current window's titlebar area. Deterministic regardless of styleMask.
     private func titlebarHeight() -> CGFloat {
-        // contentLayoutRect.height = window frame - titlebar (fullSizeContentView 무관).
-        // 그 차이가 titlebar height.
+        // contentLayoutRect.height = window frame - titlebar (independent of fullSizeContentView).
+        // That difference is the titlebar height.
         let h = window.frame.height - window.contentLayoutRect.height
-        // 첫 init 시점엔 측정값이 0일 수도 있어 fallback.
+        // The measured value may be 0 at first init, so fall back.
         return max(h, 28)
     }
 

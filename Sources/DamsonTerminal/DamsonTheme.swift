@@ -1,14 +1,14 @@
 import AppKit
 import Foundation
 
-/// 터미널 색 테마 — background / foreground / cursor + ANSI 16색.
-/// TermColor를 NSColor로 resolve할 때 사용. 앱 전역 하나의 테마 (Settings에서 선택).
+/// Terminal color theme — background / foreground / cursor + 16 ANSI colors.
+/// Used to resolve a TermColor into an NSColor. A single app-wide theme (chosen in Settings).
 public struct DamsonTheme: Equatable {
     public let name: String
     public let background: NSColor
     public let foreground: NSColor
     public let cursor: NSColor
-    /// ANSI 16색 (0-7 normal, 8-15 bright).
+    /// 16 ANSI colors (0-7 normal, 8-15 bright).
     public let ansi: [NSColor]
 
     public init(
@@ -39,8 +39,8 @@ public struct DamsonTheme: Equatable {
         }
     }
 
-    /// ANSI 팔레트 인덱스 → NSColor.
-    /// 0-15는 테마의 ansi[], 16-231은 6×6×6 cube, 232-255는 grayscale (xterm 표준).
+    /// ANSI palette index → NSColor.
+    /// 0-15 use the theme's ansi[], 16-231 are the 6×6×6 cube, 232-255 are grayscale (xterm standard).
     public func paletteColor(_ n: Int) -> NSColor {
         if n >= 0 && n < 16 { return ansi[n] }
         if n >= 232 && n <= 255 {
@@ -64,10 +64,10 @@ public struct DamsonTheme: Equatable {
     }
 }
 
-// MARK: - hex 직렬화 (커스텀 테마 저장/복원)
+// MARK: - hex serialization (saving/restoring custom themes)
 
 public extension NSColor {
-    /// "#RRGGBB" 형식. sRGB 기준.
+    /// "#RRGGBB" format. Based on sRGB.
     var hexString: String {
         guard let c = usingColorSpace(.sRGB) else { return "#000000" }
         let r = Int(round(c.redComponent * 255))
@@ -76,7 +76,7 @@ public extension NSColor {
         return String(format: "#%02X%02X%02X", r, g, b)
     }
 
-    /// "#RRGGBB" / "RRGGBB" 파싱.
+    /// Parses "#RRGGBB" / "RRGGBB".
     convenience init?(hexString: String) {
         var s = hexString.trimmingCharacters(in: .whitespaces)
         if s.hasPrefix("#") { s.removeFirst() }
@@ -88,15 +88,15 @@ public extension NSColor {
 }
 
 public extension DamsonTheme {
-    /// 커스텀 테마의 직렬화 이름 (Settings picker + UserDefaults에서 이 이름이면 커스텀).
+    /// Serialized name of the custom theme (this name in the Settings picker + UserDefaults means custom).
     static let customName = "Custom"
 
-    /// 현재 테마의 모든 색을 hex로. 커스텀 편집 시작점(프리셋 복사)용.
+    /// All of the current theme's colors as hex. For use as a custom-editing starting point (copying a preset).
     func toHexColors() -> (bg: String, fg: String, cursor: String, ansi: [String]) {
         (background.hexString, foreground.hexString, cursor.hexString, ansi.map { $0.hexString })
     }
 
-    /// hex 색들로 커스텀 테마 생성. 잘못된 hex는 검정으로 폴백, ansi가 16개 미만이면 검정 패딩.
+    /// Builds a custom theme from hex colors. Invalid hex falls back to black; pads with black if ansi has fewer than 16.
     static func custom(bg: String, fg: String, cursor: String, ansi: [String]) -> DamsonTheme {
         func col(_ h: String) -> NSColor { NSColor(hexString: h) ?? .black }
         var ansiColors = ansi.map(col)
@@ -109,7 +109,7 @@ public extension DamsonTheme {
     }
 }
 
-// MARK: - 프리셋
+// MARK: - presets
 
 public extension DamsonTheme {
     private static func c(_ hex: UInt32) -> NSColor {
@@ -118,7 +118,7 @@ public extension DamsonTheme {
                 blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
     }
 
-    /// 모든 내장 프리셋 (Settings picker 순서). 다크 → 라이트 순.
+    /// All built-in presets (Settings picker order). Dark → light.
     static var presets: [DamsonTheme] {
         [
             // dark
@@ -138,7 +138,7 @@ public extension DamsonTheme {
         presets.first { $0.name == name }
     }
 
-    /// xterm 기본에 가까운 다크 테마 (damson 디폴트).
+    /// Dark theme close to the xterm default (damson's default).
     static var defaultDark: DamsonTheme {
         DamsonTheme(
             name: "Default Dark",

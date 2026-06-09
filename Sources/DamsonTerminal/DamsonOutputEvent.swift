@@ -1,7 +1,7 @@
 import Foundation
 
-/// `DamsonSession`이 파서를 통해 발행하는 의미적 출력 이벤트.
-/// 호스트(뷰/렌더러)가 case에 따라 분기.
+/// Semantic output events that `DamsonSession` emits via the parser.
+/// The host (view/renderer) branches on each case.
 public enum DamsonOutputEvent {
     case text(String)
     case execute(UInt8)

@@ -29,8 +29,9 @@ final class AnimationLink {
         onTick = tick
         if link == nil {
             let l = view.displayLink(target: self, selector: #selector(displayLinkFired(_:)))
-            // ProMotion(120Hz)에서 링크가 기본 60으로 도는 걸 막는다 — 화면 최대 주사율을
-            // 선호 프레임레이트로 명시. (미설정 시 디스플레이에 따라 60으로 캡될 수 있음.)
+            // Prevent the link from running at the default 60 on ProMotion (120Hz) —
+            // declare the screen's maximum refresh rate as the preferred frame rate.
+            // (Unset, it may be capped to 60 depending on the display.)
             let maxFPS = Float(view.window?.screen?.maximumFramesPerSecond ?? 60)
             if maxFPS > 60 {
                 l.preferredFrameRateRange = CAFrameRateRange(

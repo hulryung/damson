@@ -1,11 +1,11 @@
 import AppKit
 
-/// Compact 모드 전용 커스텀 탭 바. NSWindow 네이티브 탭을 끄고
-/// (tabbingMode = .disallowed) 이걸 contentView 최상단에 배치 → 신호등과
-/// 같은 row에 탭이 보임.
+/// Custom tab bar for compact mode only. Disables NSWindow's native tabs
+/// (tabbingMode = .disallowed) and places this at the very top of contentView → tabs
+/// appear in the same row as the traffic lights.
 ///
-/// 구조:
-///   [80pt 비워둠 (신호등 영역)][탭 1][탭 2]...[탭 N][+ 새 탭][여백]
+/// Layout:
+///   [80pt reserved (traffic-light area)][tab 1][tab 2]...[tab N][+ new tab][margin]
 ///
 /// Reorder: the bar lives in the window's titlebar region, where the window
 /// server normally eats horizontal drags as a window-move before they reach a
@@ -42,8 +42,9 @@ final class CompactTabBarView: NSView {
     // the prior value and always restore it (release, window change, teardown).
     private var savedIsMovable: Bool?
 
-    // 신호등(닫기/최소화/최대화 버튼) 자리. 전체화면에선 신호등이 숨겨지므로 예약을
-    // 없애 탭이 왼쪽 가장자리부터 시작하게 한다(빈 공간 어색함 제거).
+    // Space for the traffic lights (close/minimize/zoom buttons). In full screen the traffic
+    // lights are hidden, so drop the reservation and let tabs start from the left edge
+    // (removes the awkward empty gap).
     private var leadingReservation: CGFloat {
         (window?.styleMask.contains(.fullScreen) ?? false) ? 12 : 80
     }
@@ -56,7 +57,7 @@ final class CompactTabBarView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        // 투명 — 뒤의 NSVisualEffectView가 보이도록.
+        // Transparent — so the NSVisualEffectView behind it shows through.
         layer?.backgroundColor = NSColor.clear.cgColor
 
         newTabButton.title = "+"
@@ -68,7 +69,7 @@ final class CompactTabBarView: NSView {
         newTabButton.action = #selector(newTabClicked)
         addSubview(newTabButton)
 
-        // 우측 배지 — dev 빌드는 git hash(주황), 정식 빌드는 빌드 시각(은은한 색).
+        // Right-side badge — git hash (orange) for dev builds, build time (muted color) for release builds.
         if let badge = BuildInfo.badgeText {
             let l = NSTextField(labelWithString: badge)
             l.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
@@ -86,7 +87,7 @@ final class CompactTabBarView: NSView {
 
     func update(titles: [String], selectedIndex: Int) {
         self.selectedIndex = selectedIndex
-        // 기존 버튼 제거 후 재생성. 탭 수가 자주 변하지 않으므로 OK.
+        // Remove the existing buttons and recreate them. Fine since the tab count doesn't change often.
         tabButtons.forEach { $0.removeFromSuperview() }
         tabButtons.removeAll()
         for (i, title) in titles.enumerated() {
@@ -176,13 +177,14 @@ final class CompactTabBarView: NSView {
         return event
     }
 
-    // MARK: - 타이틀바 더블클릭
+    // MARK: - Titlebar double-click
 
-    /// 탭이 아닌 빈 영역(신호등 옆 / 탭 사이 / 우측 여백)을 더블클릭하면 창을 최대화한다.
-    /// 이 뷰가 `.fullSizeContentView` 창의 타이틀바 자리를 덮고 있어 시스템 기본
-    /// 더블클릭이 닿지 않으므로 직접 처리한다. 시스템 환경설정("제목 막대 두 번 클릭 시")
-    /// 과 무관하게 항상 확대(zoom)한다.
-    /// 탭 버튼/닫기/+버튼은 별도 서브뷰라 hitTest가 그쪽으로 보내므로 여기엔 안 온다.
+    /// Double-clicking an empty (non-tab) area (beside the traffic lights / between tabs /
+    /// the right margin) zooms the window. Since this view covers the titlebar area of a
+    /// `.fullSizeContentView` window, the system's default double-click doesn't reach it, so
+    /// we handle it directly. It always zooms, regardless of the system preference ("Double-click
+    /// a window's title bar to…").
+    /// Tab buttons / close / + buttons are separate subviews, so hitTest routes to them and they never reach here.
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2, !reorderModeActive {
             window?.performZoom(nil)
@@ -281,7 +283,7 @@ final class CompactTabBarView: NSView {
     override func layout() {
         super.layout()
         let btnSize: CGFloat = 24
-        // dev 라벨 — 우측 끝. newTabButton은 그 왼쪽.
+        // dev label — at the far right. newTabButton sits to its left.
         var rightEdge = bounds.width - trailingReservation
         if let dev = devLabel {
             dev.sizeToFit()
@@ -311,7 +313,7 @@ final class CompactTabBarView: NSView {
                 height: tabHeight
             )
         }
-        // new tab 버튼은 마지막 탭 오른쪽에 붙여둠.
+        // Pin the new-tab button just to the right of the last tab.
         if let last = tabButtons.last {
             let nx = last.frame.maxX + 6
             if nx + btnSize + trailingReservation <= bounds.width {
@@ -467,7 +469,7 @@ private final class TabButton: NSView {
         if didDrag {
             onDragEnded?()
         } else if event.clickCount >= 2, isReorderActive?() != true {
-            // 더블클릭 → 인라인 제목 편집. (단일 클릭은 selection.)
+            // Double-click → inline title editing. (Single click is selection.)
             beginEditing()
         } else {
             onClick?()
@@ -509,7 +511,7 @@ private final class TabButton: NSView {
         f.currentEditor()?.selectAll(nil)
     }
 
-    /// 편집 종료 — 필드 제거 + label 복원. editField를 먼저 nil로 해 재진입(controlTextDidEndEditing)을 막는다.
+    /// End editing — remove the field and restore the label. editField is set to nil first to prevent re-entry (controlTextDidEndEditing).
     private func endEditing() -> String? {
         guard let f = editField else { return nil }
         editField = nil
@@ -527,14 +529,14 @@ extension TabButton: NSTextFieldDelegate {
             if let text = endEditing() { onRename?(text) }
             return true
         case #selector(NSResponder.cancelOperation(_:)):
-            _ = endEditing()   // Esc — 변경 취소
+            _ = endEditing()   // Esc — discard changes
             return true
         default:
             return false
         }
     }
 
-    // 포커스 상실(다른 곳 클릭)로 끝나면 현재 값으로 커밋.
+    // If editing ends via focus loss (clicking elsewhere), commit the current value.
     func controlTextDidEndEditing(_ obj: Notification) {
         if let text = endEditing() { onRename?(text) }
     }

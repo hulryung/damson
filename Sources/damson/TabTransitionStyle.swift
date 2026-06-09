@@ -1,16 +1,16 @@
 import Foundation
 
-/// 탭 전환 애니메이션 효과. UserDefaults("damson.tabTransition")에 raw string으로 저장.
-/// CompactWindowController가 탭 전환 시 이걸 읽어 적용.
+/// Tab transition animation effect. Stored as a raw string in UserDefaults("damson.tabTransition").
+/// CompactWindowController reads and applies this on tab switches.
 enum TabTransitionStyle: String, CaseIterable {
-    /// 전체 폭 페이지 스와이프 — 나가는 탭이 한쪽으로 완전히 밀려나가고, 들어오는 탭이
-    /// 반대쪽에서 들어온다(페이드 없음). Rust halite의 cross-slide와 동일. **디폴트.**
+    /// Full-width page swipe — the outgoing tab slides completely off one side while the incoming
+    /// tab enters from the other (no fade). Same as Rust halite's cross-slide. **Default.**
     case slide
 
-    /// 살짝 밀림 + 크로스페이드 (24pt 슬라이드 + opacity).
+    /// A slight slide + crossfade (24pt slide + opacity).
     case crossfade
 
-    /// 애니메이션 없이 즉시 전환.
+    /// Instant switch with no animation.
     case none
 
     var displayName: String {

@@ -1,14 +1,16 @@
 import AppKit
 
-/// 창 투명도/블러 적용. 배경 불투명도 < 1이면 창을 비불투명(clear)으로 만들어 터미널의
-/// 투명 배경이 창 뒤까지 비치게 하고, 블러가 켜져 있으면 contentView 맨 뒤에
-/// behind-window `NSVisualEffectView`를 깔아 frosted-glass로 만든다.
+/// Applies window transparency/blur. When background opacity < 1, the window is made
+/// non-opaque (clear) so the terminal's transparent background shows through behind the
+/// window; when blur is on, a behind-window `NSVisualEffectView` is placed at the very
+/// back of contentView to produce frosted glass.
 ///
-/// 렌더러(배경 알파)와 별개의 창 단위 설정이라 window controller가 직접 호출한다.
+/// This is a per-window setting separate from the renderer (background alpha), so the
+/// window controller calls it directly.
 enum WindowChrome {
     private static let backdropID = NSUserInterfaceItemIdentifier("damson.blurBackdrop")
 
-    /// UserDefaults에서 현재 설정을 읽어 적용.
+    /// Reads the current settings from UserDefaults and applies them.
     static func applyFromDefaults(to window: NSWindow) {
         let d = UserDefaults.standard
         let opacity = (d.object(forKey: "damson.backgroundOpacity") as? Double) ?? 1.0

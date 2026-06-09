@@ -2,18 +2,19 @@ import AppKit
 import Combine
 import DamsonTerminal
 
-/// Compact 모드 전용 윈도우 컨트롤러. 하나의 NSWindow가 N개 DamsonSession을
-/// 멀티플렉스. NSWindow 네이티브 탭 비활성(`tabbingMode = .disallowed`) +
-/// 커스텀 CompactTabBarView를 contentView 최상단에 둬서 신호등과 같은 row에 탭.
+/// Window controller dedicated to compact mode. A single NSWindow multiplexes N
+/// DamsonSessions. NSWindow's native tabs are disabled (`tabbingMode = .disallowed`)
+/// and a custom CompactTabBarView sits at the top of contentView so the tabs share a
+/// row with the traffic lights.
 ///
-/// hiterm(`~/dev/hiterm`)의 MainWindowController 구조 차용.
+/// Borrows the MainWindowController structure from hiterm (`~/dev/hiterm`).
 final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSwipeHandler {
-    /// 탭 = (PaneTreeView, 그 트리의 첫 leaf 세션의 title 구독).
-    /// 한 탭 안에서 Cmd+D / Cmd+Shift+D 로 split하면 그 탭의 트리에 leaf 추가됨.
+    /// A tab = (PaneTreeView, a subscription to the title of that tree's first leaf session).
+    /// Splitting within a tab via Cmd+D / Cmd+Shift+D adds a leaf to that tab's tree.
     private struct Tab {
         let tree: PaneTreeView
         var titleSub: AnyCancellable
-        /// 더블클릭으로 지정한 사용자 제목. nil이면 세션(프로세스/OSC) 제목을 따름.
+        /// User-assigned title set via double-click. If nil, follows the session (process/OSC) title.
         var customTitle: String? = nil
     }
 
@@ -30,18 +31,18 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private var tabs: [Tab] = []
     private(set) var currentIndex: Int = 0
 
-    /// 외부에서 list-tabs / switch-tab 등을 위한 session 표현.
-    /// 각 탭의 root pane(첫 leaf) 세션 — 탭 제목 추적용.
+    /// Session representation for external list-tabs / switch-tab, etc.
+    /// Each tab's root pane (first leaf) session — used to track the tab title.
     var sessions: [DamsonSession] {
         tabs.compactMap { $0.tree.root.leaves().first?.session }
     }
 
-    /// 모든 탭 × 모든 pane 세션 (종료 확인 등 전수 검사용 — `sessions`는 탭당 첫 leaf만 줌).
+    /// All sessions across all tabs × all panes (for exhaustive checks like quit confirmation — `sessions` gives only the first leaf per tab).
     var allPaneSessions: [DamsonSession] {
         tabs.flatMap { $0.tree.root.leaves().map { $0.session } }
     }
 
-    /// 현재 active 탭의 active pane (split 했을 때 포커스된 쪽).
+    /// The active pane of the current active tab (the focused side when split).
     var activeSession: DamsonSession? {
         guard currentIndex < tabs.count else { return nil }
         let tree = tabs[currentIndex].tree
@@ -50,16 +51,17 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     }
 
     private var tabBar: CompactTabBarView!
-    private var tabBarBackground: NSVisualEffectView!   // 투명(frosted) 모드용
-    private var tabBarSolid: NSView!                    // 솔리드(테마색) 모드용 — vibrancy 위
+    private var tabBarBackground: NSVisualEffectView!   // for transparent (frosted) mode
+    private var tabBarSolid: NSView!                    // for solid (theme-colored) mode — over the vibrancy
     private var contentContainer: NSView!
     private static let tabBarHeight: CGFloat = 38
     private var tabBarTopConstraint: NSLayoutConstraint!
     private var tabBarBackgroundHeightConstraint: NSLayoutConstraint!
     private var tabBarSolidHeightConstraint: NSLayoutConstraint!
-    /// 탭바 top 인셋. 전체화면에서도 0으로 둬 탭바를 맨 위 한 줄로 보여준다. (메뉴바를
-    /// 위해 내리면 빈 띠가 생겨 두 줄로 보였음 — 메뉴바는 전체화면에서 평소 숨겨지고
-    /// 맨 위 hover 시에만 잠깐 겹치는 macOS 표준 동작이라 한 줄을 우선한다.)
+    /// Tab-bar top inset. Kept at 0 even in full screen so the tab bar shows as a single
+    /// top row. (Lowering it to make room for the menu bar created an empty band, making it
+    /// look like two rows — and since the menu bar is normally hidden in full screen and
+    /// only briefly overlaps on top-edge hover per standard macOS behavior, a single row is preferred.)
     private var fullScreenTopInset: CGFloat { 0 }
 
     // Interactive 2-finger swipe (TabSwipeHandler). During a horizontal swipe the
@@ -82,7 +84,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     var hasTabs: Bool { !tabs.isEmpty }
 
-    /// `restoring`이 있으면 그 탭/pane 레이아웃 + cwd로 복원, 없으면 빈 탭 1개.
+    /// If `restoring` is present, restore that tab/pane layout + cwd; otherwise a single empty tab.
     init(restoring: RestorableWindow? = nil) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
@@ -95,7 +97,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         window.titleVisibility = .hidden
         window.contentMinSize = NSSize(width: 480, height: 240)
         window.center()
-        // 네이티브 탭 OFF — 우리가 직접 그리는 탭바 사용.
+        // Native tabs OFF — use our own custom-drawn tab bar.
         window.tabbingMode = .disallowed
         window.appearance = NSAppearance(named: .darkAqua)
 
@@ -121,7 +123,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 현재 윈도우의 탭/pane 레이아웃 + cwd를 직렬화.
+    /// Serialize the current window's tab/pane layout + cwd.
     func toRestorableWindow() -> RestorableWindow {
         RestorableWindow(
             tabs: tabs.map { $0.tree.root.toRestorable() },
@@ -137,7 +139,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private func setupViews() {
         guard let contentView = window?.contentView else { return }
 
-        // titlebar 영역에 깔리는 vibrancy (신호등 + 탭 뒤 배경).
+        // Vibrancy laid under the titlebar area (background behind the traffic lights + tabs).
         tabBarBackground = NSVisualEffectView()
         tabBarBackground.material = .hudWindow
         tabBarBackground.blendingMode = .behindWindow
@@ -145,13 +147,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabBarBackground.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(tabBarBackground)
 
-        // 솔리드(테마색) 배경 — vibrancy 위, 탭 아래. 솔리드 모드에서 vibrancy를 덮는다.
+        // Solid (theme-colored) background — over the vibrancy, under the tabs. Covers the vibrancy in solid mode.
         tabBarSolid = NSView()
         tabBarSolid.wantsLayer = true
         tabBarSolid.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(tabBarSolid)
 
-        // 커스텀 탭 바.
+        // Custom tab bar.
         tabBar = CompactTabBarView()
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.onTabSelected = { [weak self] idx in
@@ -164,16 +166,17 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabBar.onTabRenamed = { [weak self] idx, title in self?.renameTab(idx, to: title) }
         contentView.addSubview(tabBar)
 
-        // 세션 surface가 들어가는 컨테이너 — 탭 바 아래 채움.
+        // Container holding the session surfaces — fills below the tab bar.
         contentContainer = NSView()
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
-        // 탭 닫기 애니메이션 오버레이(스냅샷 레이어)의 호스트 — 미리 layer-backed로.
+        // Host for the tab-close animation overlay (snapshot layer) — made layer-backed up front.
         contentContainer.wantsLayer = true
         contentView.addSubview(contentContainer)
 
-        // 우리 탭바는 titlebar 자리에 그린다(0부터). 전체화면에선 메뉴바 높이만큼
-        // 내려(`tabBarTopConstraint.constant`) 메뉴바가 떠도 탭을 안 가리게 한다.
-        // tabBarBackground(vibrancy)는 맨 위부터 탭바 아래까지 한 띠로 덮는다.
+        // Our tab bar is drawn in the titlebar's place (starting at 0). In full screen it is
+        // lowered by the menu-bar height (`tabBarTopConstraint.constant`) so the tabs aren't
+        // covered when the menu bar appears. tabBarBackground (vibrancy) covers from the very
+        // top down to below the tab bar as a single band.
         let tabBarHeight = Self.tabBarHeight
         let inset = fullScreenTopInset
         tabBarTopConstraint = tabBar.topAnchor.constraint(
@@ -206,11 +209,11 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         ])
 
         applyTabBarBackground()
-        // 신호등 재배치는 윈도우 버튼이 배치된 뒤에. 다음 runloop에서.
+        // Re-position the traffic lights after the window buttons are laid out. On the next runloop.
         DispatchQueue.main.async { [weak self] in self?.centerTrafficLights() }
     }
 
-    /// 전체화면 진입/이탈 시 탭바 top 인셋과 배경 높이를 갱신.
+    /// Update the tab-bar top inset and background height on full-screen enter/exit.
     private func updateFullScreenInset() {
         let inset = fullScreenTopInset
         tabBarTopConstraint?.constant = inset
@@ -219,15 +222,15 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabBar.needsLayout = true
     }
 
-    /// 탭바 배경: 기본은 테마 배경색의 솔리드, 설정으로 투명(frosted) 선택 가능.
+    /// Tab-bar background: solid theme background color by default, with transparent (frosted) selectable via settings.
     func applyTabBarBackground() {
         let transparent = UserDefaults.standard.bool(forKey: "damson.tabBarTransparent")
         tabBarSolid?.isHidden = transparent
         if !transparent {
-            // 현재 테마 배경색(활성 세션 → 없으면 설정값)으로 살짝 어둡게 해 타이틀바 느낌.
+            // Slightly darken the current theme background color (active session → settings value if none) for a titlebar feel.
             let theme = activeSession?.config.theme ?? DamsonConfig.fromUserDefaults().theme
             let bg = (theme.background.usingColorSpace(.sRGB)) ?? theme.background
-            // 터미널 배경과 구분되게 약간 어둡게(어두운 테마) / 약간 밝게(밝은 테마).
+            // A bit darker (dark theme) / a bit lighter (light theme) to distinguish it from the terminal background.
             let lum = 0.299 * bg.redComponent + 0.587 * bg.greenComponent + 0.114 * bg.blueComponent
             let shade: CGFloat = lum < 0.5 ? 0.06 : -0.06
             func adj(_ c: CGFloat) -> CGFloat { max(0, min(1, c + shade)) }
@@ -237,9 +240,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         }
     }
 
-    /// 신호등을 탭바(38pt) 세로 중앙에 맞춘다. 시스템은 표준 타이틀바(~28pt) 중앙에
-    /// 그려 더 높게 보이므로, 버튼 origin을 내려 탭 라벨과 같은 높이로 정렬한다.
-    /// 전체화면에선 신호등이 숨겨지므로 건너뛴다. resize/full-screen 시 재적용.
+    /// Vertically center the traffic lights in the tab bar (38pt). The system draws them
+    /// centered in the standard titlebar (~28pt), making them sit higher, so we lower the
+    /// button origins to align them with the tab labels. In full screen the traffic lights
+    /// are hidden, so this is skipped. Re-applied on resize/full-screen.
     func centerTrafficLights() {
         guard let window, !window.styleMask.contains(.fullScreen) else { return }
         let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
@@ -256,7 +260,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     @discardableResult
     func addNewTab() -> DamsonSession {
         var config = DamsonConfig.fromUserDefaults()
-        // "현재 디렉토리 상속" 정책이면 현재 활성 pane의 cwd에서 시작(없으면 홈 유지).
+        // Under the "inherit current directory" policy, start from the current active pane's cwd (keep home if none).
         if NewTabDirectory.current == .inheritCwd,
            let cwd = activeSession?.currentDirectory {
             config.cwd = cwd
@@ -266,20 +270,21 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return session
     }
 
-    /// 이미 구성된 PaneTreeView를 새 탭으로 추가 (신규 또는 복원된 트리).
+    /// Add an already-built PaneTreeView as a new tab (a new or restored tree).
     private func addTab(tree: PaneTreeView, transition: TabTransition = .none,
                         customTitle: String? = nil) {
         tree.translatesAutoresizingMaskIntoConstraints = false
-        // 마지막 pane이 닫히면 이 탭을 닫음. tabs 배열의 현재 인덱스가 아니라
-        // tree 참조로 찾아야 함 (탭이 재배열돼도 정확).
+        // Close this tab when its last pane closes. Must be found by tree reference, not by
+        // the current index into the tabs array (stays correct even if tabs are reordered).
         tree.onAllPanesClosed = { [weak self, weak tree] in
             guard let self = self, let tree = tree,
                   let idx = self.tabs.firstIndex(where: { $0.tree === tree })
             else { return }
             self.closeTab(idx)
         }
-        // 탭 제목은 root pane의 첫 leaf 세션 title을 따름. 명시적 OSC 제목이 없으면
-        // 현재 디렉토리를 보여주므로, cwd 변경(OSC 7)에도 갱신되도록 함께 구독한다.
+        // The tab title follows the root pane's first leaf session title. Since it shows the
+        // current directory when there's no explicit OSC title, also subscribe to cwd changes
+        // (OSC 7) so it refreshes on those too.
         let titleSub: AnyCancellable
         if let session = tree.root.leaves().first?.session {
             titleSub = session.$title.receive(on: RunLoop.main).sink { [weak self] _ in
@@ -321,9 +326,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         currentIndex = index
         for t in tabs { t.tree.removeFromSuperview() }
         let tree = tabs[index].tree
-        // 탭에서 마지막으로 쓰던 pane. addSubview가 트리를 윈도우에 붙이면 각 surface의
-        // viewDidMoveToWindow → makeFirstResponder → onFocus 가 동기 발화해 activeLeaf를
-        // (순회 마지막 pane으로) 덮어쓰므로, 의도값을 *미리* 잡아두고 뒤에서 복원한다.
+        // The pane last used in this tab. When addSubview attaches the tree to the window,
+        // each surface's viewDidMoveToWindow → makeFirstResponder → onFocus fires synchronously
+        // and overwrites activeLeaf (with the last pane in traversal order), so we capture the
+        // intended value *up front* and restore it afterward.
         let restoreTarget = tree.activeLeaf
         contentContainer.addSubview(tree)
         NSLayoutConstraint.activate([
@@ -332,7 +338,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             tree.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
             tree.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
         ])
-        // 마지막 사용 pane으로 active + first responder 복원 (위 onFocus 오염을 되돌림).
+        // Restore active + first responder to the last-used pane (undoing the onFocus clobber above).
         tree.setActive(restoreTarget)
         if index < tabs.count {
             window?.title = displayTitle(tabs[index])
@@ -695,16 +701,17 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     func closeTab(_ index: Int) {
         guard index >= 0, index < tabs.count else { return }
 
-        // 닫는 탭이 "현재 보이는" 탭이고, 닫은 뒤에도 탭이 남고, 애니메이션이 켜졌고,
-        // 스냅샷이 떠질 때만 모션. 그 외(백그라운드 탭 닫기 / 마지막 탭 / 스냅샷 실패 /
-        // Reduce Motion / 토글 off)는 기존 즉시 경로 그대로.
+        // Animate only when the tab being closed is the "currently visible" one, tabs remain
+        // after closing, animation is enabled, and a snapshot can be captured. Everything else
+        // (closing a background tab / the last tab / snapshot failure / Reduce Motion / toggle
+        // off) keeps the existing instant path.
         //
-        // tabs.count > 1 가드는 remove(at:) "이전"에 검사한다 — 즉 다음 탭이 존재함을 보장.
-        // remove(at:) 후 tabs.isEmpty면 그 경로는 여기서 끝(윈도우 종료, 정리할 오버레이 없음).
-        // 그렇지 않으면 오버레이 정리 + 다음 탭 선택이 이어진다.
+        // The tabs.count > 1 guard is checked *before* remove(at:) — i.e. it guarantees a next
+        // tab exists. If tabs.isEmpty after remove(at:), that path ends here (window close, no
+        // overlay to clean up). Otherwise overlay cleanup + next-tab selection follow.
         //
-        // 오버레이는 teardown 이전에, 아직 살아있는 닫히는 트리 위에 픽셀 동일하게 올린다.
-        // 그래야 selectTab으로 다음 트리를 즉시 교체해도 깜빡임 없이 오버레이가 위를 덮는다.
+        // The overlay is laid pixel-for-pixel over the still-alive closing tree before teardown,
+        // so that even when selectTab instantly swaps in the next tree the overlay covers it without a flicker.
         var overlay: CALayer?
         if Motion.enabled,
            index == currentIndex,
@@ -721,19 +728,19 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabs.remove(at: index)
 
         if tabs.isEmpty {
-            // 마지막 탭이 닫힘 — 윈도우 종료(스코프 밖). 위 가드(tabs.count > 1)로 여기엔
-            // 오버레이가 절대 만들어지지 않으므로 정리할 것이 없다.
+            // The last tab was closed — close the window (out of scope here). Thanks to the
+            // guard above (tabs.count > 1), no overlay is ever created here, so there's nothing to clean up.
             window?.performClose(nil)
             return
         }
         if currentIndex >= tabs.count { currentIndex = tabs.count - 1 }
-        // 다음 탭을 즉시(.none) 라이브로 보여줌. 오버레이가 그 위에서 슬라이드/페이드.
+        // Show the next tab live, instantly (.none). The overlay slides/fades on top of it.
         selectTab(currentIndex)
 
         guard let overlay else { return }
-        // 닫히는 콘텐츠 스냅샷: 아래로(~6% 높이) 미끄러지며 페이드아웃 → 제거.
-        // 비-flipped 좌표계라 "아래"는 -y. 분리된 CALayer이므로 (뷰의 .animator()가
-        // 없으므로) bell-flash와 동일한 명시적 CABasicAnimation 관용구를 쓴다.
+        // Closing-content snapshot: slides down (~6% of height) while fading out → removed.
+        // In the non-flipped coordinate system, "down" is -y. Since it's a detached CALayer
+        // (no view .animator()), it uses the same explicit CABasicAnimation idiom as bell-flash.
         let dy = overlay.bounds.height * 0.06
         let fromPos = overlay.position
         let toPos = CGPoint(x: fromPos.x, y: fromPos.y - dy)
@@ -753,14 +760,14 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         group.isRemovedOnCompletion = false
         group.fillMode = .forwards
 
-        // 모델값을 따로 쓰지 않는다. fillMode = .forwards 가 종료~제거 사이 동안
-        // 슬라이드/페이드된 최종 상태를 그대로 고정하므로 모델 갱신이 불필요하다.
-        // (delegate 없는 vanilla CALayer라 bare 모델 대입은 Core Animation의 기본
-        // 암시적 애니메이션을 유발 — handleBell 관용구처럼 add 전후로 모델을 건드리지 않는다.)
+        // We don't write the model values separately. fillMode = .forwards pins the
+        // slid/faded final state from completion until removal, so no model update is needed.
+        // (On a vanilla CALayer with no delegate, a bare model assignment triggers Core
+        // Animation's default implicit animation — like the handleBell idiom, we don't touch the model before/after add.)
         overlay.add(group, forKey: "tabClose")
 
-        // 애니메이션 후 오버레이 제거. 각 close는 자기 오버레이만 캡처하므로
-        // (self를 캡처하지 않음) 빠른 연속 닫기에도 공유 상태 없이 안전.
+        // Remove the overlay after the animation. Each close captures only its own overlay
+        // (not self), so rapid successive closes are safe with no shared state.
         DispatchQueue.main.asyncAfter(deadline: .now() + Motion.duration) {
             overlay.removeFromSuperlayer()
         }
@@ -770,54 +777,54 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         closeTab(currentIndex)
     }
 
-    /// DamsonSurfaceView가 Cmd+W를 responder chain에 보낼 때 받음. 활성 탭의 활성
-    /// pane을 닫음 (트리에 마지막 pane이면 PaneTreeView가 onAllPanesClosed로
-    /// 탭/윈도우 종료까지 cascade).
+    /// Received when DamsonSurfaceView sends Cmd+W up the responder chain. Closes the active
+    /// tab's active pane (if it's the last pane in the tree, PaneTreeView cascades through
+    /// onAllPanesClosed to close the tab/window).
     @objc func performCloseTab(_ sender: Any?) {
         guard currentIndex < tabs.count else { return }
         tabs[currentIndex].tree.closeActive()
     }
 
-    /// Cmd+D — 가로 split (좌/우).
+    /// Cmd+D — horizontal split (left/right).
     @objc func splitPaneHorizontally(_ sender: Any?) {
         guard currentIndex < tabs.count else { return }
         tabs[currentIndex].tree.split(direction: .horizontal)
     }
 
-    /// Cmd+Shift+D — 세로 split (위/아래).
+    /// Cmd+Shift+D — vertical split (top/bottom).
     @objc func splitPaneVertically(_ sender: Any?) {
         guard currentIndex < tabs.count else { return }
         tabs[currentIndex].tree.split(direction: .vertical)
     }
 
-    /// damson-cli IPC용 — 방향을 직접 받아 active 탭의 active pane split.
+    /// For damson-cli IPC — takes the direction directly and splits the active tab's active pane.
     func splitActive(direction: SplitDirection) {
         guard currentIndex < tabs.count else { return }
         tabs[currentIndex].tree.split(direction: direction)
     }
 
-    /// 각 탭의 pane(leaf) 수 — list-tabs IPC 응답용.
+    /// Number of panes (leaves) in each tab — for the list-tabs IPC response.
     var tabPaneCounts: [Int] {
         tabs.map { $0.tree.root.leaves().count }
     }
 
-    // MARK: - 탭 키보드 네비
+    // MARK: - Tab keyboard navigation
 
-    /// Cmd+Shift+] / Ctrl+Tab — 다음 탭 (wrap).
+    /// Cmd+Shift+] / Ctrl+Tab — next tab (wrap).
     @objc func selectNextTab(_ sender: Any?) {
         guard !tabs.isEmpty else { return }
         let from = currentIndex
         selectTab((currentIndex + 1) % tabs.count, transition: .switch(fromIndex: from))
     }
 
-    /// Cmd+Shift+[ / Ctrl+Shift+Tab — 이전 탭 (wrap).
+    /// Cmd+Shift+[ / Ctrl+Shift+Tab — previous tab (wrap).
     @objc func selectPreviousTab(_ sender: Any?) {
         guard !tabs.isEmpty else { return }
         let from = currentIndex
         selectTab((currentIndex - 1 + tabs.count) % tabs.count, transition: .switch(fromIndex: from))
     }
 
-    /// Cmd+1..9 — n번째 탭 (9는 마지막 탭). NSMenuItem.tag에 1-based 번호.
+    /// Cmd+1..9 — the nth tab (9 is the last tab). NSMenuItem.tag holds the 1-based number.
     @objc func selectTabByNumber(_ sender: Any?) {
         guard let item = sender as? NSMenuItem else { return }
         let n = item.tag
@@ -827,9 +834,9 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         }
     }
 
-    // MARK: - Pane focus 키보드 네비
+    // MARK: - Pane focus keyboard navigation
 
-    /// Cmd+Opt+화살표 — 인접 pane으로 focus 이동.
+    /// Cmd+Opt+arrow — move focus to an adjacent pane.
     @objc func focusPaneLeft(_ sender: Any?) { moveFocus(.left) }
     @objc func focusPaneRight(_ sender: Any?) { moveFocus(.right) }
     @objc func focusPaneUp(_ sender: Any?) { moveFocus(.up) }
@@ -840,7 +847,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabs[currentIndex].tree.moveFocus(dir)
     }
 
-    /// Cmd+Shift+화살표 — 인접 pane과 위치 스왑.
+    /// Cmd+Shift+arrow — swap positions with an adjacent pane.
     @objc func swapPaneLeft(_ sender: Any?) { swapDirectional(.left) }
     @objc func swapPaneRight(_ sender: Any?) { swapDirectional(.right) }
     @objc func swapPaneUp(_ sender: Any?) { swapDirectional(.up) }
@@ -856,19 +863,19 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabBar.update(titles: titles, selectedIndex: currentIndex)
     }
 
-    /// 탭에 표시할 제목: 사용자 지정 제목 > 세션(OSC/프로세스) 제목 > 현재 디렉토리 > "Damson".
+    /// Title to show on the tab: user-assigned title > session (OSC/process) title > current directory > "Damson".
     private func displayTitle(_ tab: Tab) -> String {
         if let custom = tab.customTitle, !custom.isEmpty { return custom }
         guard let session = tab.tree.root.leaves().first?.session else { return "Damson" }
         if !session.title.isEmpty { return session.title }
-        // OSC 7로 추적한 cwd가 없으면 실제 프로세스 cwd(proc_pidinfo)로 폴백.
+        // If there's no cwd tracked via OSC 7, fall back to the actual process cwd (proc_pidinfo).
         if let dir = session.currentDirectory ?? session.currentWorkingDirectory {
             return Self.prettyDir(dir)
         }
         return "Damson"
     }
 
-    /// 경로를 탭에 보기 좋게 — 홈은 "~", 그 외엔 마지막 경로 요소(폴더명).
+    /// Make a path tab-friendly — home becomes "~", otherwise the last path component (folder name).
     static func prettyDir(_ path: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         if path == home { return "~" }
@@ -876,12 +883,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return base.isEmpty ? path : base
     }
 
-    /// 탭 더블클릭 → 인라인 편집 결과. 빈 문자열이면 사용자 제목을 지우고 자동 제목으로 복귀.
+    /// Tab double-click → inline edit result. An empty string clears the user title and reverts to the automatic title.
     private func renameTab(_ index: Int, to title: String) {
         guard index >= 0, index < tabs.count else { return }
         tabs[index].customTitle = title.isEmpty ? nil : title
         refreshTabBar()
-        // 편집 종료로 잃은 포커스를 활성 pane으로 되돌림.
+        // Return the focus lost when editing ended back to the active pane.
         if currentIndex < tabs.count,
            case .leaf(_, let surface) = tabs[currentIndex].tree.activeLeaf.kind {
             window?.makeFirstResponder(surface)
@@ -894,7 +901,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         for t in tabs { t.tree.root.terminateAll() }
     }
 
-    // 전체화면 진입/이탈 시: leading 예약(신호등) + top 인셋(메뉴바) 갱신.
+    // On full-screen enter/exit: update the leading reservation (traffic lights) + top inset (menu bar).
     func windowDidEnterFullScreen(_ notification: Notification) {
         updateFullScreenInset()
     }
@@ -902,7 +909,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         updateFullScreenInset()
         DispatchQueue.main.async { [weak self] in self?.centerTrafficLights() }
     }
-    // 리사이즈 때 시스템이 신호등 위치를 되돌리므로 다시 중앙 정렬.
+    // The system resets the traffic-light positions on resize, so re-center them.
     func windowDidResize(_ notification: Notification) {
         centerTrafficLights()
     }

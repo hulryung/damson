@@ -7,7 +7,7 @@ import CoreText
 ///
 /// **Minimal fallback policy.** The configured base font draws everything it can.
 /// The *only* fallback is for East-Asian (CJK) characters the base font lacks —
-/// those come from `cjkFallbackFont` (D2Coding 계열). Glyph lookup is a direct
+/// those come from `cjkFallbackFont` (the D2Coding family). Glyph lookup is a direct
 /// per-font cmap query (`CTFontGetGlyphsForCharacters`), which does NOT honor
 /// `NSFont.cascadeList`; the CJK fallback is therefore resolved explicitly here so
 /// it matches the legacy backend's cascade font exactly. A non-CJK character the
@@ -79,7 +79,7 @@ final class GlyphRasterizer {
         if let bmp = draw(ch, in: bold ? boldFont : font, wide: wide) {
             return bmp
         }
-        // CJK 전용 fallback: base가 못 그린 동아시아 글자만.
+        // CJK-only fallback: only East-Asian characters the base font couldn't draw.
         if Cell.isWide(ch), let cjk = bold ? boldCJKFont : cjkFont {
             return draw(ch, in: cjk, wide: wide)
         }
@@ -179,11 +179,12 @@ final class GlyphRasterizer {
         let ctFont = f as CTFont
 
         // Normalize to precomposed (NFC). The terminal can receive decomposed
-        // Hangul (NFD Jamo) — e.g. syllables with a final consonant (받침) arrive
-        // as 초성+중성+종성 — and a per-glyph cmap lookup can't compose Jamo, so it
-        // would draw 2–3 separate Jamo or, lacking a 종성 glyph, render nothing.
-        // Composing to the single precomposed syllable (U+AC00…D7A3) draws one
-        // correct glyph, matching the legacy CTLine/NSAttributedString path.
+        // Hangul (NFD Jamo) — e.g. syllables with a final consonant (batchim) arrive
+        // as lead + vowel + final Jamo — and a per-glyph cmap lookup can't compose
+        // Jamo, so it would draw 2–3 separate Jamo or, lacking a final-consonant
+        // glyph, render nothing. Composing to the single precomposed syllable
+        // (U+AC00…D7A3) draws one correct glyph, matching the legacy
+        // CTLine/NSAttributedString path.
         let utf16 = Array(String(ch).precomposedStringWithCanonicalMapping.utf16)
         guard !utf16.isEmpty else { return nil }
         var glyphs = [CGGlyph](repeating: 0, count: utf16.count)

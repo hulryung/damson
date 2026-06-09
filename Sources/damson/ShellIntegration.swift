@@ -1,15 +1,15 @@
 import Foundation
 
-/// 셸이 OSC 7로 현재 작업 디렉토리를 보고하도록 셸 통합을 주입한다.
+/// Injects shell integration so the shell reports its current working directory via OSC 7.
 ///
-/// zsh는 기본적으로 OSC 7을 emit하지 않으므로, 우리가 생성한 `ZDOTDIR` 래퍼를
-/// 통해 사용자의 원래 설정(`$HOME/.zshenv` 등)을 그대로 source한 뒤 `precmd`
-/// 훅으로 OSC 7을 쏘게 한다. 사용자의 dotfile은 건드리지 않는다(read-only).
+/// zsh doesn't emit OSC 7 by default, so through a `ZDOTDIR` wrapper we generate, it sources
+/// the user's original config (`$HOME/.zshenv`, etc.) as-is and then emits OSC 7 from a `precmd`
+/// hook. The user's dotfiles are never modified (read-only).
 ///
-/// zsh가 아니면 아무것도 하지 않는다(빈 override 반환) — split/새 탭의 cwd 상속은
-/// 그 경우 spawn 시점 디렉토리만 따른다.
+/// For non-zsh shells it does nothing (returns an empty override) — in that case the cwd
+/// inheritance for splits/new tabs only follows the directory at spawn time.
 enum ShellIntegration {
-    /// 세션 env에 합칠 변수들. zsh가 아니거나 래퍼 생성에 실패하면 빈 dictionary.
+    /// Variables to merge into the session env. Empty dictionary if not zsh or if wrapper creation fails.
     static func envOverrides(forShellPath shellPath: String?) -> [String: String] {
         guard let shellPath, isZsh(shellPath), let dir = ensureZdotdir() else {
             return [:]
@@ -21,7 +21,7 @@ enum ShellIntegration {
         (path as NSString).lastPathComponent == "zsh"
     }
 
-    /// 래퍼 디렉토리를 보장(없으면 생성)하고 경로를 반환. 프로세스당 1회만 쓴다.
+    /// Ensures the wrapper directory exists (creating it if needed) and returns its path. Written once per process.
     private static let zdotdir: String? = {
         let fm = FileManager.default
         guard let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -44,11 +44,11 @@ enum ShellIntegration {
 
     private static func ensureZdotdir() -> String? { zdotdir }
 
-    /// zsh 시작 파일 순서(.zshenv → .zprofile → .zshrc → .zlogin)를 모두 사용자의
-    /// `$HOME` 원본으로 포워딩한다. .zshrc 에만 OSC 7 훅을 덧붙인다.
+    /// Forwards the entire zsh startup-file sequence (.zshenv → .zprofile → .zshrc → .zlogin)
+    /// to the user's originals under `$HOME`. The OSC 7 hook is appended to .zshrc only.
     private static var wrapperFiles: [(String, String)] {
         func forward(_ name: String) -> String {
-            // ZDOTDIR이 우리 디렉토리이므로, 사용자의 원본은 항상 $HOME/<name>.
+            // Since ZDOTDIR is our directory, the user's original is always $HOME/<name>.
             "[ -r \"$HOME/\(name)\" ] && source \"$HOME/\(name)\"\n"
         }
         let hook = """

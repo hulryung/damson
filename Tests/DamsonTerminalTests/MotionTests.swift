@@ -15,7 +15,7 @@ final class MotionTests: XCTestCase {
     }
 
     func testReduceMotionWinsOverToggleOn() {
-        // Reduce Motion이 토글보다 우선해 모션을 막아야 한다.
+        // Reduce Motion must take precedence over the toggle and block motion.
         XCTAssertFalse(Motion.isEnabled(toggledOn: true, reduceMotionEnabled: true))
     }
 

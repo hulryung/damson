@@ -1,11 +1,11 @@
 import Foundation
 
-/// 분할된 pane에서 "마우스 따라 포커스" — 클릭 없이 커서가 올라간 pane이 활성화된다.
-/// UserDefaults("damson.focusFollowsMouse")에 Bool로 저장. **디폴트 켜짐.**
-/// PaneLeafWrapper의 mouseEntered가 hover 시점마다 직접 읽는다(핫리로드 불필요).
+/// "Focus follows mouse" for split panes — the pane the cursor hovers over becomes active without a click.
+/// Stored as a Bool in UserDefaults("damson.focusFollowsMouse"). **On by default.**
+/// PaneLeafWrapper's mouseEntered reads this directly on each hover (no hot reload needed).
 enum FocusFollowsMouse {
     static var enabled: Bool {
-        // bool(forKey:)는 미설정 시 false라 디폴트-켜짐을 못 준다 → object로 존재 확인.
+        // bool(forKey:) returns false when unset, which can't express default-on → check existence via object.
         (UserDefaults.standard.object(forKey: "damson.focusFollowsMouse") as? Bool) ?? true
     }
 }

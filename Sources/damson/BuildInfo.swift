@@ -1,7 +1,7 @@
 import Foundation
 
-/// 빌드 메타 — Info.plist에 build-app.sh가 주입한 git hash / 채널.
-/// dev 빌드는 윈도우 타이틀에 hash를 표시해 정식(release)과 시각적으로 구분.
+/// Build metadata — git hash / channel injected into Info.plist by build-app.sh.
+/// Dev builds show the hash in the window title to visually distinguish them from release.
 enum BuildInfo {
     static var gitHash: String? {
         guard let h = Bundle.main.object(forInfoDictionaryKey: "DamsonGitHash") as? String,
@@ -16,7 +16,7 @@ enum BuildInfo {
 
     static var isDevBuild: Bool { channel == "dev" }
 
-    /// build-app.sh가 주입한 빌드 시각("YYYY-MM-DD HH:MM"). 미주입/플레이스홀더면 nil.
+    /// Build time injected by build-app.sh ("YYYY-MM-DD HH:MM"). nil if not injected or still a placeholder.
     static var buildDate: String? {
         guard let d = Bundle.main.object(forInfoDictionaryKey: "DamsonBuildDate") as? String,
               !d.isEmpty, d != "__BUILD_DATE__"
@@ -24,13 +24,13 @@ enum BuildInfo {
         return d
     }
 
-    /// 윈도우 우상단 배지: dev 빌드면 "dev a12ee87", 정식 빌드면 빌드 시각.
+    /// Top-right window badge: "dev a12ee87" for dev builds, the build time for release builds.
     static var badgeText: String? {
         if isDevBuild { return gitHash.map { "dev \($0)" } ?? "dev" }
         return buildDate
     }
 
-    /// 윈도우 타이틀에 붙일 dev 표시 (" · dev a12ee87"). release면 빈 문자열.
+    /// Dev marker appended to the window title (" · dev a12ee87"). Empty string for release.
     static var titleSuffix: String {
         guard isDevBuild else { return "" }
         if let hash = gitHash { return " · dev \(hash)" }

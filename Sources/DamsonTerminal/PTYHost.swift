@@ -1,8 +1,8 @@
 import Darwin
 import Foundation
 
-/// 자식 셸을 PTY 위에서 띄우고 read/write/resize/wait를 관리.
-/// 읽기는 dedicated thread, 콜백은 main queue로 호핑됨.
+/// Spawns the child shell on a PTY and manages read/write/resize/wait.
+/// Reading runs on a dedicated thread; callbacks hop to the main queue.
 public final class PTYHost {
     public enum SpawnError: Error {
         case forkptyFailed(errno: Int32)
@@ -20,9 +20,10 @@ public final class PTYHost {
 
     public init() {}
 
-    /// 자식 셸 프로세스의 현재 작업 디렉토리. proc_pidinfo로 OS에서 직접 조회하므로
-    /// 셸 설정(OSC 7 emit 여부 등)과 무관. 세션 상태 복원 시 사용. 자식이 없거나
-    /// 조회 실패면 nil.
+    /// The child shell process's current working directory. Queried directly from the
+    /// OS via proc_pidinfo, so it's independent of shell configuration (whether OSC 7 is
+    /// emitted, etc.). Used when restoring session state. nil if there's no child or the
+    /// query fails.
     public var childWorkingDirectory: String? {
         guard childPID > 0 else { return nil }
         var vpi = proc_vnodepathinfo()
@@ -36,9 +37,10 @@ public final class PTYHost {
         }
     }
 
-    /// PTY의 foreground process group이 셸 자신(childPID, = 셸의 pgid)과 다르면 true —
-    /// 즉 셸이 프롬프트에서 대기 중이 아니라 어떤 명령을 foreground로 실행 중일 때.
-    /// 종료 확인 다이얼로그가 "셸만 떠 있는 경우"는 묻지 않도록 판정에 사용.
+    /// true when the PTY's foreground process group differs from the shell itself
+    /// (childPID, = the shell's pgid) — i.e. the shell is running some command in the
+    /// foreground rather than waiting at a prompt. Used so the exit-confirmation dialog
+    /// doesn't prompt when "only the shell is up".
     public var isRunningForegroundJob: Bool {
         guard childPID > 0, masterFD >= 0 else { return false }
         let fg = tcgetpgrp(masterFD)
@@ -73,7 +75,7 @@ public final class PTYHost {
         }
 
         if pid == 0 {
-            // === 자식 프로세스 ===
+            // === child process ===
             if let cwd = cwd {
                 _ = chdir(cwd)
             }
@@ -82,7 +84,7 @@ public final class PTYHost {
             let argvCStrings: [UnsafeMutablePointer<CChar>?] =
                 argv.map { strdup($0) } + [nil]
 
-            // env → "KEY=VALUE" C 문자열 배열
+            // env → array of "KEY=VALUE" C strings
             let envCStrings: [UnsafeMutablePointer<CChar>?] =
                 env.map { strdup("\($0.key)=\($0.value)") } + [nil]
 
@@ -96,11 +98,11 @@ public final class PTYHost {
                 }
             }
 
-            // execve 실패 — 자식에서 즉시 종료
+            // execve failed — exit the child immediately
             _exit(127)
         }
 
-        // === 부모 프로세스 ===
+        // === parent process ===
         masterFD = master
         childPID = pid
 
@@ -139,11 +141,11 @@ public final class PTYHost {
     }
 
     public func terminate() {
-        // ⚠️ macOS PTY: read thread가 master fd에서 read() blocking 중일 때
-        // 다른 스레드에서 close(fd)를 부르면 read가 종료될 때까지 close가
-        // **blocking**된다. main thread에서 호출되는 windowWillClose 경로에서
-        // 이 동작이 일어나면 UI 전체가 freeze (예: 사용자의 Cmd+W).
-        // → kill + close를 background queue로 옮기고 main은 즉시 반환.
+        // ⚠️ macOS PTY: while the read thread is blocked in read() on the master fd,
+        // calling close(fd) from another thread **blocks** until that read returns.
+        // If this happens on the windowWillClose path (invoked on the main thread),
+        // the entire UI freezes (e.g. on the user's Cmd+W).
+        // → move kill + close onto a background queue and return immediately on main.
         let pidToKill = childPID
         let fdToClose = masterFD
         isReading = false
@@ -153,9 +155,9 @@ public final class PTYHost {
         DispatchQueue.global(qos: .utility).async {
             if pidToKill > 0 {
                 kill(pidToKill, SIGTERM)
-                // shell이 SIGTERM 무시(vim 등 foreground app이 잡고 있는 경우)
-                // 면 1초 grace 후 강제 종료. 데이터 보존보다 응답성 우선
-                // (사용자가 명시적으로 닫기를 요청한 시점이므로).
+                // if the shell ignores SIGTERM (e.g. a foreground app like vim is
+                // holding it), force-kill after a 1-second grace period. Responsiveness
+                // takes priority over data preservation (the user explicitly asked to close).
                 Thread.sleep(forTimeInterval: 1.0)
                 kill(pidToKill, SIGKILL)
             }

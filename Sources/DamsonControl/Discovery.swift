@@ -3,12 +3,12 @@ import Foundation
 import Darwin
 #endif
 
-/// `damsonRuntimeDir()` — damson control socket이 사는 디렉토리.
-/// 우선순위:
+/// `damsonRuntimeDir()` — the directory where the damson control socket lives.
+/// Priority:
 ///   1. `$XDG_RUNTIME_DIR/damson`
-///   2. `$TMPDIR/damson-{uid}` (macOS 기본 — TMPDIR이 항상 set)
-///   3. `/tmp/damson-{uid}` (최후 fallback)
-/// (디렉토리 규칙은 Rust halite의 `runtime_dir`에서 유래.)
+///   2. `$TMPDIR/damson-{uid}` (macOS default — TMPDIR is always set)
+///   3. `/tmp/damson-{uid}` (last-resort fallback)
+/// (The directory convention derives from Rust halite's `runtime_dir`.)
 public func damsonRuntimeDir() -> String {
     let env = ProcessInfo.processInfo.environment
     if let xdg = env["XDG_RUNTIME_DIR"], !xdg.isEmpty {
@@ -16,21 +16,21 @@ public func damsonRuntimeDir() -> String {
     }
     let uid = getuid()
     if let tmp = env["TMPDIR"], !tmp.isEmpty {
-        // TMPDIR은 보통 trailing slash 있음 — NSString이 정리.
+        // TMPDIR usually has a trailing slash — NSString cleans it up.
         return (tmp as NSString).appendingPathComponent("damson-\(uid)")
     }
     return "/tmp/damson-\(uid)"
 }
 
-/// 디스크에서 발견된 한 damson 인스턴스.
+/// A single damson instance discovered on disk.
 public struct DamsonInstance: Sendable {
     public let pid: Int
     public let socketPath: String
     public let mtime: Date?
 }
 
-/// 실행 중인 damson 인스턴스 목록 (newest first).
-/// "실행 중" = socket file 존재 + connect 시 즉시 `ECONNREFUSED`가 아님.
+/// List of running damson instances (newest first).
+/// "Running" = the socket file exists + connect does not immediately return `ECONNREFUSED`.
 public func listDamsonInstances() -> [DamsonInstance] {
     let dir = damsonRuntimeDir()
     let fm = FileManager.default
@@ -61,7 +61,7 @@ public struct PickSocketError: Error, CustomStringConvertible, Equatable, Sendab
     public var description: String { message }
 }
 
-/// `--pid`가 주어지면 해당 인스턴스, 없으면 가장 최근 mtime의 인스턴스.
+/// If `--pid` is given, the matching instance; otherwise the instance with the most recent mtime.
 public func pickDamsonSocket(pid: Int?) -> Result<String, PickSocketError> {
     let instances = listDamsonInstances()
     if let want = pid {
@@ -78,7 +78,7 @@ public func pickDamsonSocket(pid: Int?) -> Result<String, PickSocketError> {
     ))
 }
 
-/// connect를 시도해 본 후 즉시 끊는다. 살아있으면 true.
+/// Attempts to connect and immediately disconnects. Returns true if alive.
 public func isSocketLive(path: String) -> Bool {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { return false }

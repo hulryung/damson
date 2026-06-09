@@ -2,8 +2,8 @@
 # build-icon.sh — Resources/icon-source.svg → 1024px PNG → multi-size .iconset
 # → Resources/Damson.icns.
 #
-# 의존성: rsvg-convert (brew install librsvg) 권장, 없으면 qlmanage(macOS 내장)
-#         폴백. sips + iconutil (macOS 내장).
+# Dependencies: rsvg-convert (brew install librsvg) preferred, else falls back to
+#         qlmanage (built into macOS). sips + iconutil (built into macOS).
 
 set -euo pipefail
 
@@ -56,7 +56,7 @@ done
 
 iconutil --convert icns "$ICONSET" --output "$DST_ICNS"
 
-# SwiftPM 리소스 경로에도 복제.
+# Also copy into the SwiftPM resources path.
 cp "$DST_ICNS" "$REPO_ROOT/Sources/damson/Resources/Damson.icns"
 
 echo "==> $DST_ICNS"

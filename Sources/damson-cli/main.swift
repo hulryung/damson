@@ -1,10 +1,10 @@
 import Foundation
 import DamsonControl
 
-// damson-cli — damson 인스턴스에 명령을 보내는 CLI.
-// damson 서버와 NDJSON wire-format으로 통신.
+// damson-cli — a CLI that sends commands to a damson instance.
+// Communicates with the damson server in the NDJSON wire format.
 //
-// 사용법:
+// Usage:
 //   damson-cli new-tab
 //   damson-cli split horizontal
 //   damson-cli switch-tab 2
@@ -14,9 +14,9 @@ import DamsonControl
 //   damson-cli --pid 12345 new-tab
 //
 // Exit codes:
-//   0 — 성공 (response.ok == true)
-//   1 — 서버가 명령 실패로 응답 (response.ok == false)
-//   2 — 연결/디스커버리/파싱 실패 (서버에 도달 전 단계)
+//   0 — success (response.ok == true)
+//   1 — the server responded with a command failure (response.ok == false)
+//   2 — connect/discovery/parse failure (before reaching the server)
 
 let usage = """
 damson-cli — send commands to a running damson terminal instance.
@@ -43,7 +43,7 @@ func die(_ msg: String, code: Int32 = 2) -> Never {
     exit(code)
 }
 
-// 간단한 argv 파싱. clap-style 의존성 안 끌어옴.
+// Simple argv parsing. No clap-style dependency pulled in.
 var args = CommandLine.arguments.dropFirst().map { $0 }
 var pidArg: Int?
 var listInstances = false
@@ -81,7 +81,7 @@ if listInstances {
         print("(no running damson instances)")
         exit(0)
     }
-    // JSON 라인 + 사람용 형식 둘 다. 첫 줄에 헤더 두고 정렬.
+    // Both a JSON line and a human-readable format. Header on the first line, sorted.
     for inst in instances {
         let mt = inst.mtime.map { ISO8601DateFormatter().string(from: $0) } ?? "?"
         print("pid=\(inst.pid)  mtime=\(mt)  socket=\(inst.socketPath)")
@@ -134,7 +134,7 @@ case .success(let resp):
         let msg = resp.err ?? "(no error message)"
         die("damson: \(msg)", code: 1)
     }
-    // ok 응답에 tabs가 있으면 JSON으로 출력 (script 호환).
+    // If the ok response carries tabs, print them as JSON (script-friendly).
     if let tabs = resp.tabs {
         let encoder = JSONEncoder()
         encoder.outputFormatting = []

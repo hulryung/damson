@@ -1,8 +1,8 @@
 import Foundation
 
-/// damson-cli ↔ damson 서버 간의 NDJSON wire-format 타입.
-/// 인코딩/디코딩을 수동 구현한다. (포맷은 Rust halite의 `docs/CLI.md`
-/// CLI 명세에서 유래했으나, 이제 damson 자체 포맷이다.)
+/// NDJSON wire-format types for damson-cli ↔ damson server.
+/// Encoding/decoding is implemented manually. (The format derives from the CLI
+/// spec in Rust halite's `docs/CLI.md`, but is now damson's own format.)
 
 public enum SplitDir: String, Codable, Sendable {
     case horizontal
@@ -17,7 +17,7 @@ public enum ControlCommandKind: Equatable, Sendable {
     case listTabs
 }
 
-/// 들어오는 명령. JSON: `{"cmd":"new-tab"}`, `{"cmd":"split","args":{"dir":"horizontal"}}` 등.
+/// An incoming command. JSON: `{"cmd":"new-tab"}`, `{"cmd":"split","args":{"dir":"horizontal"}}`, etc.
 public struct ControlCommand: Decodable, Equatable, Sendable {
     public let kind: ControlCommandKind
 
@@ -52,7 +52,7 @@ public struct ControlCommand: Decodable, Equatable, Sendable {
     }
 }
 
-/// CLI에서 명령 → JSON 직렬화. Rust 측의 `cmd_to_json`과 동일한 출력 (키 순서까지).
+/// Serializes a command → JSON on the CLI side. Produces output identical to the Rust `cmd_to_json` (down to key order).
 public func encodeCommand(_ kind: ControlCommandKind) -> String {
     switch kind {
     case .newTab: return #"{"cmd":"new-tab"}"#
@@ -65,7 +65,7 @@ public func encodeCommand(_ kind: ControlCommandKind) -> String {
     }
 }
 
-/// 한 줄의 list-tabs 결과.
+/// A single list-tabs result row.
 public struct TabInfo: Codable, Equatable, Sendable {
     public let index: Int
     public let pane_count: Int
@@ -75,7 +75,7 @@ public struct TabInfo: Codable, Equatable, Sendable {
     }
 }
 
-/// 응답. 성공: `{"ok":true}` (+ optional tabs), 실패: `{"ok":false,"err":"..."}`.
+/// The response. Success: `{"ok":true}` (+ optional tabs), failure: `{"ok":false,"err":"..."}`.
 public struct ControlResponse: Codable, Equatable, Sendable {
     public let ok: Bool
     public let err: String?

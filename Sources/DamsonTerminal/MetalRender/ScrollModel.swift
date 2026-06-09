@@ -93,8 +93,9 @@ struct ScrollModel {
     mutating func applyWheel(deltaY: CGFloat, precise: Bool, lineHeight: CGFloat,
                              viewport: CGFloat = 0) -> Bool {
         animating = false
-        // 트랙패드(precise)는 1:1. 마우스 휠(non-precise)은 노치당 deltaY가 ≈1이라 줄
-        // 높이만 곱하면 노치당 1줄로 너무 느림 → 표준대로 노치당 ~3줄.
+        // Trackpad (precise) is 1:1. For a mouse wheel (non-precise) deltaY is ≈1 per
+        // notch, so multiplying by line height alone gives one line per notch — too
+        // slow → ~3 lines per notch, per convention.
         let pixels = precise ? deltaY : deltaY * lineHeight * ScrollModel.mouseWheelLines
         let raw = current - pixels
         let hi = max(0, maxY)

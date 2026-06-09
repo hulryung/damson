@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# build-app.sh — swift build -c release, 그 결과 binary 두 개(damson, damson-cli)를
-# 정상 .app 번들 구조로 묶음.
+# build-app.sh — runs swift build -c release, then packages the two resulting
+# binaries (damson, damson-cli) into a proper .app bundle structure.
 #
-# 출력: $REPO/dist/Damson.app
+# Output: $REPO/dist/Damson.app
 #
-# 환경변수:
+# Environment variables:
 #   MARKETING_VERSION   — Info.plist CFBundleShortVersionString (default: 0.1.0)
 #   BUILD_NUMBER        — Info.plist CFBundleVersion (default: epoch seconds)
-#   CLEAN=1             — 매번 dist/ 통째로 비우고 시작
+#   CLEAN=1             — wipe dist/ entirely before each run
 #
-# 사용:
+# Usage:
 #   ./scripts/build-app.sh
 #   MARKETING_VERSION=0.2.0 ./scripts/build-app.sh
 
@@ -35,8 +35,8 @@ echo "==> swift build -c release"
 swift build -c release --product damson
 swift build -c release --product damson-cli
 
-# arm64 + x86_64 universal binary 만들고 싶으면 --arch arm64 --arch x86_64 추가
-# (지금은 빌드 머신 아키텍처만; CI에서 universal 처리).
+# To build an arm64 + x86_64 universal binary, add --arch arm64 --arch x86_64
+# (for now only the build machine's architecture; CI handles universal).
 
 BIN_DIR="$(swift build -c release --show-bin-path)"
 DAMSON_BIN="$BIN_DIR/damson"
@@ -51,45 +51,46 @@ echo "==> assembling $APP_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-# 실행 가능 본체.
+# The executable proper.
 cp "$DAMSON_BIN" "$MACOS_DIR/damson"
 chmod 0755 "$MACOS_DIR/damson"
 
-# damson-cli — Resources에 두고 사용자가 /usr/local/bin에 symlink 거는 방식.
-# (Hardened Runtime + nested code signing 규칙상 MacOS/와 Resources/ 둘 다
-#  나란히 실행파일을 둬도 sign이 통과되므로 Resources/가 깔끔.)
+# damson-cli — placed in Resources for the user to symlink into /usr/local/bin.
+# (Under Hardened Runtime + nested code signing rules, placing executables in
+#  both MacOS/ and Resources/ still signs fine, so Resources/ is cleaner.)
 cp "$CLI_BIN" "$RESOURCES_DIR/damson-cli"
 chmod 0755 "$RESOURCES_DIR/damson-cli"
 
-# Sparkle.framework — SwiftPM이 .app으로 자동 번들 안 하므로 직접 복사.
-# SwiftPM이 빌드한 binary의 RPATH는 @loader_path(= MacOS 디렉토리, dev 빌드에서
-# framework가 binary와 sibling일 때 동작) 뿐이라, 표준 .app layout(Frameworks/)에
-# 두려면 binary에 @executable_path/../Frameworks RPATH를 추가해야 dyld가 찾음.
+# Sparkle.framework — SwiftPM does not auto-bundle it into the .app, so copy it directly.
+# The RPATH of the SwiftPM-built binary is only @loader_path (= the MacOS directory,
+# which works in dev builds when the framework is a sibling of the binary), so to
+# place it in the standard .app layout (Frameworks/) we must add an
+# @executable_path/../Frameworks RPATH to the binary for dyld to find it.
 SPARKLE_FW="$BIN_DIR/Sparkle.framework"
 if [[ -d "$SPARKLE_FW" ]]; then
     FRAMEWORKS_DIR="$CONTENTS/Frameworks"
     mkdir -p "$FRAMEWORKS_DIR"
-    # -R로 심볼릭 링크(Versions/Current → A, Sparkle → Versions/Current/Sparkle 등) 보존.
+    # -R preserves symlinks (Versions/Current → A, Sparkle → Versions/Current/Sparkle, etc.).
     cp -R "$SPARKLE_FW" "$FRAMEWORKS_DIR/Sparkle.framework"
-    # 표준 Frameworks/ 위치를 찾도록 RPATH 추가 (이미 있으면 무시).
+    # Add an RPATH so the standard Frameworks/ location is found (ignored if already present).
     install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/damson" 2>/dev/null || true
 else
     echo "warning: $SPARKLE_FW 없음 — 자동업데이트 동작 안 함. swift build 결과 확인" >&2
 fi
 
-# Info.plist — 토큰 치환.
+# Info.plist — token substitution.
 TEMPLATE="$REPO_ROOT/Resources/Info.plist.template"
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "error: missing $TEMPLATE" >&2
     exit 1
 fi
-# Sparkle 공개키 — 1회성으로 생성한 EdDSA public key를 env로 받음.
-# 없으면 placeholder 토큰을 그대로 둬서 자동업데이트는 동작 안 함 (dev 빌드 OK).
+# Sparkle public key — receives the one-time-generated EdDSA public key via env.
+# If absent, the placeholder token is left as-is so auto-update does not work (fine for dev builds).
 SPARKLE_KEY="${SPARKLE_PUBLIC_KEY:-__SPARKLE_PUBLIC_KEY__}"
-# git hash + 빌드 채널 — dev 빌드는 윈도우에 hash를 표시해 정식과 구분.
+# git hash + build channel — dev builds show the hash in the window to distinguish from release.
 GIT_HASH="${GIT_HASH:-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD_CHANNEL="${BUILD_CHANNEL:-release}"
-# 빌드 시각 — 정식 빌드는 윈도우 우상단에 표시(dev의 git hash와 동일한 자리).
+# Build time — release builds show it in the top-right of the window (same spot as dev's git hash).
 BUILD_DATE="${BUILD_DATE:-$(date '+%Y-%m-%d %H:%M')}"
 sed -e "s|__MARKETING_VERSION__|$MARKETING_VERSION|g" \
     -e "s|__BUILD_NUMBER__|$BUILD_NUMBER|g" \
@@ -99,20 +100,20 @@ sed -e "s|__MARKETING_VERSION__|$MARKETING_VERSION|g" \
     -e "s|__BUILD_DATE__|$BUILD_DATE|g" \
     "$TEMPLATE" > "$CONTENTS/Info.plist"
 
-# 아이콘 — template의 CFBundleIconFile=Damson를 만족시키도록 Damson.icns 복사.
+# Icon — copy Damson.icns to satisfy the template's CFBundleIconFile=Damson.
 if [[ -f "$REPO_ROOT/Resources/Damson.icns" ]]; then
     cp "$REPO_ROOT/Resources/Damson.icns" "$RESOURCES_DIR/Damson.icns"
 fi
 
-# Entitlements는 sign 단계에서 codesign --entitlements로 적용 — 번들에는 안 들어감.
+# Entitlements are applied at the sign step via codesign --entitlements — not embedded in the bundle.
 
 echo "==> verifying bundle"
 plutil -lint "$CONTENTS/Info.plist" > /dev/null
 file "$MACOS_DIR/damson" | head -1
 file "$RESOURCES_DIR/damson-cli" | head -1
 
-# Trampoline 자체 정합성 — 빌드한 binary가 .app 안에 있으면 trampoline은
-# isInsideAppBundle()로 spotting하고 skip하므로 추가 wrap 없음. OK.
+# Trampoline self-consistency — when the built binary is inside the .app, the
+# trampoline detects this via isInsideAppBundle() and skips, so there's no extra wrap. OK.
 
 echo ""
 echo "==> done"

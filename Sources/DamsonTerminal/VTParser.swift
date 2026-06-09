@@ -2,17 +2,17 @@ import Foundation
 
 /// VT/ANSI escape sequence state machine.
 ///
-/// 단순화한 Paul Williams' DEC VT-series parser. 핵심 4개 상태만:
+/// A simplified Paul Williams' DEC VT-series parser. Only four core states:
 ///   - ground: printable + C0 controls
-///   - escape: ESC 직후
-///   - csi: ESC '[' 이후, 파라미터/intermediate/final byte 수집
-///   - osc: ESC ']' 이후, BEL 또는 ST(ESC '\\')까지 문자열 수집
+///   - escape: immediately after ESC
+///   - csi: after ESC '[', collecting parameters/intermediates/final byte
+///   - osc: after ESC ']', collecting a string until BEL or ST (ESC '\\')
 ///
-/// 의미적 이벤트(텍스트/제어/CSI/OSC)를 delegate로 발행. CSI/OSC의 해석
-/// (SGR 색, 커서 이동, 타이틀 등)은 consumer 몫.
+/// Emits semantic events (text/control/CSI/OSC) to the delegate. Interpreting
+/// CSI/OSC (SGR colors, cursor movement, title, etc.) is the consumer's job.
 ///
-/// UTF-8 멀티바이트는 ground 상태에서 누적 후 안전한 prefix만 String으로
-/// 방출. 부분 시퀀스는 다음 feed까지 보류.
+/// UTF-8 multibyte sequences are accumulated in the ground state, then only the
+/// safe prefix is emitted as a String. Partial sequences are held until the next feed.
 public protocol VTParserDelegate: AnyObject {
     func vtParser(_ parser: VTParser, didEmitText text: String)
     func vtParser(_ parser: VTParser, didExecute byte: UInt8)
@@ -24,8 +24,8 @@ public protocol VTParserDelegate: AnyObject {
         privateMarker: UInt8?
     )
     func vtParser(_ parser: VTParser, didEmitOSC params: [String])
-    /// ESC + single final byte 시퀀스 (예: `ESC 7` = DECSC, `ESC 8` = DECRC, `ESC c` = RIS).
-    /// 인수 없는 단일 바이트 escape만. CSI/OSC와 별개 경로.
+    /// ESC + single final byte sequences (e.g. `ESC 7` = DECSC, `ESC 8` = DECRC, `ESC c` = RIS).
+    /// Single-byte escapes with no arguments only. Separate path from CSI/OSC.
     func vtParser(_ parser: VTParser, didEmitESC finalByte: UInt8)
 }
 
@@ -41,22 +41,22 @@ public final class VTParser {
         case escape
         case csi
         case osc
-        case oscEsc   // OSC 안에서 ESC를 막 받은 상태 (다음이 '\\'이면 ST)
+        case oscEsc   // just received ESC inside an OSC (if the next byte is '\\' it's ST)
     }
 
     private var state: State = .ground
 
     // CSI accumulator
     private var params: [Int] = []
-    /// `-1` = unspecified (consumer가 op에 맞는 default 적용)
+    /// `-1` = unspecified (the consumer applies the default appropriate for the op)
     private var currentParam: Int = -1
     private var intermediates: [UInt8] = []
     private var privateMarker: UInt8? = nil
 
-    // OSC accumulator (UTF-8 디코드는 dispatch 시점에)
+    // OSC accumulator (UTF-8 decoding happens at dispatch time)
     private var oscBytes: [UInt8] = []
 
-    // Ground text accumulator (UTF-8 partial-safe 디코드)
+    // Ground text accumulator (UTF-8 partial-safe decoding)
     private var textBytes: [UInt8] = []
 
     public init() {}
@@ -127,7 +127,7 @@ public final class VTParser {
     private func escapeByte(_ b: UInt8) {
         switch b {
         case 0x1B:
-            enterEscape() // 재진입
+            enterEscape() // re-enter
         case 0x5B: // '['
             state = .csi
         case 0x5D: // ']'
@@ -135,7 +135,7 @@ public final class VTParser {
         case 0x20...0x2F:
             intermediates.append(b)
         case 0x30...0x7E:
-            // ESC + single final byte: DECSC(7) / DECRC(8) / RIS(c) / keypad mode 등.
+            // ESC + single final byte: DECSC(7) / DECRC(8) / RIS(c) / keypad mode, etc.
             delegate?.vtParser(self, didEmitESC: b)
             state = .ground
         default:
@@ -192,7 +192,7 @@ public final class VTParser {
             dispatchOSC()
             state = .ground
         } else {
-            // ST가 아니면 OSC 취소
+            // not ST — cancel the OSC
             oscBytes.removeAll()
             state = .ground
         }
@@ -207,7 +207,7 @@ public final class VTParser {
 
     private func flushText() {
         guard !textBytes.isEmpty else { return }
-        // UTF-8 partial-safe: 가장 긴 유효 prefix만 방출, 나머지는 보류.
+        // UTF-8 partial-safe: emit only the longest valid prefix, hold the rest.
         let maxTrail = min(3, textBytes.count)
         for trail in 0...maxTrail {
             let len = textBytes.count - trail
@@ -218,7 +218,7 @@ public final class VTParser {
                 return
             }
         }
-        // 어떤 prefix도 디코드 안 됨 — 한 바이트 버리고 다음 호출
+        // no prefix decoded at all — drop one byte and try on the next call
         textBytes.removeFirst()
     }
 }

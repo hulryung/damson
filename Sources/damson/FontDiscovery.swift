@@ -1,18 +1,19 @@
 import AppKit
 
-/// 시스템에 설치된 monospace 폰트 가족 목록을 enumerate하고, damson의 기본 폰트
-/// 선택 정책을 적용.
+/// Enumerates the monospace font families installed on the system and applies
+/// Damson's default-font selection policy.
 ///
-/// Nerd Font가 설치돼 있으면 우선 사용 (Starship/Powerlevel10k의 powerline 글리프가
-/// 깨지지 않음). 없으면 Menlo로 폴백.
+/// If a Nerd Font is installed it is preferred (so Starship/Powerlevel10k powerline
+/// glyphs don't break). Otherwise it falls back to Menlo.
 enum FontDiscovery {
-    /// 터미널에 쓸 만한(고정폭) 폰트 가족 (sorted alphabetically).
+    /// Font families usable in a terminal (fixed-width), sorted alphabetically.
     ///
-    /// `NSFont.isFixedPitch`만 보면 **한글/CJK 병합 폰트가 빠진다**: 반각 Latin +
-    /// 전각 한글의 두 advance 폭(dual-width)을 가져 시스템이 monospace 플래그를
-    /// false로 달기 때문(예: JetBrainsMonoHangul, D2Coding, NanumGothicCoding).
-    /// 이런 폰트야말로 한국 개발자가 원하는 것이므로, 플래그가 없어도 **Latin
-    /// advance가 균일하면**(한글이 2배 폭인 건 터미널이 wide-cell로 처리) 포함한다.
+    /// Looking only at `NSFont.isFixedPitch` **drops Korean/CJK merged fonts**: they carry
+    /// two advance widths (dual-width) — half-width Latin plus full-width Hangul — so the
+    /// system sets their monospace flag to false (e.g. JetBrainsMonoHangul, D2Coding,
+    /// NanumGothicCoding). These are exactly the fonts Korean developers want, so even
+    /// without the flag we include them **as long as the Latin advances are uniform** (the
+    /// 2x-width Hangul is handled by the terminal as wide cells).
     static func allMonospaceFamilies() -> [String] {
         let fm = NSFontManager.shared
         return fm.availableFontFamilies
@@ -23,13 +24,14 @@ enum FontDiscovery {
             .sorted()
     }
 
-    /// 대표 ASCII 글자들의 advance가 균일하면 true. `isFixedPitch` 플래그가 false인
-    /// dual-width(Latin+한글) 폰트를 터미널용으로 인정하기 위함. 비례 폰트
-    /// (Helvetica 등)는 좁은/넓은 글자 advance가 달라 걸러진다.
+    /// True if the advances of representative ASCII characters are uniform. This lets us
+    /// accept dual-width (Latin+Hangul) fonts whose `isFixedPitch` flag is false as terminal
+    /// fonts. Proportional fonts (Helvetica, etc.) are filtered out because their narrow and
+    /// wide characters have different advances.
     private static func isLatinMonospaced(_ family: String) -> Bool {
         guard let font = NSFont(name: family, size: 100) else { return false }
         let ct = font as CTFont
-        // narrow(i,l,.) + wide-ink(M,W,@,m) ASCII를 섞어 비례 폰트와 확실히 구분.
+        // Mix narrow (i,l,.) and wide-ink (M,W,@,m) ASCII to reliably distinguish proportional fonts.
         var advances: [CGFloat] = []
         for scalar in "ilMW@m.".unicodeScalars {
             var unichars = Array(String(scalar).utf16)
@@ -41,15 +43,15 @@ enum FontDiscovery {
             advances.append(advance.width)
         }
         guard advances.count >= 4, let lo = advances.min(), let hi = advances.max() else { return false }
-        return hi - lo < 0.5   // 100pt에서 0.5pt 미만 편차 = 균일폭
+        return hi - lo < 0.5   // less than 0.5pt deviation at 100pt = uniform width
     }
 
-    /// Nerd Font (이름에 "Nerd Font", "NF", "NFM" 포함)만.
+    /// Nerd Fonts only (name contains "Nerd Font", "NF", or "NFM").
     static func nerdFontFamilies() -> [String] {
         allMonospaceFamilies().filter { isNerdFont($0) }
     }
 
-    /// Nerd Font가 아닌 monospaced 폰트들.
+    /// Monospaced fonts that are not Nerd Fonts.
     static func regularMonospaceFamilies() -> [String] {
         allMonospaceFamilies().filter { !isNerdFont($0) }
     }
@@ -57,22 +59,23 @@ enum FontDiscovery {
     static func isNerdFont(_ family: String) -> Bool {
         let lower = family.lowercased()
         return lower.contains("nerd font")
-            || lower.contains("nerd fon")  // 짧게 truncated 케이스
+            || lower.contains("nerd fon")  // handles truncated cases
             || family.contains(" NF")
             || family.contains(" NFM")
             || family.contains(" NFP")
     }
 
-    /// damson의 디폴트 폰트 가족 = **JetBrainsMono Nerd Font Mono** (NFM).
+    /// Damson's default font family = **JetBrainsMono Nerd Font Mono** (NFM).
     ///
-    /// Latin 글자는 NF와 100% 동일하면서, Nerd 아이콘을 **1셀 폭으로 축소**해 터미널
-    /// cell-grid에 맞춘다. 비-Mono(NF)는 아이콘 잉크가 1셀을 넘어(예: U+F43A 클럭
-    /// ink 0~1.67셀) Metal rasterizer의 1셀 박스에서 잘리므로 피한다. 한글/CJK는
-    /// `cjkFallbackFont`(D2Coding 계열)로 fallback — fallback 최소화. 없으면 NF → Menlo.
+    /// Latin glyphs are 100% identical to the NF variant, while Nerd icons are **scaled down
+    /// to one cell wide** to fit the terminal cell grid. The non-Mono (NF) variant is avoided
+    /// because its icon ink exceeds one cell (e.g. the U+F43A clock spans 0–1.67 cells) and
+    /// gets clipped by the Metal rasterizer's one-cell box. Korean/CJK falls back to
+    /// `cjkFallbackFont` (the D2Coding family) — fallback is minimized. If unavailable: NF → Menlo.
     static func defaultFamily() -> String {
         let preferred = [
-            "JetBrainsMono Nerd Font Mono",  // NFM: Latin=NF 동일 + 아이콘 1셀 폭
-            "JetBrainsMono Nerd Font",       // NF (아이콘 자연 폭) — 차선
+            "JetBrainsMono Nerd Font Mono",  // NFM: Latin same as NF + icons one cell wide
+            "JetBrainsMono Nerd Font",       // NF (natural icon width) — second choice
         ]
         let installed = Set(NSFontManager.shared.availableFontFamilies)
         for family in preferred where installed.contains(family) {
@@ -81,7 +84,7 @@ enum FontDiscovery {
         return "Menlo"
     }
 
-    /// Nerd Font의 "Mono" 변형 (글리프가 1셀 폭으로 강제). 터미널엔 보통 이게 정렬됨.
+    /// The "Mono" variant of a Nerd Font (glyphs forced to one cell wide). This is usually the one that aligns in a terminal.
     private static func isMonoVariant(_ family: String) -> Bool {
         let lower = family.lowercased()
         return lower.contains("nerd font mono")

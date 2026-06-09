@@ -2,8 +2,8 @@ import Foundation
 import XCTest
 @testable import DamsonControl
 
-/// Wire-format 호환성 회귀 보호. Rust damson-cli의 `docs/CLI.md` 명세와
-/// 정확히 동일한 바이트가 나와야 cross-impl 호환이 깨지지 않음.
+/// Regression guard for wire-format compatibility. The bytes must match the Rust
+/// damson-cli `docs/CLI.md` spec exactly, or cross-impl compatibility breaks.
 final class WireTests: XCTestCase {
     // MARK: - encodeCommand (CLI → server)
 
@@ -84,8 +84,8 @@ final class WireTests: XCTestCase {
         let r = ControlResponse.err("nope")
         let data = try JSONEncoder().encode(r)
         let s = String(data: data, encoding: .utf8)!
-        // JSONEncoder는 키 순서를 declaration 순으로 보장하지 않으므로
-        // round-trip으로 확인.
+        // JSONEncoder does not guarantee key order matches declaration order,
+        // so verify via round-trip.
         let back = try JSONDecoder().decode(ControlResponse.self, from: data)
         XCTAssertEqual(back, r)
         XCTAssertTrue(s.contains(#""ok":false"#))
@@ -117,7 +117,7 @@ final class WireTests: XCTestCase {
     }
 
     func testPickWithExplicitMissingPidErrors() {
-        // 실행 환경에 PID 0인 인스턴스는 절대 없음.
+        // No instance with PID 0 ever exists in the runtime environment.
         switch pickDamsonSocket(pid: 0) {
         case .success:
             XCTFail("expected failure for missing pid")

@@ -2,8 +2,8 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// SwiftUI에서 한 줄로 끼울 수 있는 진입점.
-/// cmux/damson.app 양쪽에서 동일 API.
+/// One-line entry point you can drop into SwiftUI.
+/// Same API for both cmux and damson.app.
 public struct DamsonTerminalView: NSViewRepresentable {
     public let session: DamsonSession
     public var isActive: Bool
@@ -31,10 +31,12 @@ public struct DamsonTerminalView: NSViewRepresentable {
     }
 }
 
-/// 2-finger 가로 스와이프 탭 전환의 호스트 측 수신자. 터미널 surface는 라이브러리라
-/// 탭/윈도우를 모르므로, 제스처를 이 프로토콜로 호스트(윈도우 컨트롤러)에 중계한다.
-/// `translation`은 누적 가로 이동량(pt, 오른쪽=양수). 호스트가 이웃 탭 트리를
-/// 실시간으로 끌고, end에서 임계값에 따라 commit/cancel 한다.
+/// Host-side receiver for the 2-finger horizontal swipe tab switch. The terminal
+/// surface is a library and knows nothing about tabs/windows, so it relays the
+/// gesture to the host (the window controller) through this protocol.
+/// `translation` is the accumulated horizontal movement (pt, right = positive).
+/// The host drags the neighboring tab in live and, on end, commits/cancels based
+/// on a threshold.
 public protocol TabSwipeHandler: AnyObject {
     func tabSwipeUpdate(translation: CGFloat)
     /// `velocity`: recent horizontal speed at release (pt per event, ~per frame),
@@ -42,9 +44,10 @@ public protocol TabSwipeHandler: AnyObject {
     func tabSwipeEnd(translation: CGFloat, velocity: CGFloat)
 }
 
-/// 입력(키/IME/마우스)·선택·find·follow 정책의 소유자. 그리기/스크롤/좌표 변환은
-/// `MetalTerminalBackend`(`CAMetalLayer` 인스턴스드 렌더러)에 위임한다.
-/// 키 이벤트는 이쪽에서 잡아 `session.write(_:)`로 전달.
+/// Owner of input (key/IME/mouse), selection, find, and follow policy. Drawing,
+/// scrolling, and coordinate conversion are delegated to `MetalTerminalBackend`
+/// (the `CAMetalLayer` instanced renderer). Key events are caught here and
+/// forwarded via `session.write(_:)`.
 public final class DamsonSurfaceView: NSView, NSTextInputClient {
     public let session: DamsonSession
 
@@ -52,7 +55,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         didSet {
             guard isActive != oldValue else { return }
             needsDisplay = true
-            // 비활성(디밍) pane은 커서를 깜빡이지 않게 — 타이머 시작/중지.
+            // Keep the cursor from blinking in an inactive (dimmed) pane — start/stop the timer.
             updateBlinkTimer()
         }
     }
@@ -131,94 +134,106 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     private var configSubscription: AnyCancellable?
     private var lastReportedSize: (cols: Int, rows: Int)? = nil
     private var renderScheduled = false
-    /// DEC 2026 sync output flush 안전 타이머가 이미 예약돼 있는지.
+    /// Whether the DEC 2026 sync output flush safety timer is already scheduled.
     private var syncFlushScheduled = false
-    /// sync frame이 ESU 없이 너무 오래 열려 있을 때 강제 present까지의 시간(초).
-    /// 정상 Claude Code/Ink 프레임은 한 자릿수 ms 안에 ESU가 와서 이 타이머는
-    /// 거의 발동하지 않음 — freeze 방지용 안전망.
+    /// Time (seconds) before forcing a present when a sync frame stays open too
+    /// long without an ESU. Normal Claude Code/Ink frames get their ESU within a
+    /// single-digit number of ms, so this timer almost never fires — a freeze-prevention safety net.
     private let syncFlushDeadline: TimeInterval = 0.15
     private var lastRenderedVersion: UInt64 = .max
-    /// 마지막 렌더 시점의 marked text. grid 변화 없이 marked text만 비워질 때
-    /// (BS-cancel 등) 강제 재렌더링하기 위한 비교용.
+    /// The marked text at the last render. Used for comparison to force a
+    /// re-render when only the marked text is cleared without a grid change
+    /// (e.g. BS-cancel).
     private var lastRenderedMarkedText: String = ""
-    /// 캐시된 cell metrics. `reportSizeIfChanged`가 갱신, render가 paragraph style에 사용.
-    /// 폰트에서만 파생되는 단일 값 — 양 백엔드가 공유해 토글 시 SIGWINCH 방지.
+    /// Cached cell metrics. Updated by `reportSizeIfChanged`, used by render for
+    /// paragraph style. A single value derived solely from the font — shared by
+    /// both backends to avoid a SIGWINCH on toggle.
     private var cellMetrics = CellMetrics(width: 1, height: 1)
 
-    /// IME 조합 중인 텍스트. 비어있지 않으면 cursor 자리에 시각적 overlay.
-    /// 실제 PTY 전송은 `insertText`(commit)이 올 때만 일어남.
+    /// Text currently being composed by the IME. When non-empty, shown as a
+    /// visual overlay at the cursor position. The actual PTY send only happens
+    /// when `insertText` (commit) arrives.
     private var markedText: String = ""
 
-    /// 현재 처리 중인 `NSEvent`. `keyDown`이 set, IME 콜백(setMarkedText/insertText)에서
-    /// "이 commit/preedit을 일으킨 키가 무엇인가" 판단에 사용. BS-cancel spurious commit 감지용.
+    /// The `NSEvent` currently being processed. Set by `keyDown`, used in IME
+    /// callbacks (setMarkedText/insertText) to determine "which key triggered
+    /// this commit/preedit". Used to detect a BS-cancel spurious commit.
     private var currentKeyEvent: NSEvent?
 
-    /// 이 keyDown 사이클의 doCommand(deleteBackward:)를 1회 swallow. BS-cancel 처리 시,
-    /// IME 콜백이 이미 marked text를 비웠고 PTY에 BS를 또 보내면 안 될 때 use.
+    /// Swallow this keyDown cycle's doCommand(deleteBackward:) once. Used in
+    /// BS-cancel handling when the IME callback has already cleared the marked
+    /// text and we must not send another BS to the PTY.
     private var swallowNextDeleteCommand: Bool = false
 
-    /// startup IME warmup 진행 중 플래그. `.app` 등록만으로는 TSM↔IMK 첫 IPC 핸드셰이크가
-    /// 사용자의 첫 keystroke 시점에야 일어나서 첫 자모가 leak되는 잔존 race가 있음.
-    /// view가 first responder가 되자마자 합성 dummy event를 inputContext로 흘려서
-    /// IPC를 미리 wake up 시킨다. 그동안 콜백되는 insertText/doCommand는 PTY로 안 보냄.
+    /// Flag set while startup IME warmup is in progress. With just `.app`
+    /// registration there's a residual race where the first TSM↔IMK IPC
+    /// handshake only happens at the user's first keystroke, leaking the first
+    /// jamo. As soon as the view becomes first responder, we push a synthetic
+    /// dummy event through inputContext to wake the IPC up early. Any
+    /// insertText/doCommand called back during this window is not sent to the PTY.
     private var isWarmingUpIME: Bool = false
     private var didWarmupIME: Bool = false
 
-    /// Selection state. 좌표는 (textViewRow, col) — textViewRow는 `scrollback.count + viewportRow`.
-    /// `anchor`는 mouseDown 위치, `head`는 mouseDragged 따라가는 끝점.
+    /// Selection state. Coordinates are (textViewRow, col) — textViewRow is `scrollback.count + viewportRow`.
+    /// `anchor` is the mouseDown position, `head` is the endpoint that follows mouseDragged.
     private var selectionAnchor: (row: Int, col: Int)?
     private var selectionHead: (row: Int, col: Int)?
-    /// 트랙패드 정밀 휠 델타 누적(포인트). mouse-reporting 앱에 휠을 throttle 전달할 때 사용.
+    /// Accumulated trackpad precision wheel delta (points). Used to throttle wheel delivery to mouse-reporting apps.
     private var wheelReportAccum: CGFloat = 0
 
-    /// DECSCUSR underline/bar 모양용 cursor overlay. 호스트 레이어에 둠 — 백엔드가
-    /// 기하를 계산해 주면 여기에 위치시킨다 (좌표 basis가 원본과 일치). block 모양은
-    /// 백엔드 렌더의 inverse-cell이 처리하므로 이 레이어는 underline/bar에서만 보임.
+    /// Cursor overlay for the DECSCUSR underline/bar shapes. Placed on the host
+    /// layer — positioned here once the backend computes the geometry (the
+    /// coordinate basis matches the original). The block shape is handled by the
+    /// backend render's inverse-cell, so this layer is only visible for underline/bar.
     private let cursorLayer = CALayer()
 
-    /// cursor blink — config.cursorBlink ON이면 timer로 phase 토글.
-    /// blinkVisible=false면 cursor를 숨김(block은 inverse 미적용, underline/bar는 layer hidden).
+    /// cursor blink — when config.cursorBlink is ON, a timer toggles the phase.
+    /// When blinkVisible=false the cursor is hidden (block: inverse not applied, underline/bar: layer hidden).
     private var cursorBlinkTimer: Timer?
     private var cursorBlinkVisible = true
 
-    /// 현재 적용된 폰트 zoom multiplier. 1.0이 기본. Cmd+= / Cmd+- / Cmd+0로 변경.
+    /// The currently applied font zoom multiplier. 1.0 is the default. Changed via Cmd+= / Cmd+- / Cmd+0.
     private var fontSizeMultiplier: CGFloat = 1.0
 
-    /// 활성화된 find 오버레이 + 현재 검색어 + 매치 위치.
+    /// The active find overlay + current query + match positions.
     private var findOverlay: FindOverlayView?
     private var findQuery: String = ""
-    /// 검색 매치 — `[textViewRow: [colRange...]]`. render 시 highlight 표시용.
+    /// Search matches — `[textViewRow: [colRange...]]`. Used to draw highlights at render time.
     private var findMatchesByRow: [Int: [Range<Int>]] = [:]
-    /// 매치들을 textViewRow → col 순으로 정렬한 평탄 리스트. Cmd+G next/prev 네비용.
+    /// Matches flattened into a list sorted by textViewRow → col. Used for Cmd+G next/prev navigation.
     private var findMatchesOrdered: [(row: Int, range: Range<Int>)] = []
-    /// 현재 활성 매치 인덱스 (Cmd+G로 순회). -1이면 미선택.
+    /// The currently active match index (cycled with Cmd+G). -1 means none selected.
     private var activeMatchIndex: Int = -1
 
-    /// Cmd-hover URL 표시 상태. Cmd 누른 채로 URL 위에 마우스를 올렸을 때
-    /// 해당 URL을 밝게 underline 표시 + pointing-hand cursor.
-    /// 클릭은 Cmd 누른 상태에서만 URL 오픈.
+    /// Cmd-hover URL display state. When the mouse hovers over a URL with Cmd
+    /// held, that URL is shown brightly underlined + a pointing-hand cursor.
+    /// A click only opens the URL while Cmd is held.
     private var cmdKeyDown: Bool = false
     private var hoveredURL: (row: Int, colRange: Range<Int>, url: URL)?
     private var mouseTrackingArea: NSTrackingArea?
 
-    /// "live output 따라가기" 추적 플래그. 사용자 scroll로 위로 올라가면 false,
-    /// 다시 바닥에 닿으면 true. layout() 시점엔 이미 새 frame이 적용된 후라
-    /// 그 자리에서 isScrolledToBottom()을 재측정해도 부정확 — 이 플래그를 따로
-    /// 유지해야 tab bar 토글로 영역이 바뀔 때 바닥 anchor를 안정적으로 보존.
+    /// "Follow live output" tracking flag. Becomes false when the user scrolls
+    /// up, true again when they reach the bottom. At layout() time the new frame
+    /// has already been applied, so re-measuring isScrolledToBottom() there is
+    /// inaccurate — this flag must be kept separately to reliably preserve the
+    /// bottom anchor when the area changes due to a tab bar toggle.
     private var followingBottom: Bool = true
 
-    /// alt-screen 활성 상태의 직전 값. primary↔alt 전환을 감지해 follow를 재개하기 위함
-    /// (vim 진입/종료 등 — 앱이 화면을 점유하는 동안엔 항상 그 영역을 보여줘야 함).
+    /// The previous value of the alt-screen active state. Used to detect a
+    /// primary↔alt transition and resume follow (e.g. entering/exiting vim —
+    /// while an app occupies the screen we must always show that area).
     private var lastAltScreenActive: Bool = false
 
-    /// 직전 렌더 시점의 "evict 누적 줄 수"(= scrollbackPushCount - scrollback.count).
-    /// 사용자가 위로 스크롤한 상태에서 scrollback 최상단이 evict되면 보던 콘텐츠가
-    /// 위로 밀리는데, 그 양만큼 스크롤도 따라 올려 content-anchor를 유지하는 데 사용.
+    /// The "cumulative evicted line count" (= scrollbackPushCount - scrollback.count) at the previous render.
+    /// When the top of scrollback is evicted while the user has scrolled up, the
+    /// content they're viewing shifts upward; used to scroll up by the same
+    /// amount to maintain the content-anchor.
     private var lastEvictedTotal: UInt64 = 0
 
-    /// 키 입력 점프 애니메이션이 진행 중인지. true인 동안엔 renderNow()/layout()의
-    /// 즉시 follow-scroll을 건너뛴다 — 안 그러면 echo 렌더가 애니메이션을 끝 위치로
-    /// 순간이동시켜 부드러운 점프가 보이지 않음.
+    /// Whether a key-input jump animation is in progress. While true, the
+    /// immediate follow-scroll in renderNow()/layout() is skipped — otherwise an
+    /// echo render would teleport the animation to its end position, hiding the
+    /// smooth jump.
     private var isSnappingToCursor: Bool = false
 
     public init(session: DamsonSession) {
@@ -243,19 +258,20 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         addSubview(content)
         content.frame = bounds
 
-        // underline/bar cursor overlay layer — 호스트 레이어에 둠 (원본과 동일).
+        // underline/bar cursor overlay layer — placed on the host layer (same as the original).
         cursorLayer.zPosition = 100
         cursorLayer.isHidden = true
         layer?.addSublayer(cursorLayer)
 
-        // 백엔드가 스크롤 변동을 콜백 — boundsDidChange(programmatic 포함)는 cursor
-        // overlay 재배치, didLiveScroll(사용자 인터랙션)은 follow-bottom 갱신.
-        // (원래 scrollViewDidScroll의 두 역할을 그대로 분리.)
+        // The backend calls back on scroll changes — boundsDidChange (including
+        // programmatic) repositions the cursor overlay, didLiveScroll (user
+        // interaction) updates follow-bottom.
+        // (The two roles of the original scrollViewDidScroll, split apart as-is.)
         backend.onScrollGeometryChanged = { [weak self] in self?.refreshCursorOverlayNow() }
         backend.onUserScroll = { [weak self] in
             DispatchQueue.main.async { self?.refreshFollowingBottomFlag() }
         }
-        // perf HUD 토글 브로드캐스트 구독 — 켜지면 이 surface도 오버레이를 띄운다.
+        // Subscribe to the perf HUD toggle broadcast — when on, this surface also shows the overlay.
         NotificationCenter.default.addObserver(
             forName: .damsonPerfHUDToggled, object: nil, queue: .main
         ) { [weak self] _ in self?.applyPerfHUD() }
@@ -263,8 +279,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         NotificationCenter.default.addObserver(
             forName: .damsonAppleHUDToggled, object: nil, queue: .main
         ) { [weak self] _ in self?.applyAppleHUD() }
-        // 초기 상태를 항상 명시 적용 — MTL_HUD_ENABLED env로 자동 켜진 Apple HUD를
-        // 시작 시엔 꺼둔다(⌃⌘J로만 켜지도록). 기본 isAppleHUDEnabled == false.
+        // Always apply the initial state explicitly — keep the Apple HUD (which
+        // MTL_HUD_ENABLED env auto-enables) off at startup (only toggled on via
+        // ⌃⌘J). Default isAppleHUDEnabled == false.
         applyAppleHUD()
 
         gridSubscription = session.gridChanged
@@ -274,31 +291,31 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             }
 
         configSubscription = session.$config
-            .dropFirst() // 초기 값은 init 시 이미 반영됨
+            .dropFirst() // the initial value is already applied at init
             .receive(on: RunLoop.main)
             .sink { [weak self] cfg in
                 self?.applyConfig(cfg)
             }
 
-        // BEL (\a) — 시각 flash + 시스템 비프. session.onBell이 off-main에서 호출될
-        // 수 있으므로 main으로 hop.
+        // BEL (\a) — visual flash + system beep. session.onBell may be called
+        // off-main, so hop to main.
         session.onBell = { [weak self] in
             DispatchQueue.main.async { self?.handleBell() }
         }
 
-        // 초기 1회 렌더.
+        // Initial one-time render.
         scheduleRender()
         updateBlinkTimer()
     }
 
     // MARK: - Cursor blink
 
-    /// config.cursorBlink에 따라 timer 시작/중지. ~530ms 주기로 phase 토글.
+    /// Start/stop the timer per config.cursorBlink. Toggles the phase on a ~530ms cycle.
     private func updateBlinkTimer() {
         cursorBlinkTimer?.invalidate()
         cursorBlinkTimer = nil
         cursorBlinkVisible = true
-        // 블링크 ON이고 이 pane이 활성일 때만 깜빡인다. 비활성(디밍) pane은 정적 커서.
+        // Only blink when blink is ON and this pane is active. An inactive (dimmed) pane has a static cursor.
         guard session.config.cursorBlink, isActive else {
             scheduleRender()
             return
@@ -311,7 +328,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
     }
 
-    /// 키 입력 시 cursor를 즉시 보이게 + blink phase 리셋 (입력 중엔 안 깜빡이게).
+    /// On key input, show the cursor immediately + reset the blink phase (so it doesn't blink while typing).
     private func resetBlinkPhase() {
         guard session.config.cursorBlink, isActive else { return }
         cursorBlinkVisible = true
@@ -324,10 +341,10 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
     }
 
-    /// BEL 처리 — 짧은 시각 flash overlay + 시스템 비프.
+    /// BEL handling — a brief visual flash overlay + system beep.
     private func handleBell() {
         NSSound.beep()
-        // 시각 flash: 전체 위에 흰색 반투명 레이어를 잠깐 띄웠다 fade out.
+        // Visual flash: briefly show a translucent white layer over everything, then fade out.
         let flash = CALayer()
         flash.frame = bounds
         flash.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
@@ -339,25 +356,26 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         anim.duration = 0.18
         anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
         flash.add(anim, forKey: "fade")
-        // 애니메이션 후 제거.
+        // Remove after the animation.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
             flash.removeFromSuperlayer()
         }
     }
 
-    /// host 뷰 레이어의 배경색. 배경 불투명도 < 1이면 clear(=투명)로 둬 metal 레이어의
-    /// 투명 배경이 창 뒤(데스크톱/블러)까지 비치게 한다. 1.0이면 기존처럼 테마 배경색.
+    /// Background color of the host view layer. When background opacity < 1, keep
+    /// it clear (= transparent) so the metal layer's transparent background shows
+    /// through to behind the window (desktop/blur). At 1.0, the theme background color as before.
     private static func hostBackground(_ config: DamsonConfig) -> NSColor {
         config.backgroundOpacity < 1.0 ? .clear : config.backgroundColor
     }
 
-    /// Settings 변경 → session.updateConfig → 여기로 들어와서 textView/색상/스크롤백 적용.
+    /// Settings change → session.updateConfig → enters here and applies textView/colors/scrollback.
     private func applyConfig(_ config: DamsonConfig) {
         backend.applyConfig(config)
         layer?.backgroundColor = Self.hostBackground(config).cgColor
         lastReportedSize = nil
-        // dedupe key 무력화 후 동기 re-render — grid.version 변화 없이도 새 폰트/색이
-        // textStorage에 즉시 반영되도록.
+        // Invalidate the dedupe key, then synchronously re-render — so a new
+        // font/color is immediately reflected in textStorage even without a grid.version change.
         lastRenderedVersion = .max
         needsLayout = true
         renderNow()
@@ -371,24 +389,25 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         super.layout()
         backend.contentView.frame = bounds
         if perfHUDView != nil { positionPerfHUD() }
-        // 라이브 리사이즈 중에도 콘텐츠가 새 너비로 즉시 re-layout 되도록 강제.
-        // 이게 없으면 드래그 중엔 옛 layout이 유지되어 화면이 안 갱신되어 보임.
+        // Force content to re-layout to the new width immediately, even during a
+        // live resize. Without this, the old layout sticks during a drag and the screen appears not to update.
         backend.ensureLayout()
         reportSizeIfChanged()
-        // 사용자가 위로 스크롤한 상태(followingBottom == false)면 layout 패스(리사이즈
-        // 등)에서도 위치를 건드리지 않는다 — 보던 history가 강제로 바닥으로 튀지 않게.
-        // 키 입력 점프 애니메이션 중(isSnappingToCursor)에도 건드리지 않음.
+        // If the user has scrolled up (followingBottom == false), don't touch the
+        // position even in a layout pass (resize, etc.) — so the history they're
+        // viewing isn't forced to snap to the bottom. Also don't touch it during
+        // a key-input jump animation (isSnappingToCursor).
         if followingBottom && !isSnappingToCursor {
             if session.grid.isAltScreenActive || session.grid.hasUsedSyncOutput
                 || session.grid.hasContentBelowCursor {
-                // grid-top anchor — 라이브 grid 전체(하단 footer 포함)를 보여준다.
-                // Claude Code(커서 아래 status 상주)가 이 경로로 들어와 잘림이 해소됨.
+                // grid-top anchor — shows the entire live grid (including the bottom footer).
+                // Claude Code (with a status line residing below the cursor) takes this path, resolving the clipping.
                 scrollViewportToAltTop()
             } else {
                 scrollViewportToBottom()
             }
         }
-        // resize 직후 새 grid 콘텐츠도 즉시 그리기.
+        // Draw the new grid content immediately right after a resize, too.
         if inLiveResize {
             renderNow()
         }
@@ -404,10 +423,11 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         return abs(curY - yMax) <= tolerance
     }
 
-    /// Alt-screen 활성 시 — primary scrollback을 건너뛰고 alt viewport top에 anchor.
-    /// (alt-screen 진입 시 self.scrollback이 primary의 history를 그대로 갖고 있어서
-    ///  안 스크롤하면 textStorage 최상단=primary scrollback이 보이고 alt 콘텐츠는
-    ///  그 아래에 그려져 사용자가 위로 스크롤해야 보는 회귀가 있었음.)
+    /// When alt-screen is active — skip the primary scrollback and anchor at the alt viewport top.
+    /// (On entering alt-screen, self.scrollback still holds the primary's history,
+    ///  so without scrolling, the top of textStorage = primary scrollback is
+    ///  shown and the alt content is drawn below it — a regression where the user
+    ///  had to scroll up to see it.)
     private func scrollViewportToAltTop() {
         backend.ensureLayout()
         let viewportTop = CGFloat(session.grid.scrollback.count) * cellMetrics.height
@@ -418,9 +438,11 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     private func scrollViewportToBottom() {
         backend.ensureLayout()
         let visHeight = backend.viewportHeight
-        // "cursor visible" 정책 — cursor가 가시 영역 밖이면 들어오게만, 안이면 안 건드림.
-        // layout(window resize 등)에서 followingBottom 일 때 호출되므로 사용자가 바닥에
-        // 머물 의도면 그쪽으로 잡아주되, cursor 위 영역이 살아 있다면 그대로 둠.
+        // "cursor visible" policy — if the cursor is outside the visible area,
+        // only bring it in; if it's inside, don't touch it. Called from layout
+        // (window resize, etc.) when followingBottom, so if the user intends to
+        // stay at the bottom we pull them there, but if the area above the cursor
+        // is alive we leave it as-is.
         let cursorViewRow = session.grid.scrollback.count + session.grid.cursorRow
         let cursorY = CGFloat(cursorViewRow) * cellMetrics.height
             + backend.contentInset.height
@@ -437,8 +459,8 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
     }
 
-    /// NSTextView가 실제 layout에서 사용하는 1줄 높이를 측정. `defaultLineHeight`보다
-    /// 정확함 (typesetter / leading 등의 미세 차이까지 반영).
+    /// Measures the single-line height NSTextView actually uses in layout. More
+    /// accurate than `defaultLineHeight` (it reflects subtle differences in typesetter / leading, etc.).
     private func measuredLineHeight(font: NSFont) -> CGFloat {
         let lm = NSLayoutManager()
         let storage = NSTextStorage(string: "M\nM\nM", attributes: [.font: font])
@@ -452,45 +474,50 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
 
     public override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
-        // 라이브 리사이즈 종료 후 최종 사이즈 보고 (안전망 — 일반적으로 layout()이
-        // 이미 처리하지만 마지막 frame이 layout 호출 없이 결정되는 케이스를 위해).
+        // Report the final size after a live resize ends (a safety net — layout()
+        // usually handles this already, but for the case where the last frame is
+        // determined without a layout call).
         reportSizeIfChanged()
     }
 
     private func reportSizeIfChanged() {
         guard bounds.width > 0, bounds.height > 0 else { return }
-        // 매 layout마다 즉시 SIGWINCH fire — 드래그 중에도 셸/TUI가 실시간으로
-        // redraw해서 사용자가 보는 화면도 실시간 갱신됨.
+        // Fire SIGWINCH immediately on every layout — so the shell/TUI redraws in
+        // real time even during a drag, and the screen the user sees updates in real time too.
         //
-        // (debounce/throttle 시도했으나: debounce는 연속 드래그가 timer를 reset해서
-        //  드래그가 끝날 때까지 한 번도 fire 안 됨. 일반 셸의 prompt 누적은 SIGWINCH
-        //  자체의 표준 동작. TUI 세션은 redraw가 대부분 in-place(net-zero scroll)라
-        //  resize 중에도 scrollback 잔재가 거의 안 쌓임.)
-        // 메트릭은 백엔드의 렌더 폰트에서 파생 — 메트릭과 렌더가 절대 어긋나지 않게.
+        // (Tried debounce/throttle, but: debounce never fires once until the drag
+        //  ends because continuous dragging resets the timer. Prompt accumulation
+        //  in a normal shell is SIGWINCH's own standard behavior. In a TUI session
+        //  redraws are mostly in-place (net-zero scroll), so scrollback residue
+        //  barely accumulates even during a resize.)
+        // Metrics are derived from the backend's render font — so metrics and render never diverge.
         let font = backend.renderFont
         let glyphSize = ("M" as NSString).size(withAttributes: [.font: font])
         let cellW = max(glyphSize.width, 1)
-        // NSLayoutManager().defaultLineHeight는 NSTextView가 실제 쓰는 line height와
-        // 미세하게 다른 경우가 있어 rows가 over-report됨. 실제 layout 결과로 측정.
+        // NSLayoutManager().defaultLineHeight can differ slightly from the line
+        // height NSTextView actually uses, causing rows to be over-reported. Measure from the actual layout result.
         let cellH = max(measuredLineHeight(font: font), 1)
         cellMetrics = CellMetrics(width: cellW, height: cellH)
         let inset = backend.contentInset
-        // width: bounds.width 대신 backend.contentSize.width — vertical scroller가
-        // 항상 보이는 시스템 설정에서 ~15pt 차지하기 때문.
+        // width: backend.contentSize.width instead of bounds.width — because the
+        // vertical scroller takes ~15pt under the system setting where it's always visible.
         let usableW = max(backend.contentSize.width - inset.width * 2, 1)
 
-        // height: 두 가지 윈도우 모드를 구분해야 한다. 식별자는 tabbingMode —
-        // compact 모드는 네이티브 탭을 끄고(`.disallowed`) 커스텀 탭바를 쓴다.
+        // height: we must distinguish two window modes. The discriminator is
+        // tabbingMode — compact mode turns off native tabs (`.disallowed`) and uses a custom tab bar.
         //
-        //   • compact (커스텀 탭바): 탭바는 평범한 subview라 우리 backing view를 이미
-        //     그만큼 줄여놨다 → backend.contentSize.height가 곧 실제 그릴 수 있는
-        //     높이다. 그대로 쓴다 (위 usableW와 대칭). window.contentRect에서 매직
-        //     상수를 빼던 옛 경로는 탭바 실제 높이(38)와 어긋나(36) rows를 1 더 잡아,
-        //     Claude Code 같은 TUI의 맨 아래 줄이 화면 밖으로 밀려 스크롤해야 보였다.
+        //   • compact (custom tab bar): the tab bar is an ordinary subview, so it
+        //     has already shrunk our backing view by that much → backend.contentSize.height
+        //     is exactly the height actually drawable. Use it as-is (symmetric
+        //     with usableW above). The old path that subtracted a magic constant
+        //     from window.contentRect was off from the tab bar's actual height
+        //     (38 vs 36), counting one extra row, which pushed the bottom line of
+        //     a TUI like Claude Code off-screen so you had to scroll to see it.
         //
-        //   • standard (네이티브 탭바): bounds/contentRect가 2탭↔1탭 토글에 따라
-        //     ~36pt 들락날락한다 → 매 토글마다 SIGWINCH로 prompt가 다시 그려져 누적됨.
-        //     탭바가 숨어있을 때(1 tab)도 그 높이를 미리 빼서 rows를 일정하게 고정한다.
+        //   • standard (native tab bar): bounds/contentRect fluctuates by ~36pt
+        //     as it toggles between 2 tabs↔1 tab → each toggle redraws the prompt
+        //     via SIGWINCH and accumulates. Pre-subtract that height even when the
+        //     tab bar is hidden (1 tab) to keep rows constant.
         let usableH: CGFloat
         if window?.tabbingMode == .disallowed {
             usableH = max(backend.contentSize.height - inset.height * 2, 1)
@@ -527,9 +554,10 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     /// PTY size only once, on drag end.
     private var lastPtySize: (cols: Int, rows: Int)?
 
-    /// macOS 네이티브 윈도우 탭 바가 실제로 차지하는 높이 — 탭이 추가되면 macOS는
-    /// `window.frame.height`를 이만큼 줄여서 탭바 공간을 만든다. 측정값: 600 → 564 = 36pt.
-    /// (직관과 반대 — 탭바가 contentView를 잠식하는 게 아니라 window 자체가 작아짐.)
+    /// The height the macOS native window tab bar actually takes — when a tab is
+    /// added, macOS shrinks `window.frame.height` by this much to make room for
+    /// the tab bar. Measured: 600 → 564 = 36pt.
+    /// (Counterintuitive — the tab bar doesn't eat into the contentView; the window itself shrinks.)
     private let tabBarReservation: CGFloat = 36.0
 
     public override var acceptsFirstResponder: Bool { true }
@@ -548,14 +576,14 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         warmupIMEIfNeeded()
     }
 
-    /// 사용자가 첫 키를 누르기 전에 TSM↔IMK IPC 핸드셰이크를 강제로 트리거.
-    /// `.app` 등록만으로는 launch 후 첫 자모가 leak되는 잔존 race가 남아있는 환경 대응.
+    /// Force-triggers the TSM↔IMK IPC handshake before the user presses the first key.
+    /// Handles environments where, with just `.app` registration, a residual race leaks the first jamo after launch.
     private func warmupIMEIfNeeded() {
         guard !didWarmupIME else { return }
         didWarmupIME = true
         guard let window = window else { return }
 
-        // 다음 runloop tick에 실행 — window가 fully key 된 다음에 IMK가 받도록.
+        // Run on the next runloop tick — so IMK receives it after the window is fully key.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             guard let event = NSEvent.keyEvent(
@@ -576,7 +604,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
     }
 
-    // MARK: - Context menu (우클릭)
+    // MARK: - Context menu (right-click)
 
     public override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
@@ -607,7 +635,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
 
         menu.addItem(.separator())
 
-        // Split — responder chain으로 윈도우 컨트롤러에 전달 (Compact 모드에서만 처리됨).
+        // Split — passed to the window controller via the responder chain (only handled in Compact mode).
         let splitH = NSMenuItem(
             title: String(localized: "menu.splitH", defaultValue: "Split Horizontally"),
             action: Selector(("splitPaneHorizontally:")), keyEquivalent: ""
@@ -622,10 +650,10 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
 
     public override func mouseDown(with event: NSEvent) {
-        // 클릭으로 키 입력 되찾기 (혹시 다른 곳에 first responder가 가있을 때 대비)
+        // Reclaim key input via the click (in case first responder went elsewhere)
         window?.makeFirstResponder(self)
 
-        // Mouse reporting 활성 + Shift 안 누름이면 PTY로 forward (selection 안 함).
+        // If mouse reporting is active and Shift isn't held, forward to the PTY (no selection).
         if isMouseReportingEvent(event) {
             sendMouseEventToPTY(event: event, button: 0, pressed: true)
             return
@@ -634,7 +662,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         let point = convertEventToCell(event)
         switch event.clickCount {
         case 2:
-            // 더블 클릭 — 단어 선택 (space로 끊김).
+            // Double click — word selection (broken at spaces).
             if let (start, end) = wordBoundsAround(point) {
                 selectionAnchor = start
                 selectionHead = end
@@ -643,12 +671,12 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
                 selectionHead = point
             }
         case 3:
-            // 트리플 클릭 — 줄 전체 선택.
+            // Triple click — select the whole line.
             let cells = cellsForTextViewRow(point.row)
             selectionAnchor = (point.row, 0)
             selectionHead = (point.row, cells.count)
         default:
-            // 일반 클릭 — drag selection 시작.
+            // Normal click — start a drag selection.
             selectionAnchor = point
             selectionHead = point
         }
@@ -668,7 +696,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     ) -> ((row: Int, col: Int), (row: Int, col: Int))? {
         let cells = cellsForTextViewRow(pos.row)
         guard pos.col < cells.count else { return nil }
-        // 클릭한 자리가 공백이면 단어 아님 — nil 반환 (그냥 점선 선택)
+        // If the clicked spot is whitespace, it's not a word — return nil (just a plain selection)
         if isWordBreak(cells[pos.col].char) { return nil }
         var start = pos.col
         while start > 0 && !isWordBreak(cells[start - 1].char) {
@@ -682,14 +710,14 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
 
     private func isWordBreak(_ c: Character) -> Bool {
-        // 단어 경계 — 공백/탭만. CJK는 단어 단위 아니지만 일단 공백 기준.
+        // Word boundary — whitespace/tab only. CJK isn't word-segmented, but use whitespace for now.
         c == " " || c == "\t"
     }
 
     public override func mouseDragged(with event: NSEvent) {
-        // Cell motion / any motion 모드에서 drag도 PTY로 forward.
+        // In cell-motion / any-motion mode, forward drag to the PTY too.
         if isMouseReportingEvent(event), session.mouseReportingMode >= 1002 {
-            // 같은 cell 안에선 보내지 않도록 (1003 모드에선 보냄)
+            // Avoid sending within the same cell (in 1003 mode it does send)
             sendMouseEventToPTY(event: event, button: 32, pressed: true) // 32 = motion bit
             return
         }
@@ -703,10 +731,10 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             sendMouseEventToPTY(event: event, button: 0, pressed: false)
             return
         }
-        // anchor == head 이면 (그냥 클릭이면)
+        // If anchor == head (i.e. just a click)
         if let a = selectionAnchor, let h = selectionHead, a == h {
-            // URL은 Cmd 누른 상태에서만 열기 — Cmd 없는 클릭은 cursor 옮기는 일반 행위.
-            // (iTerm2 / Terminal.app / VS Code 다 동일 UX.)
+            // Only open the URL while Cmd is held — a click without Cmd is the normal act of moving the cursor.
+            // (iTerm2 / Terminal.app / VS Code all share this UX.)
             if event.modifierFlags.contains(.command), let url = urlAtCell(a) {
                 NSWorkspace.shared.open(url)
             }
@@ -714,12 +742,12 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             selectionHead = nil
             scheduleRender()
         } else if selectionAnchor != nil, selectionHead != nil {
-            // 드래그/더블·트리플 클릭으로 선택이 완성됨 → copy-on-select(옵션, 기본 ON).
+            // Selection completed via drag / double·triple click → copy-on-select (option, default ON).
             copySelectionIfEnabled()
         }
     }
 
-    /// copy-on-select가 켜져 있고 비어있지 않은 선택이 있으면 클립보드에 복사.
+    /// If copy-on-select is on and there's a non-empty selection, copy it to the clipboard.
     private func copySelectionIfEnabled() {
         guard session.config.copyOnSelect,
               let text = selectedText(), !text.isEmpty else { return }
@@ -728,11 +756,11 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         pb.setString(text, forType: .string)
     }
 
-    // MARK: - Cmd-hover URL 강조 (iTerm2 / Terminal.app 와 동일 UX)
+    // MARK: - Cmd-hover URL highlight (same UX as iTerm2 / Terminal.app)
     //
-    // Cmd가 눌리지 않은 상태에선 plain text URL은 그냥 평범한 텍스트로 보이고,
-    // Cmd를 누르고 URL 위에 마우스를 올리면 그 글자들만 파란색 + underline + pointing hand cursor.
-    // Cmd 떼거나 URL 밖으로 나가면 즉시 해제.
+    // Without Cmd held, a plain text URL just looks like ordinary text;
+    // hover over a URL with Cmd held and only those characters turn blue + underline + pointing hand cursor.
+    // Cleared immediately on releasing Cmd or moving off the URL.
 
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -806,9 +834,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
     }
 
-    /// 특정 (row, col) 셀이 URL 영역 안이면 URL과 셀 col range를 반환.
-    /// OSC 8 hyperlink이면 같은 URI를 가진 인접 셀들의 범위.
-    /// plain text URL이면 NSDataDetector 매치의 셀 범위.
+    /// If a given (row, col) cell falls within a URL region, returns the URL and the cell col range.
+    /// For an OSC 8 hyperlink, the range of adjacent cells sharing the same URI.
+    /// For a plain text URL, the cell range of the NSDataDetector match.
     private func urlInfoAtCell(
         _ pos: (row: Int, col: Int)
     ) -> (url: URL, range: Range<Int>)? {
@@ -856,7 +884,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
                 charIndexToCol.count - 1
             )
             var endColExclusive = charIndexToCol[lastCharIdx] + 1
-            // wide-char URL의 trailing continuation cell까지 포함.
+            // Include the trailing continuation cell of a wide-char URL.
             while endColExclusive < cells.count
                 && cells[endColExclusive].isContinuation {
                 endColExclusive += 1
@@ -866,21 +894,21 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         return nil
     }
 
-    // 2-finger 가로 스와이프 → 탭 전환 제스처 상태 (제스처당 1회 결정).
+    // State for the 2-finger horizontal swipe → tab switch gesture (decided once per gesture).
     private var swipeDecided = false
     private var swipeHorizontal = false
     private var swipeAccumX: CGFloat = 0
     private var swipeVelocity: CGFloat = 0   // smoothed recent dx/event for flick detection
 
     public override func scrollWheel(with event: NSEvent) {
-        // 2-finger 가로 스와이프 → 탭 전환 (트랙패드 한정, 앱이 마우스를 캡처 중이 아닐 때).
-        // 가로 제스처는 여기서 소비한다(터미널은 가로 스크롤이 없음). 세로 스크롤은
-        // 그대로 backend로 흘려보낸다.
+        // 2-finger horizontal swipe → tab switch (trackpad only, when the app isn't capturing the mouse).
+        // Horizontal gestures are consumed here (the terminal has no horizontal
+        // scrolling). Vertical scrolling is passed straight through to the backend.
         if event.hasPreciseScrollingDeltas, session.mouseReportingMode == 0,
            handleTabSwipe(event) {
             return
         }
-        // Mouse reporting 활성 시 휠은 button 64/65 코드로 PTY 전달 (tmux/Claude Code 등).
+        // When mouse reporting is active, deliver the wheel to the PTY as button 64/65 codes (tmux/Claude Code, etc.).
         if isMouseReportingEvent(event) {
             forwardWheelToMouseReporting(event)
             return
@@ -893,18 +921,19 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
     }
 
-    /// Mouse-reporting 앱(TUI: Claude Code/tmux 등)에 휠을 button 64/65로 전달.
-    /// 트랙패드 정밀 델타는 이벤트가 매우 촘촘해서 이벤트당 1개씩 보내면 TUI가 폭주한다.
-    /// 포인트 델타를 누적해 ≈1줄(`scrollSpeed`로 조절)마다 한 번씩만 보낸다.
+    /// Deliver the wheel as button 64/65 to mouse-reporting apps (TUIs: Claude Code/tmux, etc.).
+    /// Trackpad precision deltas come as very dense events, so sending one per
+    /// event floods the TUI. Accumulate the point delta and send only once per
+    /// ≈1 line (tuned by `scrollSpeed`).
     private func forwardWheelToMouseReporting(_ event: NSEvent) {
         let delta = event.scrollingDeltaY
         if !event.hasPreciseScrollingDeltas {
-            // 마우스 휠: 델타가 이미 줄/notch 단위 → 한 번씩.
+            // Mouse wheel: the delta is already in line/notch units → one at a time.
             guard abs(delta) > 0.1 else { return }
             sendMouseEventToPTY(event: event, button: delta > 0 ? 64 : 65, pressed: true)
             return
         }
-        // 트랙패드 정밀 스크롤: 누적 후 임계치마다 한 번.
+        // Trackpad precision scroll: accumulate, then one per threshold.
         if event.phase.contains(.began) { wheelReportAccum = 0 }
         wheelReportAccum += delta
         let speed = max(0.25, min(4.0, session.config.scrollSpeed))
@@ -958,29 +987,32 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         followingBottom = isScrolledToBottom(tolerance: 4.0)
     }
 
-    /// follow 중일 때 스크롤이 안착해야 할 Y. renderNow()의 follow 로직과 동일하게
-    /// 계산해 애니메이션/즉시 스크롤이 같은 지점으로 가도록 통일. 이미 적절한 위치면
-    /// nil(스크롤 불필요).
+    /// The Y the scroll should settle at while following. Computed identically to
+    /// renderNow()'s follow logic so the animated/immediate scroll go to the same
+    /// spot. nil if already at the right position (no scroll needed).
     private func followTargetY() -> CGFloat? {
         let grid = session.grid
         let inset = backend.contentInset.height
         if grid.isAltScreenActive || grid.hasUsedSyncOutput || grid.hasContentBelowCursor {
-            // Alt-screen / primary-screen TUI(Claude Code 등) — 라이브 grid 전체가
-            // 보이도록 grid-top을 viewport-top에 anchor. (rows*cellH ≤ visHeight라
-            // grid가 항상 viewport에 들어감 → 하단 안 잘림.)
+            // Alt-screen / primary-screen TUI (Claude Code, etc.) — anchor grid-top
+            // at viewport-top so the entire live grid is visible. (rows*cellH ≤
+            // visHeight, so the grid always fits in the viewport → no bottom clipping.)
             //
-            // Claude Code는 alt-screen도 sync-output도 안 쓰지만 입력 줄 아래에 status를
-            // 상주시킨다(hasContentBelowCursor). cursor-visible 정책은 cursor만 보이면
-            // 멈춰서 그 status를 fold 밑으로 잘랐다 — grid-top anchor로 해소.
+            // Claude Code uses neither alt-screen nor sync-output, but it keeps a
+            // status line residing below the input line (hasContentBelowCursor).
+            // The cursor-visible policy stops once the cursor is visible, clipping
+            // that status below the fold — resolved by the grid-top anchor.
             //
-            // 중요: scrollback이 늘어나는 TUI(sync output 누적)에서 cursor-visible
-            // 정책을 쓰면, cursor가 이미 보일 때 scroll을 안 해서 매 프레임 scrollback이
-            // 1줄씩 늘 때마다 grid가 fold 밑으로 밀려 새 내용이 안 보이는 회귀가 생김.
-            // grid-top anchor는 scrollback.count에 묶여 있어 늘어나는 만큼 같이 내려가
-            // 새 내용(grid 하단)을 항상 보여줌. layout()의 anchor와도 일치.
+            // Important: with the cursor-visible policy in a TUI whose scrollback
+            // grows (sync output accumulating), the cursor is already visible so
+            // no scroll happens, and every frame the scrollback grows by 1 line
+            // pushes the grid below the fold — a regression where new content
+            // isn't visible. The grid-top anchor is tied to scrollback.count, so
+            // it descends as scrollback grows, always showing the new content
+            // (grid bottom). Also matches the anchor in layout().
             return CGFloat(grid.scrollback.count) * cellMetrics.height + inset
         }
-        // 일반 셸 — cursor-visible 정책.
+        // Normal shell — cursor-visible policy.
         let visHeight = backend.viewportHeight
         let cursorViewRow = grid.scrollback.count + grid.cursorRow
         let cursorY = CGFloat(cursorViewRow) * cellMetrics.height + inset
@@ -991,11 +1023,11 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         } else if cursorY < curY {
             return cursorY
         }
-        return nil // cursor 이미 가시 영역 — 스크롤 불필요.
+        return nil // cursor already in the visible area — no scroll needed.
     }
 
-    /// 사용자 입력(키 입력/붙여넣기)이 들어오면 follow를 재개하고 cursor/뷰포트로
-    /// **부드럽게** 점프. 위로 스크롤해 history를 보던 중 키를 누르면 작업 위치로 복귀.
+    /// On user input (key input/paste), resume follow and **smoothly** jump to
+    /// the cursor/viewport. If a key is pressed while scrolled up viewing history, return to the working position.
     private func snapToCursorOnUserInput() {
         followingBottom = true
         guard let targetY = followTargetY() else { return }
@@ -1009,7 +1041,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }, completionHandler: { [weak self] in
             guard let self else { return }
             self.isSnappingToCursor = false
-            // 애니메이션 동안 들어온 새 출력까지 반영해 정확히 안착.
+            // Settle exactly, accounting for new output that arrived during the animation.
             if self.followingBottom, let y = self.followTargetY() {
                 self.backend.setScrollY(y, animated: false)
             } else {
@@ -1019,13 +1051,13 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         })
     }
 
-    /// 마우스 이벤트를 PTY reporting으로 forward해야 하는지 판단.
-    /// 활성 모드 + Shift 미보유 = report. Shift 누르면 selection 등 네이티브 동작 우선.
+    /// Decide whether a mouse event should be forwarded to PTY reporting.
+    /// Active mode + no Shift = report. Holding Shift prefers native behavior like selection.
     private func isMouseReportingEvent(_ event: NSEvent) -> Bool {
         session.mouseReportingMode != 0 && !event.modifierFlags.contains(.shift)
     }
 
-    /// 마우스 이벤트를 적절한 mouse-reporting encoding(SGR 또는 X10)으로 PTY에 송신.
+    /// Send a mouse event to the PTY in the appropriate mouse-reporting encoding (SGR or X10).
     private func sendMouseEventToPTY(event: NSEvent, button: Int, pressed: Bool) {
         let pos = convertEventToCell(event)
         let viewportRow = pos.row - session.grid.scrollback.count
@@ -1048,7 +1080,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             let s = "\u{1B}[<\(cb);\(col);\(row)\(term)"
             bytes = s.data(using: .utf8) ?? Data()
         } else {
-            // X10/X11 — press: 실제 cb, release: 3 (universal release marker)
+            // X10/X11 — press: actual cb, release: 3 (universal release marker)
             let cbLegacy = pressed ? cb : (3 + modBits)
             let cbByte = UInt8(min(cbLegacy + 32, 255))
             let cxByte = UInt8(min(col + 32, 255))
@@ -1058,8 +1090,8 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         session.write(bytes)
     }
 
-    /// 특정 (row, col)에서 클릭 가능한 URL을 반환. OSC 8 hyperlink 우선,
-    /// 없으면 NSDataDetector로 plain text URL 자동 검출.
+    /// Returns the clickable URL at a given (row, col). Prefers an OSC 8
+    /// hyperlink; otherwise auto-detects a plain text URL via NSDataDetector.
     private func urlAtCell(_ pos: (row: Int, col: Int)) -> URL? {
         let grid = session.grid
         let scrollbackCount = grid.scrollback.count
@@ -1072,18 +1104,18 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             cells = grid.row(vp)
         }
         guard pos.col >= 0, pos.col < cells.count else { return nil }
-        // 1. OSC 8 hyperlink가 set이면 그 URI
+        // 1. If an OSC 8 hyperlink is set, that URI
         if let uri = cells[pos.col].hyperlink, let url = URL(string: uri) {
             return url
         }
-        // 2. NSDataDetector로 plain URL 검출
+        // 2. Detect a plain URL via NSDataDetector
         return detectURLAtColumn(pos.col, in: cells)
     }
 
-    /// row 내의 cell 시퀀스에서 NSDataDetector로 URL 패턴을 찾고, 주어진 col이
-    /// 어느 매치 안에 들어가면 그 URL 반환.
+    /// Finds URL patterns in a row's cell sequence via NSDataDetector and, if the
+    /// given col falls within a match, returns that URL.
     private func detectURLAtColumn(_ col: Int, in cells: [Cell]) -> URL? {
-        // cell → char 인덱스 매핑. continuation cell은 직전 글자를 가리킴 (wide char의 2번째 column).
+        // cell → char index mapping. A continuation cell points to the preceding character (the 2nd column of a wide char).
         var rowText = ""
         var colToCharIndex: [Int] = []
         colToCharIndex.reserveCapacity(cells.count)
@@ -1108,14 +1140,14 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         return nil
     }
 
-    /// `event.locationInWindow`를 textView 콘텐츠 좌표계의 (row, col)로 변환.
-    /// row는 scrollback과 viewport 통합 인덱스 (= `scrollback.count + viewportRow`).
+    /// Converts `event.locationInWindow` to (row, col) in the textView content coordinate system.
+    /// row is the unified scrollback+viewport index (= `scrollback.count + viewportRow`).
     private func convertEventToCell(_ event: NSEvent) -> (row: Int, col: Int) {
         let pos = backend.cell(at: event.locationInWindow, grid: session.grid, metrics: cellMetrics)
         return (pos.row, pos.col)
     }
 
-    /// anchor/head를 row-major 순으로 정규화한 (start, end). end는 exclusive.
+    /// (start, end) with anchor/head normalized in row-major order. end is exclusive.
     private func normalizedSelection() -> (start: (row: Int, col: Int), end: (row: Int, col: Int))? {
         guard let a = selectionAnchor, let h = selectionHead else { return nil }
         if a.row == h.row && a.col == h.col { return nil }
@@ -1125,7 +1157,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         return (h, a)
     }
 
-    /// 주어진 textViewRow에서 선택된 col 범위 (있으면). end exclusive.
+    /// The selected col range in a given textViewRow (if any). end exclusive.
     private func selectedColumnsForRow(_ textViewRow: Int, cols: Int) -> Range<Int>? {
         guard let (start, end) = normalizedSelection() else { return nil }
         if textViewRow < start.row || textViewRow > end.row { return nil }
@@ -1187,7 +1219,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
-    /// Cmd+F (NSResponder/NSTextFinderClient 표준) — find 오버레이 토글.
+    /// Cmd+F (NSResponder/NSTextFinderClient standard) — toggle the find overlay.
     @objc public func performFindPanelAction(_ sender: Any?) {
         if let overlay = findOverlay {
             overlay.focus()
@@ -1245,7 +1277,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         let scrollbackCount = grid.scrollback.count
 
         func scan(_ cells: [Cell], row: Int) {
-            // cell → text 매핑 (continuation은 직전 글자 가리킴).
+            // cell → text mapping (continuation points to the preceding character).
             var rowText = ""
             var colToCharIdx: [Int] = []
             colToCharIdx.reserveCapacity(cells.count)
@@ -1264,7 +1296,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             while let m = lower.range(of: needle, range: search..<lower.endIndex) {
                 let startChar = lower.distance(from: lower.startIndex, to: m.lowerBound)
                 let endChar = lower.distance(from: lower.startIndex, to: m.upperBound)
-                // char idx → col 매핑
+                // char idx → col mapping
                 let startCol = colToCharIdx.firstIndex { $0 >= startChar } ?? colToCharIdx.count
                 var endCol = startCol
                 while endCol < colToCharIdx.count && colToCharIdx[endCol] < endChar {
@@ -1284,13 +1316,13 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         for (i, line) in grid.scrollback.enumerated() { scan(line.cells, row: i) }
         for r in 0..<grid.rows { scan(grid.row(r), row: scrollbackCount + r) }
 
-        // 정렬된 평탄 리스트 — Cmd+G next/prev 네비용 (row 오름차순, 같은 row 내 col 오름차순).
+        // Sorted flat list — for Cmd+G next/prev navigation (ascending by row, then ascending by col within a row).
         findMatchesOrdered = findMatchesByRow
             .sorted { $0.key < $1.key }
             .flatMap { row, ranges in
                 ranges.sorted { $0.lowerBound < $1.lowerBound }.map { (row: row, range: $0) }
             }
-        // 첫 매치를 active로 선택하고 그쪽으로 스크롤 (입력 중 점진 검색에서도 첫 매치 보이게).
+        // Select the first match as active and scroll to it (so the first match is visible even during incremental search while typing).
         if !findMatchesOrdered.isEmpty {
             activeMatchIndex = 0
             scrollToActiveMatch()
@@ -1299,8 +1331,8 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         scheduleRender()
     }
 
-    /// 다음/이전 매치로 이동 (Cmd+G / Cmd+Shift+G). wrap-around.
-    /// 메뉴/단축키에서 responder chain으로 들어오므로 @objc public 노출.
+    /// Move to the next/previous match (Cmd+G / Cmd+Shift+G). Wrap-around.
+    /// Exposed as @objc public since it enters via the responder chain from the menu/shortcut.
     @objc public func findNextMatch() { stepMatch(+1) }
     @objc public func findPreviousMatch() { stepMatch(-1) }
 
@@ -1318,13 +1350,13 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         scheduleRender()
     }
 
-    /// 활성 매치 row가 viewport 가운데쯤 보이도록 스크롤.
+    /// Scroll so the active match row is shown around the middle of the viewport.
     private func scrollToActiveMatch() {
         guard activeMatchIndex >= 0, activeMatchIndex < findMatchesOrdered.count else { return }
         let row = findMatchesOrdered[activeMatchIndex].row
         let visHeight = backend.viewportHeight
         let rowY = CGFloat(row) * cellMetrics.height + backend.contentInset.height
-        // 매치를 viewport 1/3 지점에 두어 위아래 맥락이 보이게.
+        // Place the match at the 1/3 point of the viewport so context above and below is visible.
         let targetY = max(0, rowY - visHeight / 3)
         backend.setScrollY(targetY, animated: false)
     }
@@ -1341,9 +1373,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         setZoom(1.0)
     }
 
-    /// ⌘↑ — 현재 화면 위쪽의 가장 가까운 프롬프트(OSC 133;A 마크)로 스크롤.
+    /// ⌘↑ — scroll to the nearest prompt (OSC 133;A mark) above the current screen.
     @objc public func jumpToPreviousPrompt(_ sender: Any?) { jumpPrompt(forward: false) }
-    /// ⌘↓ — 현재 화면 아래쪽의 가장 가까운 프롬프트로 스크롤.
+    /// ⌘↓ — scroll to the nearest prompt below the current screen.
     @objc public func jumpToNextPrompt(_ sender: Any?) { jumpPrompt(forward: true) }
 
     private func jumpPrompt(forward: Bool) {
@@ -1351,7 +1383,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         let cellH = max(cellMetrics.height, 1)
         let sbCount = Int(grid.scrollback.count)
         let pushCount = Int(grid.scrollbackPushCount)
-        // 마크 절대 줄 번호 → 현재 unified row. evict된 마크(음수)는 제외.
+        // Mark absolute line number → current unified row. Exclude evicted marks (negative).
         let markRows = session.promptMarks
             .map { sbCount + Int($0) - pushCount }
             .filter { $0 >= 0 }
@@ -1369,22 +1401,23 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         fontSizeMultiplier = max(0.5, min(4.0, multiplier))
         let baseSize = session.config.fontSize
         let newSize = max(6, baseSize * fontSizeMultiplier)
-        // zoom도 cascade 포함된 폰트 사용 — Menlo 등에서도 Nerd glyph fallback 유지.
+        // Use a font with the cascade for zoom too — keep Nerd glyph fallback even on Menlo, etc.
         let font = fontWithNerdFallback(family: session.config.fontFamily, size: newSize)
         backend.setRenderFont(font)
-        // 폰트 크기가 바뀌면 새 cell 크기에 맞춰 cols/rows를 다시 계산하고 grid+PTY를
-        // 리사이즈(SIGWINCH)해 셸/TUI가 새 너비/높이로 reflow하게 한다. 윈도우 리사이즈와
-        // 동일 경로 — reportSizeIfChanged가 backend.renderFont에서 메트릭을 파생하므로
-        // 폰트만 바꿔두면 cols/rows가 정확히 다시 잡힌다.
+        // When the font size changes, recompute cols/rows for the new cell size
+        // and resize grid+PTY (SIGWINCH) so the shell/TUI reflows to the new
+        // width/height. Same path as a window resize — reportSizeIfChanged
+        // derives metrics from backend.renderFont, so just changing the font
+        // makes cols/rows recompute correctly.
         lastRenderedVersion = .max
         reportSizeIfChanged()
-        // cols/rows가 안 바뀌는 작은 zoom 단계에서도 새 폰트로 즉시 다시 그린다.
+        // Redraw immediately with the new font even on a small zoom step where cols/rows don't change.
         renderNow()
         followingBottom = true
         scrollViewportToBottom()
     }
 
-    /// Edit > Copy / Cmd+C가 보내는 셀렉터. 선택 텍스트를 pasteboard에 push.
+    /// The selector sent by Edit > Copy / Cmd+C. Pushes the selected text to the pasteboard.
     @objc public func copy(_ sender: Any?) {
         guard let text = selectedText() else { return }
         let pb = NSPasteboard.general
@@ -1392,7 +1425,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         pb.setString(text, forType: .string)
     }
 
-    /// Edit > Paste / Cmd+V. clipboard 텍스트를 PTY로. bracketed paste 모드면 wrap.
+    /// Edit > Paste / Cmd+V. Clipboard text to the PTY. Wraps it in bracketed paste mode.
     @objc public func paste(_ sender: Any?) {
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
         var data = Data()
@@ -1455,9 +1488,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
                 if NSApp.sendAction(Selector(("selectPreviousTab:")), to: nil, from: self) { return true }
             case 124:
                 if NSApp.sendAction(Selector(("selectNextTab:")), to: nil, from: self) { return true }
-            case 126: // ⌘↑ — 이전 프롬프트로 점프 (OSC 133 마크)
+            case 126: // ⌘↑ — jump to the previous prompt (OSC 133 mark)
                 jumpToPreviousPrompt(self); return true
-            case 125: // ⌘↓ — 다음 프롬프트로 점프
+            case 125: // ⌘↓ — jump to the next prompt
                 jumpToNextPrompt(self); return true
             default:
                 break
@@ -1471,8 +1504,8 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             NSApp.terminate(nil)
             return true
         case "w":
-            // responder chain에 closeTab 액션을 먼저 보냄 — CompactWindowController가
-            // 활성 탭만 닫는 구현을 가지고 있을 수 있음. 아무도 안 받으면 일반 윈도우 닫기.
+            // Send a closeTab action through the responder chain first —
+            // CompactWindowController may implement closing only the active tab. If no one takes it, close the window normally.
             if NSApp.sendAction(Selector(("performCloseTab:")), to: nil, from: self) {
                 return true
             }
@@ -1486,30 +1519,31 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     // MARK: - Input (IME-aware)
 
     public override func keyDown(with event: NSEvent) {
-        // 새 keyDown 사이클 시작 — IME 콜백들이 참조할 컨텍스트 set.
+        // Start of a new keyDown cycle — set the context the IME callbacks will reference.
         currentKeyEvent = event
         swallowNextDeleteCommand = false
         defer { currentKeyEvent = nil }
-        // 입력 중엔 cursor가 안 깜빡이게 — 즉시 보이게 + phase 리셋.
+        // Keep the cursor from blinking while typing — show it immediately + reset the phase.
         resetBlinkPhase()
 
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
-        // Cmd는 performKeyEquivalent에서 처리. 여기에 도달했다는 건 어떤 메뉴/단축키도
-        // 안 잡았다는 뜻이고, IME에 보내거나 PTY로 보내면 의도와 다른 동작이 생김 → 무시.
+        // Cmd is handled in performKeyEquivalent. Reaching here means no
+        // menu/shortcut took it; sending it to the IME or PTY would cause
+        // unintended behavior → ignore.
         if mods.contains(.command) {
             return
         }
 
-        // 실제 입력 키(타이핑/화살표/Enter/Ctrl-조합 등)는 작업 위치로 점프시킨다.
-        // 위로 스크롤해 history를 보던 중이라도 키를 누르면 cursor 쪽으로 복귀.
+        // Actual input keys (typing/arrows/Enter/Ctrl-combos, etc.) jump to the
+        // working position. Even while scrolled up viewing history, pressing a key returns to the cursor.
         snapToCursorOnUserInput()
 
-        // 사용자 키 입력이 들어오면 selection 클리어 (터미널 관습).
+        // Clear the selection on user key input (terminal convention).
         clearSelectionIfNeeded()
 
-        // Ctrl+letter (다른 modifier 없이) → terminal control byte. IME 우회.
-        // Shift+Ctrl도 같은 group (e.g. Ctrl+Shift+C → Ctrl+C와 동일 바이트 → 0x03).
+        // Ctrl+letter (with no other modifier) → terminal control byte. Bypasses the IME.
+        // Shift+Ctrl is in the same group too (e.g. Ctrl+Shift+C → same byte as Ctrl+C → 0x03).
         if mods.subtracting(.shift) == .control,
            let chars = event.charactersIgnoringModifiers,
            chars.count == 1,
@@ -1520,20 +1554,21 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             return
         }
 
-        // Shift+Enter → 입력란 줄바꿈(submit 안 함). AppKit은 Shift+Enter도 일반
-        // Enter와 똑같이 `insertNewline:`으로 보내 둘 다 CR이 나가므로, Claude Code
-        // 같은 TUI가 구분을 못 해 Shift+Enter를 제출로 처리한다. 여기서 가로채 ESC CR을
-        // 보낸다 — claude의 `/terminal-setup`이 Apple Terminal에 심는 매핑과 동일해
-        // "줄바꿈"으로 인식된다. (IME 조합 중이면 통과시켜 정상 commit.)
+        // Shift+Enter → newline in the input field (no submit). AppKit sends
+        // Shift+Enter via `insertNewline:` just like a plain Enter, so both emit
+        // CR and a TUI like Claude Code can't tell them apart and treats
+        // Shift+Enter as submit. Intercept here and send ESC CR — the same
+        // mapping claude's `/terminal-setup` installs in Apple Terminal, so it's
+        // recognized as a "newline". (Pass through during IME composition for a normal commit.)
         if mods == .shift, event.keyCode == 36 || event.keyCode == 76,
            markedText.isEmpty {
             session.write(Data([0x1B, 0x0D])) // ESC CR
             return
         }
 
-        // 나머지: NSTextInputContext로 보냄. 한글/일어/중어 IME composition,
-        // 평문 입력, Enter/Tab/화살표 (doCommand 경로), Backspace (doCommand) 등을
-        // 일관되게 처리.
+        // Everything else: send to NSTextInputContext. Handles Korean/Japanese/
+        // Chinese IME composition, plain input, Enter/Tab/arrows (the doCommand
+        // path), Backspace (doCommand), etc. consistently.
         inputContext?.handleEvent(event)
     }
 
@@ -1541,9 +1576,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         if isWarmingUpIME {
             return
         }
-        // AppKit selector → terminal escape byte 시퀀스. NSTextInputClient의 핵심 contract:
-        // IME가 처리하지 않은 키, 또는 IME가 commit하고 추가로 처리해야 할 키들이
-        // 여기로 dispatched 됨.
+        // AppKit selector → terminal escape byte sequence. The core NSTextInputClient contract:
+        // keys the IME didn't handle, or keys the IME committed and that need
+        // further handling, are dispatched here.
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
             session.write(Data([0x0D])) // CR
@@ -1552,12 +1587,12 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         case #selector(NSResponder.insertBacktab(_:)):
             session.write(Data([0x1B, 0x5B, 0x5A])) // CSI Z
         case #selector(NSResponder.deleteBackward(_:)):
-            // BS-cancel spurious commit이 이미 IME 콜백에서 처리됐다면 PTY로는 BS 안 보냄.
+            // If a BS-cancel spurious commit was already handled in the IME callback, don't send BS to the PTY.
             if swallowNextDeleteCommand {
                 swallowNextDeleteCommand = false
                 return
             }
-            session.write(Data([0x7F])) // DEL (대부분의 셸이 erase에 mapping)
+            session.write(Data([0x7F])) // DEL (most shells map this to erase)
         case #selector(NSResponder.deleteForward(_:)):
             session.write(Data([0x1B, 0x5B, 0x33, 0x7E])) // CSI 3 ~
         case #selector(NSResponder.cancelOperation(_:)):
@@ -1585,7 +1620,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         case #selector(NSResponder.moveToEndOfLine(_:)):
             session.write(Data([0x1B, 0x5B, 0x46])) // End
         default:
-            break // 알 수 없는 command — 무시
+            break // unknown command — ignore
         }
     }
 
@@ -1594,16 +1629,16 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     public func insertText(_ string: Any, replacementRange: NSRange) {
         let text = Self.unwrapString(string)
 
-        // startup warmup 중에는 콜백된 텍스트를 PTY로 보내지 않는다.
+        // During startup warmup, don't send the called-back text to the PTY.
         if isWarmingUpIME {
             return
         }
 
-        // BS-cancel spurious commit 감지.
-        // macOS Hangul IME가 마지막 자모를 BS로 취소할 때, 같은 자모를 insertText로
-        // emit하는 버그가 있음. 트리거 키가 BS이고 markedText와 동일한 글자가 commit
-        // 되려 하면 spurious로 판단하고 drop. 동일 keyDown 사이클의 doCommand
-        // (deleteBackward:)도 swallow.
+        // Detect a BS-cancel spurious commit.
+        // The macOS Hangul IME has a bug where, when canceling the last jamo with
+        // BS, it emits that same jamo via insertText. If the trigger key is BS and
+        // the same character as markedText is about to commit, judge it spurious
+        // and drop it. Also swallow the doCommand (deleteBackward:) of the same keyDown cycle.
         if let event = currentKeyEvent,
            event.keyCode == 51,
            !markedText.isEmpty,
@@ -1614,12 +1649,14 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             return
         }
 
-        // 알려진 한계: 한영키 직후 첫 자모는 setMarkedText를 거치지 않고 직접 insertText로
-        // 들어옴 (raw binary 실행 시 TSM↔IMK IPC가 첫 keystroke 도착 전에 set up 안 됨).
-        // 해법은 `.app` bundle 등록 (halite Rust 문서 참조). state machine 트릭은 IMK 내부
-        // 상태와 어긋나서 lossy. 현재는 그대로 PTY로 commit — 사용자가 BS+재입력으로 복원 가능.
+        // Known limitation: the first jamo right after the Han/Eng key arrives
+        // directly via insertText without going through setMarkedText (running a
+        // raw binary, the TSM↔IMK IPC isn't set up before the first keystroke
+        // arrives). The fix is `.app` bundle registration (see the halite Rust
+        // docs). The state machine trick is lossy because it diverges from IMK's
+        // internal state. For now we commit it to the PTY as-is — the user can recover with BS + re-typing.
 
-        // 일반 commit: marked text 비우고 PTY로.
+        // Normal commit: clear the marked text and send to the PTY.
         if !markedText.isEmpty {
             markedText = ""
             scheduleRender()
@@ -1671,7 +1708,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
 
     public func characterIndex(for point: NSPoint) -> Int { 0 }
 
-    /// IME 후보창이 뜰 위치 — cursor 셀의 화면 좌표 반환.
+    /// Where the IME candidate window appears — returns the screen coordinates of the cursor cell.
     public func firstRect(
         forCharacterRange range: NSRange,
         actualRange: NSRangePointer?
@@ -1697,18 +1734,19 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
 
     // MARK: - Render
 
-    /// 여러 grid mutation을 한 runloop tick의 한 번의 renderNow 호출로 합침.
+    /// Coalesces multiple grid mutations into a single renderNow call per runloop tick.
     private func scheduleRender() {
         if renderScheduled { return }
         renderScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.renderScheduled = false
-            // DEC 2026 Synchronized Output: sync frame(BSU…ESU)이 진행 중이면
-            // 부분적으로(torn) 적용된 grid를 화면에 내보내지 않는다. PTY read가 프레임
-            // 중간을 가르면 옛 내용 위에 새 내용이 절반만 그려져 "덮어쓰기/중복"처럼
-            // 보였음. ESU(\e[?2026l) 직후의 gridChanged가 완성된 프레임을 atomic하게
-            // present한다. ESU가 끝내 안 오는 비정상 앱을 대비해 안전 타이머로 강제 flush.
+            // DEC 2026 Synchronized Output: while a sync frame (BSU…ESU) is in
+            // progress, don't push a partially (torn) applied grid to the screen.
+            // When a PTY read cut the middle of a frame, new content was drawn
+            // half over the old, looking like an "overwrite/duplicate". The
+            // gridChanged right after ESU (\e[?2026l) presents the completed frame
+            // atomically. Force a flush via a safety timer in case of a misbehaving app whose ESU never arrives.
             if self.session.grid.inSyncOutputMode {
                 self.armSyncFlush()
                 return
@@ -1717,7 +1755,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
     }
 
-    /// sync frame이 ESU 없이 syncFlushDeadline을 넘기면 freeze를 막기 위해 강제 present.
+    /// If a sync frame exceeds syncFlushDeadline without an ESU, force a present to prevent a freeze.
     private func armSyncFlush() {
         if syncFlushScheduled { return }
         syncFlushScheduled = true
@@ -1743,7 +1781,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             guard let h = hoveredURL else { return "" }
             return "\(h.row)|\(h.colRange.lowerBound)|\(h.colRange.upperBound)"
         }()
-        // blink phase — ON일 때 phase 토글마다 re-render 되도록 dedupe key에 포함.
+        // blink phase — include in the dedupe key so each phase toggle re-renders when ON.
         let blinkKey = session.config.cursorBlink ? (cursorBlinkVisible ? "1" : "0") : "x"
         if grid.version == lastRenderedVersion
             && markedText == lastRenderedMarkedText
@@ -1760,25 +1798,28 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         lastRenderedHoverKey = hoverKey
         lastRenderedBlinkKey = blinkKey
 
-        // 백엔드가 한 프레임을 그림(ensureLayout까지 끝냄). dedupe는 위에서 완료.
+        // The backend draws a frame (including ensureLayout). Dedupe was done above.
         backend.render(grid: grid, config: session.config, state: currentRenderState(),
                        metrics: cellMetrics)
 
-        // 자동 follow 스크롤은 followingBottom일 때만. 사용자가 위로 스크롤해
-        // history를 보는 중이면 새 출력/커서 이동이 와도 위치를 건드리지 않는다
-        // (단 scrollback evict 시 content-anchor 보정은 아래에서 따로 처리).
+        // Automatic follow-scroll only happens while followingBottom. If the user
+        // is scrolled up viewing history, the position isn't touched even when new
+        // output / cursor movement arrives (except the content-anchor correction
+        // on scrollback evict, handled separately below).
 
-        // alt-screen 전환(primary↔alt)이 일어나면 follow를 재개한다. vim/htop 등은
-        // 진입 시 그 화면을, 종료 시 셸 바닥을 항상 보여줘야 하므로 사용자가 이전에
-        // 위로 스크롤해 둔 상태(followingBottom == false)라도 여기서 복귀시킨다.
+        // When an alt-screen transition (primary↔alt) occurs, resume follow.
+        // vim/htop etc. must always show that screen on entry and the shell bottom
+        // on exit, so even if the user had previously scrolled up
+        // (followingBottom == false), restore it here.
         if grid.isAltScreenActive != lastAltScreenActive {
             lastAltScreenActive = grid.isAltScreenActive
             followingBottom = true
         }
 
-        // 이번 렌더에서 scrollback 최상단이 몇 줄 evict 됐는지 = 사용자가 보던 콘텐츠가
-        // 위로 밀린 양. (scrollback에 append는 viewport 바로 위에 쌓여 기존 history의
-        // 화면 위치를 바꾸지 않으므로, content drift는 오직 top eviction에서만 발생.)
+        // How many lines the top of scrollback was evicted this render = how much
+        // the content the user was viewing shifted up. (Appends to scrollback pile
+        // up right above the viewport and don't change the on-screen position of
+        // existing history, so content drift happens only on top eviction.)
         // Underflow-safe: a narrowing reflow can grow scrollback.count past
         // scrollbackPushCount (reflow rebuilds scrollback without bumping the push
         // counter). `linesEvictedFromTop` clamps to 0 instead of trapping the
@@ -1790,22 +1831,22 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
 
         var scrolled = false
         if followingBottom {
-            // 키 입력 점프 애니메이션 중엔 위치를 애니메이션이 소유 — 즉시 scroll 안 함.
-            // alt 화면은 viewport top anchor, 그 외(일반 셸/Claude Code 등)는
-            // cursor-visible 정책. followTargetY()가 두 경우를 통일해 계산.
+            // During a key-input jump animation, the animation owns the position — don't scroll immediately.
+            // Alt screen uses the viewport top anchor; otherwise (normal shell/
+            // Claude Code, etc.) the cursor-visible policy. followTargetY() computes both cases uniformly.
             if !isSnappingToCursor, let targetY = followTargetY() {
                 backend.setScrollY(targetY, animated: false)
                 scrolled = true
             }
         } else if evictedSinceLast > 0 {
-            // 사용자가 위로 스크롤해 history를 보는 중 — scrollback이 evict된 만큼
-            // 스크롤도 따라 올려서 보던 줄이 화면 같은 위치에 머물게(content-anchor).
+            // The user is scrolled up viewing history — scroll up by the amount of
+            // scrollback evicted so the line they're viewing stays at the same on-screen position (content-anchor).
             let curY = backend.scrollYPixels
             let adjusted = max(0, curY - CGFloat(evictedSinceLast) * cellMetrics.height)
             backend.setScrollY(adjusted, animated: false)
             scrolled = true
         }
-        // else: 사용자가 스크롤로 올려둔 위치를 그대로 둔다 (강제 바닥 고정 안 함).
+        // else: leave the position the user scrolled up to as-is (no forced bottom pinning).
         if !scrolled { backend.reflectScroll() }
 
         refreshCursorOverlayNow()

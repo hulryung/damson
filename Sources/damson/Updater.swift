@@ -1,24 +1,24 @@
 import AppKit
 import Sparkle
 
-/// Sparkle 자동업데이트 wrapper.
+/// Sparkle auto-update wrapper.
 ///
-/// 동작:
-///   - 자동 백그라운드 체크는 **디폴트 비활성**. Settings의 "Automatic Updates"
-///     토글로 켜고 끔 (UserDefaults "damson.autoUpdate", 디폴트 false).
-///   - "Check for Updates…" 메뉴는 자동 설정과 무관하게 항상 수동 체크.
-///   - 새 버전 발견 → 다이얼로그 → 다운로드 → EdDSA 서명 검증 → install.
-///   - OTA 체크/다운로드 **실패는 다이얼로그 없이 조용히 무시** (SilentErrorUserDriver).
-///     "업데이트 있음" / "최신입니다" 흐름은 그대로 유지.
+/// Behavior:
+///   - Automatic background checks are **disabled by default**. Toggled on/off via the
+///     "Automatic Updates" toggle in Settings (UserDefaults "damson.autoUpdate", default false).
+///   - The "Check for Updates…" menu always performs a manual check regardless of the automatic setting.
+///   - New version found → dialog → download → EdDSA signature verification → install.
+///   - OTA check/download **failures are silently ignored with no dialog** (SilentErrorUserDriver).
+///     The "update available" / "you're up to date" flows are kept as-is.
 ///
-/// 전제:
-///   - Info.plist에 `SUFeedURL` + `SUPublicEDKey` 둘 다 set.
-///   - .app은 Developer ID로 서명되어 있어야 설치 단계 통과.
-///   - (현재 SUPublicEDKey는 placeholder라 실제 OTA는 키 발급 후 동작.)
+/// Assumptions:
+///   - Both `SUFeedURL` and `SUPublicEDKey` are set in Info.plist.
+///   - The .app must be signed with a Developer ID to clear the install step.
+///   - (SUPublicEDKey is currently a placeholder, so real OTA works only after a key is issued.)
 ///
-/// SPUStandardUpdaterController 대신 SPUUpdater를 직접 쓰는 이유: 실패 다이얼로그를
-/// 억제하려면 커스텀 user driver를 주입해야 하는데, controller는 자기 표준 driver를
-/// 내부에서 만들어 주입을 허용하지 않기 때문.
+/// Why SPUUpdater is used directly instead of SPUStandardUpdaterController: suppressing the
+/// failure dialog requires injecting a custom user driver, but the controller builds its own
+/// standard driver internally and doesn't allow injection.
 final class DamsonUpdater: NSObject {
     static let shared = DamsonUpdater()
 
@@ -38,29 +38,29 @@ final class DamsonUpdater: NSObject {
         do {
             try updater.start()
         } catch {
-            // Updater 시작 실패(서명 누락/Info.plist 키 누락 등)도 조용히 무시 —
-            // OTA만 비활성화되고 앱 동작에는 영향 없음.
+            // Updater start failures (missing signature, missing Info.plist keys, etc.) are
+            // also silently ignored — only OTA is disabled, with no effect on app behavior.
             NSLog("Damson: Sparkle updater failed to start: \(error.localizedDescription)")
         }
-        // 저장된 설정(디폴트 false)을 자동 체크에 반영.
+        // Apply the saved setting (default false) to automatic checks.
         applyAutomaticChecksSetting()
     }
 
-    /// 메뉴 액션이 호출하는 진입점 (자동 설정과 무관하게 즉시 체크).
+    /// Entry point invoked by the menu action (checks immediately, regardless of the automatic setting).
     @objc func checkForUpdates(_ sender: Any?) {
         updater.checkForUpdates()
     }
 
-    /// "Check for Updates…" 메뉴 항목 활성 여부 (체크 진행 중에는 비활성).
+    /// Whether the "Check for Updates…" menu item is enabled (disabled while a check is in progress).
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
         updater.canCheckForUpdates
     }
 
-    /// 메뉴 target — DamsonUpdater 자신이 `checkForUpdates:` 액션을 받는다.
+    /// Menu target — DamsonUpdater itself receives the `checkForUpdates:` action.
     var target: AnyObject { self }
 
-    /// UserDefaults("damson.autoUpdate", 디폴트 false)를 Sparkle updater에 적용.
-    /// Settings 변경 시에도 호출.
+    /// Applies UserDefaults("damson.autoUpdate", default false) to the Sparkle updater.
+    /// Also called when Settings change.
     func applyAutomaticChecksSetting() {
         let enabled = UserDefaults.standard.object(forKey: "damson.autoUpdate") as? Bool ?? false
         updater.automaticallyChecksForUpdates = enabled

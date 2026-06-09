@@ -1,7 +1,7 @@
 import AppKit
 
-/// 인라인 find 오버레이 — Cmd+F로 호출. NSTextField 하나 + 매치 카운트 라벨.
-/// DamsonSurfaceView가 query/dismiss를 콜백으로 받음.
+/// Inline find overlay — invoked with Cmd+F. A single NSTextField + a match-count label.
+/// DamsonSurfaceView receives query/dismiss via callbacks.
 final class FindOverlayView: NSView, NSTextFieldDelegate {
     let textField: NSTextField
     let countLabel: NSTextField
@@ -80,8 +80,8 @@ final class FindOverlayView: NSView, NSTextFieldDelegate {
             return true
         }
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            // Enter — 다음 매치로. Shift+Enter는 insertBacktab/별도 셀렉터로 안 와서
-            // NSEvent modifierFlags로 직접 판정.
+            // Enter — go to the next match. Shift+Enter doesn't arrive as insertBacktab / a
+            // separate selector, so determine it directly from NSEvent modifierFlags.
             if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
                 onPrev()
             } else {
