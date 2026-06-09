@@ -7,6 +7,7 @@ struct HaliteSettingsView: View {
     @AppStorage("halite.fontSize") private var fontSize: Double = 13
     @AppStorage("halite.fontFamily") private var fontFamily: String = FontDiscovery.defaultFamily()
     @AppStorage("halite.scrollbackLines") private var scrollbackLines: Int = 10_000
+    @AppStorage("halite.restoreScrollback") private var restoreScrollback: Bool = false
     @AppStorage("halite.tabBarStyle") private var tabBarStyleRaw: String = TabBarStyle.compact.rawValue
     @AppStorage("halite.imeStyle") private var imeStyleRaw: String = IMECompositionStyle.none.rawValue
     @AppStorage("halite.theme") private var themeName: String = HaliteTheme.defaultDark.name
@@ -226,6 +227,9 @@ struct HaliteSettingsView: View {
                         Text("\(scrollbackLines)").monospacedDigit().frame(minWidth: 70)
                     }
                 }
+                Toggle("Restore scrollback on relaunch", isOn: $restoreScrollback)
+                Text("Saves each pane's scrollback text on quit and shows it after relaunch (colors not preserved). Compact-mode windows only.")
+                    .font(.caption).foregroundColor(.secondary)
             }
             Section("Cursor") {
                 Picker("Shape", selection: $cursorShapeRaw) {

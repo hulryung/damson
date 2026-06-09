@@ -182,6 +182,8 @@ final class HaliteAppDelegate: NSObject, NSApplicationDelegate {
         for c in controllers { for s in c.sessions { s.terminate() } }
         for cc in compactControllers { for s in cc.sessions { s.terminate() } }
         // 세션 상태 저장 (Compact 윈도우만 — single-session/native-tab 모드는 복원 안 함).
+        // 옛 scrollback 파일 정리 후 캡처 (toRestorable이 설정 켜졌을 때 새로 씀).
+        SessionRestore.resetScrollbackDir()
         let windows = compactControllers.map { $0.toRestorableWindow() }
         if windows.isEmpty {
             SessionRestore.clear()

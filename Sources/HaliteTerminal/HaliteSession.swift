@@ -51,7 +51,7 @@ public final class HaliteSession: ObservableObject {
     private let pty = PTYHost()
     private let parser = VTParser()
 
-    public init(config: HaliteConfig) {
+    public init(config: HaliteConfig, restoredScrollback: [Line]? = nil) {
         self.config = config
         self.currentDirectory = config.cwd
         self.grid = Grid(
@@ -61,6 +61,8 @@ public final class HaliteSession: ObservableObject {
         )
         self.grid.maxScrollbackLines = config.scrollbackLines
         self.grid.setCursorShape(config.cursorShape)
+        // 라이브 출력 전에 이전 세션 scrollback 주입(세션 복원, 설정 켜졌을 때만 전달됨).
+        if let restoredScrollback { grid.seedScrollback(restoredScrollback) }
 
         parser.delegate = self
 

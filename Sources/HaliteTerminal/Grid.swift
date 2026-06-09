@@ -77,6 +77,18 @@ public final class Grid {
     /// scrollback 최대 줄 수. `HaliteSession`이 config에서 받아서 설정.
     public var maxScrollbackLines: Int = 10_000
 
+    /// 세션 복원 시, 라이브 출력이 시작되기 전에 이전 세션의 scrollback을 주입한다.
+    /// `lines`를 현재 scrollback 앞(가장 오래된 쪽)에 붙이고 `maxScrollbackLines`로 클램프.
+    /// pushCount도 늘려 "복원된 줄"이 정상 scrollback처럼 보이게 한다.
+    public func seedScrollback(_ lines: [Line]) {
+        guard !lines.isEmpty else { return }
+        scrollback = lines + scrollback
+        scrollbackPushCount += UInt64(lines.count)
+        if scrollback.count > maxScrollbackLines {
+            scrollback.removeFirst(scrollback.count - maxScrollbackLines)
+        }
+    }
+
     /// alt screen 진입 여부. true면 현재 buffer는 alt, 진입 직전의 primary 상태가 `savedPrimary`에 보존.
     public private(set) var isAltScreenActive: Bool = false
 

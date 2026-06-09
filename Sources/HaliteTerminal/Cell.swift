@@ -14,7 +14,7 @@ private let _wcwidthLocale: Int = {
 /// 렌더 시점에 현재 테마로 resolve한다 → 테마를 바꾸면 이미 그려진 ANSI 색까지
 /// 즉시 recolor됨 (Terminal.app/iTerm2 동작). truecolor(.rgb)는 절대값이라
 /// 테마와 무관 (Starship 무지개 프롬프트 등은 테마 바꿔도 그대로 — 정상).
-public enum TermColor: Equatable {
+public enum TermColor: Equatable, Codable {
     /// 기본 전경색 (테마의 foreground). bg에는 사용하지 않음 — bg의 "기본"은 nil(투명).
     case `default`
     /// ANSI 팔레트 인덱스 0-255. 0-15는 테마의 16색, 16-255는 표준 xterm cube/grayscale.
@@ -25,7 +25,7 @@ public enum TermColor: Equatable {
 
 /// 한 셀의 시각 속성. SGR로 바뀌는 "현재 펜(pen)"이 이 값을 만들고,
 /// 새 글자가 grid에 쓰일 때 그 글자에 attach 된다.
-public struct CellAttrs: Equatable {
+public struct CellAttrs: Equatable, Codable {
     public var fg: TermColor
     public var bg: TermColor?
     public var bold: Bool
