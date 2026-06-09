@@ -271,6 +271,22 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return session
     }
 
+    /// Add a tab backed by an externally-built session (e.g. a tmux `-CC` pane). Returns the
+    /// tree so the caller can later close exactly this tab via `closeTab(matching:)`.
+    @discardableResult
+    func addExternalTab(session: DamsonSession, customTitle: String? = nil) -> PaneTreeView {
+        let tree = PaneTreeView(rootSession: session)
+        addTab(tree: tree, transition: .create, customTitle: customTitle)
+        return tree
+    }
+
+    /// Close the tab whose tree matches (by reference). No-op if it's already gone.
+    func closeTab(matching tree: PaneTreeView) {
+        if let idx = tabs.firstIndex(where: { $0.tree === tree }) {
+            closeTab(idx)
+        }
+    }
+
     /// Add an already-built PaneTreeView as a new tab (a new or restored tree).
     private func addTab(tree: PaneTreeView, transition: TabTransition = .none,
                         customTitle: String? = nil) {

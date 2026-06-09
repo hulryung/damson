@@ -180,6 +180,9 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     /// IPC with damson-cli. Bound after the first window is created.
     private var controlSocket: ControlSocketServer?
+    /// Active tmux -CC integrations (one per attach). Kept alive here so the client + host
+    /// window survive; removed on teardown — see docs/TMUX-INTEGRATION.md (P1).
+    private var tmuxControllers: [TmuxIntegrationController] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Control macOS press-and-hold (the accent popup). When it's on, holding a key
@@ -529,6 +532,31 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
         spawnWindow()
     }
 
+    /// "Attach tmux (-CC)…" — prompt for an optional target session, then spawn a tmux -CC
+    /// control client whose windows render as Damson tabs (P1). Empty target = new session.
+    /// See docs/TMUX-INTEGRATION.md.
+    @MainActor
+    @objc func attachTmux(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Attach tmux (-CC)"
+        alert.informativeText = "Enter a tmux target session to attach to, or leave blank to start a new session."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "session name (blank = new)"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Attach")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let target = field.stringValue.trimmingCharacters(in: .whitespaces)
+        var controller: TmuxIntegrationController!
+        controller = TmuxIntegrationController(onTeardown: { [weak self] in
+            self?.tmuxControllers.removeAll { $0 === controller }
+        })
+        tmuxControllers.append(controller)
+        controller.start(target: target.isEmpty ? nil : target)
+    }
+
     /// Cmd+T — if the active window is Compact, add a tab there; otherwise open a new window.
     @MainActor
     @objc func newTab(_ sender: Any?) {
@@ -733,6 +761,19 @@ func installMainMenu() {
         item.tag = n
         windowMenu.addItem(item)
     }
+
+    // tmux menu — control-mode (-CC) integration entry point (docs/TMUX-INTEGRATION.md).
+    // No default shortcut; added directly rather than through the keybinding store.
+    let tmuxItem = NSMenuItem()
+    mainMenu.addItem(tmuxItem)
+    let tmuxMenu = NSMenu(title: "tmux")
+    tmuxItem.submenu = tmuxMenu
+    let attachItem = NSMenuItem(
+        title: "Attach tmux (-CC)…",
+        action: #selector(DamsonAppDelegate.attachTmux(_:)),
+        keyEquivalent: ""
+    )
+    tmuxMenu.addItem(attachItem)
 
     NSApp.mainMenu = mainMenu
 }
