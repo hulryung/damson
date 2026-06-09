@@ -7,4 +7,4 @@ DerivedData/
 Package.resolved
 dist/
 # build artifact from scripts/build-icon.sh; regenerated from icon-source.svg.
-Resources/Halite-1024.png
+Resources/Damson-1024.png

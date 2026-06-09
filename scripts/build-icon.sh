@@ -2,7 +2,8 @@
 # build-icon.sh — Resources/icon-source.svg → 1024px PNG → multi-size .iconset
 # → Resources/Damson.icns.
 #
-# 의존성: rsvg-convert (brew install librsvg), sips + iconutil (macOS 내장).
+# 의존성: rsvg-convert (brew install librsvg) 권장, 없으면 qlmanage(macOS 내장)
+#         폴백. sips + iconutil (macOS 내장).
 
 set -euo pipefail
 
@@ -15,17 +16,23 @@ if [[ ! -f "$SRC_SVG" ]]; then
     echo "error: $SRC_SVG 없음" >&2
     exit 1
 fi
-if ! command -v rsvg-convert >/dev/null 2>&1; then
-    echo "error: rsvg-convert 필요. brew install librsvg" >&2
+if command -v rsvg-convert >/dev/null 2>&1; then
+    echo "==> rsvg-convert 1024px PNG"
+    rsvg-convert -w 1024 -h 1024 "$SRC_SVG" -o "$PNG_1024"
+elif command -v qlmanage >/dev/null 2>&1; then
+    echo "==> qlmanage 1024px PNG (rsvg-convert 없음 → 폴백)"
+    QL_DIR=$(mktemp -d -t damson-ql)
+    trap 'rm -rf "$QL_DIR"' EXIT
+    qlmanage -t -s 1024 -o "$QL_DIR" "$SRC_SVG" >/dev/null 2>&1
+    mv "$QL_DIR/$(basename "$SRC_SVG").png" "$PNG_1024"
+else
+    echo "error: rsvg-convert 또는 qlmanage 필요. brew install librsvg" >&2
     exit 1
 fi
 
-echo "==> rsvg-convert 1024px PNG"
-rsvg-convert -w 1024 -h 1024 "$SRC_SVG" -o "$PNG_1024"
-
 echo "==> sips로 multi-size + iconutil"
-ICONSET_DIR=$(mktemp -d -t halite-icns)
-trap 'rm -rf "$ICONSET_DIR"' EXIT
+ICONSET_DIR=$(mktemp -d -t damson-icns)
+trap 'rm -rf "$ICONSET_DIR" "${QL_DIR:-}"' EXIT
 ICONSET="$ICONSET_DIR/icon.iconset"
 mkdir -p "$ICONSET"
 
@@ -50,7 +57,7 @@ done
 iconutil --convert icns "$ICONSET" --output "$DST_ICNS"
 
 # SwiftPM 리소스 경로에도 복제.
-cp "$DST_ICNS" "$REPO_ROOT/Sources/halite/Resources/Damson.icns"
+cp "$DST_ICNS" "$REPO_ROOT/Sources/damson/Resources/Damson.icns"
 
 echo "==> $DST_ICNS"
 ls -lh "$DST_ICNS"
