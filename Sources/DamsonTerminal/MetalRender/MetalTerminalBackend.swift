@@ -893,6 +893,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let start = (a.row < h.row || (a.row == h.row && a.col < h.col)) ? a : h
         let end = (start.row == a.row && start.col == a.col) ? h : a
         if row < start.row || row > end.row { return nil }
+        if state.selectionRectangular {
+            // Block selection: the same column span on every covered row.
+            return SelectionLogic.blockColumns(anchorCol: a.col, headCol: h.col, cols: cols)
+        }
         let lo = (row == start.row) ? start.col : 0
         let hi = (row == end.row) ? min(end.col, cols) : cols
         return lo < hi ? lo..<hi : nil

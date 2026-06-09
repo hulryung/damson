@@ -1333,9 +1333,15 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
 
     /// The selected col range in a given textViewRow (if any). end exclusive.
+    /// In rectangular (block) mode every row gets the same column slice.
     private func selectedColumnsForRow(_ textViewRow: Int, cols: Int) -> Range<Int>? {
         guard let (start, end) = normalizedSelection() else { return nil }
         if textViewRow < start.row || textViewRow > end.row { return nil }
+        if selectionRectangular {
+            // Block selection: the same column span on every covered row.
+            guard let a = selectionAnchor, let h = selectionHead else { return nil }
+            return SelectionLogic.blockColumns(anchorCol: a.col, headCol: h.col, cols: cols)
+        }
         let lo: Int
         let hi: Int
         if textViewRow == start.row && textViewRow == end.row {
@@ -1355,6 +1361,15 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         return lo..<hi
     }
 
+    /// Whether the unified row `r` is soft-wrapped into the next row.
+    private func rowWrappedToNext(_ r: Int) -> Bool {
+        let grid = session.grid
+        let sbCount = grid.scrollback.count
+        if r < sbCount { return grid.scrollback[r].wrapped }
+        let vp = r - sbCount
+        return (vp >= 0 && vp < grid.rows) ? grid.rowWrapped(vp) : false
+    }
+
     private func selectionKey() -> String {
         guard let a = selectionAnchor, let h = selectionHead else { return "" }
         return "\(a.row),\(a.col)-\(h.row),\(h.col)"
@@ -1371,7 +1386,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         guard let (start, end) = normalizedSelection() else { return nil }
         let grid = session.grid
         let scrollbackCount = grid.scrollback.count
-        var lines: [String] = []
+        var rows: [SelectionLogic.CopyRow] = []
         for r in start.row...end.row {
             let cells: [Cell]
             if r < scrollbackCount {
@@ -1385,13 +1400,17 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             var chars = ""
             for c in range {
                 guard c < cells.count else { break }
+                // Skip wide-char continuation cells (the 2nd column of a wide glyph).
                 if cells[c].isContinuation { continue }
                 chars.append(cells[c].char)
             }
-            while chars.last == " " { chars.removeLast() }
-            lines.append(chars)
+            // Block mode joins every row with "\n" (no soft-wrap join). Linear mode
+            // suppresses the newline between rows of one soft-wrapped logical line.
+            let wrappedToNext = !selectionRectangular && r < end.row && rowWrappedToNext(r)
+            rows.append(SelectionLogic.CopyRow(text: chars, wrappedToNext: wrappedToNext))
         }
-        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+        if rows.isEmpty { return nil }
+        return SelectionLogic.joinForCopy(rows)
     }
 
     /// Cmd+F (NSResponder/NSTextFinderClient standard) — toggle the find overlay.
@@ -2070,6 +2089,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             markedText: markedText,
             selectionAnchor: selectionAnchor.map { GridPos(row: $0.row, col: $0.col) },
             selectionHead: selectionHead.map { GridPos(row: $0.row, col: $0.col) },
+            selectionRectangular: selectionRectangular,
             findMatchesByRow: findMatchesByRow,
             activeFindRow: active?.row,
             activeFindRange: active?.range,
