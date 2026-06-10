@@ -256,12 +256,31 @@ public final class VTParser {
         case 0x1B:
             enterEscape()
         default:
+            // Malformed DCS param byte. A C0 control here means this was a false start
+            // (see dcsPassthroughByte) — reprocess it in ground rather than eat it.
             state = .ground
+            if b < 0x20 { handle(b) }
         }
     }
 
     private func dcsPassthroughByte(_ b: UInt8) {
-        if b == 0x1B { state = .dcsEsc }
+        if b == 0x1B {
+            state = .dcsEsc
+            return
+        }
+        // Defensive bail-out: a legitimate DCS payload (sixel, DECRQSS, …) never contains
+        // C0 controls — sixel even encodes its own newlines as '-'. If one shows up, this
+        // "DCS" is almost certainly a FALSE START (a stray ESC P from a torn sequence or
+        // binary spew). Without this, the parser would swallow EVERYTHING — including all
+        // CSI cursor/erase commands — until the next ST, which in a TUI stream may be a
+        // whole screenful away: exactly the "escape commands stopped being processed,
+        // stale fragments everywhere" corruption mode. Abort to ground and reprocess the
+        // byte so a false start costs at most one line.
+        if b < 0x20 {
+            state = .ground
+            handle(b)
+            return
+        }
         // else: payload byte of a DCS we don't render — swallow
     }
 
@@ -270,6 +289,14 @@ public final class VTParser {
             state = .ground
         } else if b == 0x1B {
             // consecutive ESCs — stay armed for a following '\\'
+        } else if b == 0x5B { // ESC '[' — a CSI is starting; the "DCS" was a false start.
+            // Don't swallow the CSI: abort the DCS and parse it for real (same defensive
+            // rationale as the C0 bail-out above).
+            state = .csi
+            params.removeAll()
+            currentParam = -1
+            intermediates.removeAll()
+            privateMarker = nil
         } else {
             state = .dcsPassthrough
         }

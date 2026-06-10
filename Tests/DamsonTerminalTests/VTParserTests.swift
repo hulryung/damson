@@ -194,3 +194,38 @@ extension VTParserTests {
         }
     }
 }
+
+// MARK: - DCS false-start hardening (§15.2 "TUI commands stopped being processed")
+
+extension VTParserTests {
+    /// A C0 control inside a DCS payload marks a FALSE START (real sixel/DECRQSS payloads
+    /// never contain C0) — the parser must bail to ground and reprocess the byte, so a
+    /// stray ESC P can't swallow CSI commands all the way to a far-away ST.
+    func testFalseDCSAbortsOnC0Control() {
+        let events = parse("a\u{1B}Pxoo\rbar")
+        XCTAssertEqual(events, [.text("a"), .execute(0x0D), .text("bar")],
+                       "CR inside a 'DCS payload' must abort the swallow and execute")
+    }
+
+    /// ESC [ inside a DCS payload is a CSI starting — the false DCS must yield and let the
+    /// CSI parse for real (cursor/erase commands must never be swallowed).
+    func testFalseDCSYieldsToCSI() {
+        let events = parse("\u{1B}P0q\u{1B}[31mX")
+        XCTAssertEqual(events, [
+            .csi(params: [31], finalByte: 0x6D, privateMarker: nil),
+            .text("X"),
+        ])
+    }
+
+    /// A well-formed DCS (printable payload, ST-terminated) is still swallowed whole.
+    func testWellFormedDCSStillSwallowed() {
+        let events = parse("\u{1B}P0;1q#0;2;0;0;0-ooo\u{1B}\\after")
+        XCTAssertEqual(events, [.text("after")])
+    }
+
+    /// A C0 in the DCS *parameter* section also aborts and reprocesses (not eaten).
+    func testFalseDCSParamAbortsOnC0() {
+        let events = parse("\u{1B}P12\nrest")
+        XCTAssertEqual(events, [.execute(0x0A), .text("rest")])
+    }
+}

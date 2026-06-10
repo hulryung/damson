@@ -677,3 +677,14 @@ P0–P3 구현은 완료됐으나, 최종 수용 시나리오(Claude Code agent 
 - 두 증상 모두 **로컬 탭**(tmux 아님)에서 관찰. 사용자 환경: `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`
   (main-screen 렌더러 = in-place redraw 多). 재현 채집: 해당 세션 출력 byte stream을 `script(1)` 또는
   `session.onOutput` 덤프로 떠서 VTParser/Grid에 replay하는 회귀 테스트로 잡는 것이 정석.
+
+**후속 조사 (같은 날):** 재현 인프라 구축 — `damson-cli dump-grid`, `DAMSON_DUMP_OUTPUT=<dir>`
+바이트 캡처, `OutputDumpReplayTests`(캡처 replay + U+FFFD 스캔). damson-cli로 실제 claude TUI를
+원격 구동해 7개 시나리오(타이핑/bracketed 멀티라인 paste/tool-use/병렬 subagent/유휴·생성중
+리사이즈 6회/scrollback 10k 상한)를 돌렸으나 **전부 grid 레벨에서 깨끗** — 동일 프롬프트의 사용자
+재시도도 재현 실패(간헐 발생). 사용자 관찰 "escape 명령이 처리되지 않은 것처럼 보였다"와 정확히
+일치하는 메커니즘을 코드에서 발견: P3-4의 DCS swallowing이 **오인 시작**(stray ESC P)되면 다음
+ST까지 모든 출력(CSI 커서/erase 포함)을 삼켜 화면이 부분 갱신된다. **방어 수정 적용**: DCS
+param/payload 중 C0 제어문자(실제 sixel/DECRQSS payload엔 없음)나 `ESC [`(CSI 시작)를 만나면
+DCS를 중단하고 해당 바이트를 ground에서 재처리 — 오인 시작의 피해를 최대 한 줄로 제한. 확정
+재현은 dump 캡처 대기 중 (dev 빌드를 DAMSON_DUMP_OUTPUT으로 상시 구동).
