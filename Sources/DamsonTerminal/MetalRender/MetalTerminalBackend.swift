@@ -860,6 +860,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     private func fgColor(cell: Cell, col: Int, sel: Range<Int>?, finds: [Range<Int>],
                          activeFind: Range<Int>?, hover: Range<Int>?, isCursor: Bool) -> NSColor {
         if isCursor { return config.theme.background }   // inverse over the cursor block
+        if sel?.contains(col) ?? false {
+            // Reverse-video selection (pairs with bgColor): text takes the cell's bg.
+            return cell.attrs.resolvedColors(theme: config.theme).bg ?? config.theme.background
+        }
         if hover?.contains(col) ?? false { return .systemBlue }
         if (activeFind?.contains(col) ?? false) || finds.contains(where: { $0.contains(col) }) {
             return .black
@@ -873,7 +877,14 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     private func bgColor(cell: Cell, col: Int, sel: Range<Int>?, finds: [Range<Int>],
                          activeFind: Range<Int>?, isCursor: Bool) -> NSColor? {
         if isCursor { return config.cursorColor }
-        if sel?.contains(col) ?? false { return .selectedTextBackgroundColor }
+        if sel?.contains(col) ?? false {
+            // Reverse-video selection: the highlight takes the cell's own text color
+            // (paired with fgColor handing the cell's bg to the text). Contrast is
+            // always the cell's own, so selected text stays readable on ANY theme —
+            // unlike the system selectedTextBackgroundColor, a light blue tuned for
+            // black-on-white documents that washed out on dark terminal themes.
+            return cell.attrs.resolvedColors(theme: config.theme).fg
+        }
         if activeFind?.contains(col) ?? false { return NSColor.systemOrange.withAlphaComponent(0.85) }
         if finds.contains(where: { $0.contains(col) }) { return NSColor.systemYellow.withAlphaComponent(0.6) }
         let (_, bg) = cell.attrs.resolvedColors(theme: config.theme)
