@@ -45,6 +45,8 @@ final class TmuxIntegrationController {
     /// Output that arrived for a pane before it had a session (a `%output` racing ahead of
     /// its `%layout-change`). Flushed into the session the moment the pane is created.
     private var pendingOutput: [TmuxPaneID: Data] = [:]
+    /// Panes tmux has paused for which a resume is already scheduled (flow control).
+    private var pausedPanes: Set<TmuxPaneID> = []
 
     private var onTeardown: (() -> Void)?
 
@@ -64,6 +66,10 @@ final class TmuxIntegrationController {
         NSApp.activate(ignoringOtherApps: true)
         do {
             try client.attach(target: target)
+            // Flow control: let tmux pause a pane that outruns us (e.g. `yes` flooding) rather
+            // than buffering without bound, so the UI stays responsive. We resume promptly once
+            // the runloop drains (see onPause). 1s of lag is already very visible in a terminal.
+            client.enableFlowControl(pauseAfter: 1)
         } catch {
             NSLog("tmux: attach failed: %@", String(describing: error))
             presentAttachError(error)
@@ -99,6 +105,9 @@ final class TmuxIntegrationController {
         client.onPaneExit = { _ in
             // tmux drives structure via %layout-change (it re-sends a window's layout right
             // after a pane dies), so there's nothing structural to do here. Kept for logging.
+        }
+        client.onPause = { [weak self] pane in
+            self?.resumeWhenDrained(pane)
         }
         client.onExit = { [weak self] _ in
             self?.teardown()
@@ -169,6 +178,21 @@ final class TmuxIntegrationController {
     }
 
     // MARK: - Output / focus / size
+
+    /// tmux paused `pane` (we lagged past `pause-after`). Resume it on the next runloop turn,
+    /// by which point the in-flight output for it has been processed — this bounds tmux's
+    /// server-side buffering to roughly one batch while never leaving a pane stalled. Tracks
+    /// the pane so a redundant `%pause` doesn't schedule a second resume.
+    private func resumeWhenDrained(_ pane: TmuxPaneID) {
+        guard !pausedPanes.contains(pane) else { return }
+        pausedPanes.insert(pane)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pausedPanes.remove(pane)
+            guard self.backends[pane] != nil else { return }  // pane closed meanwhile
+            self.client.resumePane(pane)
+        }
+    }
 
     private func deliverOutput(pane: TmuxPaneID, data: Data) {
         if let backend = backends[pane] {
@@ -268,6 +292,7 @@ final class TmuxIntegrationController {
         paneToWindow.removeValue(forKey: pane)
         pendingOutput.removeValue(forKey: pane)
         paneSizes.removeValue(forKey: pane)
+        pausedPanes.remove(pane)
     }
 
     private func teardown() {

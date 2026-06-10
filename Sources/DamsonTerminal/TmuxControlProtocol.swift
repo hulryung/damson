@@ -71,6 +71,11 @@ public enum TmuxControlEvent: Equatable {
     case sessionWindowChanged(session: TmuxSessionID, window: TmuxWindowID)
     case sessionsChanged
     case paneExit(TmuxPaneID)
+    /// `%pause %<pane>` — flow control: tmux paused output for this pane because the client
+    /// lagged past `pause-after`. The client resumes it with `refresh-client -A '%N:continue'`.
+    case paused(TmuxPaneID)
+    /// `%continue %<pane>` — tmux resumed output for a previously paused pane.
+    case resumed(TmuxPaneID)
     /// `%exit` — the control client is detaching. Optional reason string when tmux supplies one.
     case exit(reason: String?)
     /// A recognized-but-not-acted-on or unknown `%` line, surfaced for logging. Never fatal.
@@ -137,6 +142,15 @@ public final class TmuxControlParser {
             return .unhandled(line: line)
         case "%output":
             return parseOutput(rest)
+        case "%extended-output":
+            // Flow-control output: `%extended-output %<pane> <age-ms> [flags] : <data>`. The
+            // payload is octal-encoded exactly like %output, so map it to the same `.output`
+            // event — rendering is identical; only the pause/continue handshake is new.
+            return parseExtendedOutput(rest)
+        case "%pause":
+            return parsePaneID(rest).map { .paused($0) } ?? .unhandled(line: line)
+        case "%continue":
+            return parsePaneID(rest).map { .resumed($0) } ?? .unhandled(line: line)
         case "%window-add":
             return parseWindowID(rest).map { .windowAdd($0) } ?? .unhandled(line: line)
         case "%window-close", "%unlinked-window-close":
@@ -216,6 +230,21 @@ public final class TmuxControlParser {
         guard let pane = Self.parsePaneToken(paneToken) else {
             return .unhandled(line: "%output \(rest)")
         }
+        return .output(pane: pane, data: Self.decodeOctalEscaped(payload))
+    }
+
+    /// `%extended-output %<pane> <age-ms> [flags] : <data…>`. The header (`<age> [flags]`)
+    /// has no `" : "`, so the FIRST `" : "` is the real header/payload separator; the payload
+    /// after it is decoded like `%output`. Missing separator → empty output.
+    private func parseExtendedOutput(_ rest: String) -> TmuxControlEvent? {
+        let (paneToken, afterPane) = Self.splitFirstToken(rest)
+        guard let pane = Self.parsePaneToken(paneToken) else {
+            return .unhandled(line: "%extended-output \(rest)")
+        }
+        guard let sep = afterPane.range(of: " : ") else {
+            return .output(pane: pane, data: Data())
+        }
+        let payload = String(afterPane[sep.upperBound...])
         return .output(pane: pane, data: Self.decodeOctalEscaped(payload))
     }
 

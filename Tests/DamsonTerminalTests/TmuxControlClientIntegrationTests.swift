@@ -221,4 +221,40 @@ final class TmuxControlClientIntegrationTests: XCTestCase {
         XCTAssertEqual(orientation, .horizontal, "split-window -h is a left/right (horizontal) split")
         XCTAssertEqual(children.count, 2)
     }
+
+    /// P3-2 flow-control proof (headless): with `pause-after` enabled, tmux switches a pane's
+    /// output to `%extended-output`, which the parser maps to the same `.output` event — so a
+    /// marker still round-trips through the normal output path. (Forcing an actual `%pause`
+    /// is timing-dependent and flaky, so we assert the extended-output path instead.)
+    func testFlowControlExtendedOutputStillDelivers() throws {
+        let client = TmuxControlClient()
+        defer { client.terminate() }
+
+        var outputByPane: [TmuxPaneID: Data] = [:]
+        var firstPane: TmuxPaneID?
+        client.onPaneOutput = { pane, data in
+            if firstPane == nil { firstPane = pane }
+            outputByPane[pane, default: Data()].append(data)
+        }
+
+        try client.attach(target: nil, cols: 80, rows: 24)
+        client.enableFlowControl(pauseAfter: 1)  // → output now arrives as %extended-output
+
+        pump(until: { firstPane != nil })
+        let pane = try XCTUnwrap(firstPane, "no pane seen on attach")
+
+        let marker = "FLOWMARK_\(UUID().uuidString.prefix(8))"
+        outputByPane[pane] = Data()
+        client.sendKeys(to: pane, data: Data("printf '\(marker)\\n'\n".utf8))
+
+        pump(until: {
+            String(decoding: outputByPane[pane] ?? Data(), as: UTF8.self).contains(marker)
+        })
+        let seen = String(decoding: outputByPane[pane] ?? Data(), as: UTF8.self)
+        XCTAssertTrue(seen.contains(marker),
+                      "marker did not arrive via %extended-output under flow control; got: \(seen.debugDescription)")
+        // Decoded bytes (real LF), proving the octal decode ran on the extended-output payload.
+        XCTAssertTrue((outputByPane[pane] ?? Data()).contains(0x0A),
+                      "expected a decoded LF in extended-output payload")
+    }
 }

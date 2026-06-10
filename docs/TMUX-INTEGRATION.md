@@ -566,3 +566,40 @@ tmux 3.6b를 `tmux -C`로 직접 구동해 다음을 확인했고, 이게 P2 설
 - `totalCellSize` 산술(단일/horizontal+divider/vertical+divider/미보고 시 nil/중첩 3-way)을
   `TmuxLayoutTreeTests`로 단위 검증.
 - 실제 창 리사이즈→tmux 재배치의 on-screen 확인은 디스플레이 필요 → GUI 재테스트로 남긴다.
+
+---
+
+## 13. P3-2 구현 노트 (flow control, 실제 구현됨)
+
+목표: 한 pane이 출력을 쏟아내도(예: `yes` 플러딩) tmux 서버가 무한정 버퍼링하지 않고, UI가 멈추지 않게 한다.
+
+### 13.1 실기 확인
+
+- `refresh-client -f pause-after=<N>`을 보내면 **그 즉시** pane 출력이 `%output` → **`%extended-output`**으로
+  바뀐다. 형식: `%extended-output %<pane> <age-ms> : <data>` — pane id, lag(ms), ` : `, 그리고 `%output`과
+  **동일한 octal 인코딩** payload. (tmux 3.6b로 확인.)
+- client가 N초 이상 뒤처지면 tmux가 `%pause %<pane>`을 보내고 그 pane 출력을 멈춘다. client가
+  `refresh-client -A '%<pane>:continue'`로 재개를 요청하면 `%continue %<pane>` 후 출력이 재개된다.
+
+### 13.2 구현
+
+- **파서**: `%extended-output`을 **첫 `" : "`**(헤더=pane+age는 `" : "`를 포함하지 않으므로 첫 것이 진짜
+  구분자)로 갈라 payload를 `%output`과 같은 `.output` 이벤트로 매핑 → **렌더 경로 무변경**, pause/continue
+  핸드셰이크만 새로 추가. `%pause`→`.paused(pane)`, `%continue`→`.resumed(pane)`.
+- **클라이언트**: `enableFlowControl(pauseAfter:)`(`refresh-client -f pause-after=N`),
+  `resumePane(_:)`(`refresh-client -A '%N:continue'`), `onPause`/`onContinue` 콜백.
+- **컨트롤러**: attach 직후 `enableFlowControl(pauseAfter: 1)`. `%pause`를 받으면 **다음 runloop turn에
+  resume**(`DispatchQueue.main.async`) — 그 시점엔 in-flight 출력이 동기 처리로 모두 소진됐으므로,
+  tmux 서버 버퍼링을 ~한 배치로 제한하면서 pane이 영구히 멈추지 않게 한다. `pausedPanes`로 중복 resume 방지.
+
+### 13.3 정책 근거
+
+- Damson는 출력을 메인 큐에서 **동기 처리**한다(VTParser→Grid). 따라서 `%pause` 수신 = 이미 그 직전까지
+  처리 완료 → 다음 tick에 즉시 resume해도 안전(catch-up 보장). 지속 플러딩 시 pause/continue가 핑퐁하며
+  **버스트 사이에 UI가 갱신**된다(의도된 throttle). pause-after=1s는 터미널에서 이미 충분히 눈에 띄는 lag.
+
+### 13.4 테스트
+
+- 파서 단위: `%extended-output` 디코드(+payload 내 `" : "` 보존), `%pause`/`%continue`(`TmuxControlParserTests`).
+- 실기 통합: flow control 켠 상태에서 marker가 `%extended-output` 경로로 grid까지 도달
+  (`testFlowControlExtendedOutputStillDelivers`). 실제 `%pause` 트리거는 타이밍 의존이라 flaky → 생략.

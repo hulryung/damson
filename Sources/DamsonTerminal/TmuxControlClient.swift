@@ -20,6 +20,11 @@ public final class TmuxControlClient {
     public var onLayoutChange: ((TmuxWindowID, TmuxLayout) -> Void)?
     public var onPaneOutput: ((TmuxPaneID, Data) -> Void)?
     public var onPaneExit: ((TmuxPaneID) -> Void)?
+    /// `%pause %<pane>` — tmux throttled this pane (client lagged past `pause-after`). Resume
+    /// it with `resumePane(_:)` once caught up.
+    public var onPause: ((TmuxPaneID) -> Void)?
+    /// `%continue %<pane>` — tmux resumed a previously paused pane.
+    public var onContinue: ((TmuxPaneID) -> Void)?
     public var onSessionChanged: ((TmuxSessionID, String) -> Void)?
     public var onSessionWindowChanged: ((TmuxSessionID, TmuxWindowID) -> Void)?
     /// Reply to a command we sent (matched on its command number). Best-effort; P1 doesn't
@@ -120,6 +125,19 @@ public final class TmuxControlClient {
         sendCommand("kill-pane -t \(pane.token)")
     }
 
+    /// Enable flow control: `refresh-client -f pause-after=<seconds>`. When the client lags
+    /// more than `seconds` behind a pane, tmux pauses that pane (`%pause`) instead of buffering
+    /// without bound, and switches its output to `%extended-output` (carrying a lag age). The
+    /// client resumes paused panes via `resumePane(_:)`. `seconds = 0` disables it.
+    public func enableFlowControl(pauseAfter seconds: Int) {
+        sendCommand("refresh-client -f pause-after=\(seconds)")
+    }
+
+    /// Resume a paused pane: `refresh-client -A '%N:continue'`.
+    public func resumePane(_ pane: TmuxPaneID) {
+        sendCommand("refresh-client -A '\(pane.token):continue'")
+    }
+
     /// Detach the control client cleanly.
     public func terminate() {
         backend.terminate()
@@ -168,6 +186,10 @@ public final class TmuxControlClient {
             break  // P1: nothing to do; window-add/close drive the tab set.
         case .paneExit(let p):
             onPaneExit?(p)
+        case .paused(let p):
+            onPause?(p)
+        case .resumed(let p):
+            onContinue?(p)
         case .exit(let reason):
             handleControlExit(reason: reason)
         case .unhandled(let line):

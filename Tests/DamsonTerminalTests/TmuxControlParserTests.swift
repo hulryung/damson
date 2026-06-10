@@ -118,6 +118,35 @@ final class TmuxControlParserTests: XCTestCase {
         XCTAssertEqual(data, Data())
     }
 
+    // MARK: - Flow control: %extended-output / %pause / %continue
+
+    func testExtendedOutputDecodesPayloadLikeOutput() {
+        // `%extended-output %<pane> <age-ms> : <data>` — the first " : " separates the header
+        // (pane + age) from the octal-encoded payload, which decodes exactly like %output.
+        let events = run([#"%extended-output %3 0 : hello\015\012world"#])
+        guard case .output(let pane, let data) = events.first else { return XCTFail() }
+        XCTAssertEqual(pane, TmuxPaneID(3))
+        XCTAssertEqual(data, Data("hello\r\nworld".utf8))
+    }
+
+    func testExtendedOutputPayloadMayContainColonSpace() {
+        // The separator is the FIRST " : " (right after the age); a literal " : " inside the
+        // payload (e.g. text) must be preserved.
+        let events = run(["%extended-output %0 12 : key : value"])
+        guard case .output(let pane, let data) = events.first else { return XCTFail() }
+        XCTAssertEqual(pane, TmuxPaneID(0))
+        XCTAssertEqual(data, Data("key : value".utf8))
+    }
+
+    func testPauseAndContinue() {
+        let events = run(["%pause %2", "%continue %2"])
+        XCTAssertEqual(events.count, 2)
+        guard case .paused(let p1) = events[0] else { return XCTFail("expected .paused") }
+        guard case .resumed(let p2) = events[1] else { return XCTFail("expected .resumed") }
+        XCTAssertEqual(p1, TmuxPaneID(2))
+        XCTAssertEqual(p2, TmuxPaneID(2))
+    }
+
     func testTrailingBackslashIsVerbatim() {
         // A backslash not followed by three octal digits is emitted as-is.
         let events = run([#"%output %1 a\b\01"#])
