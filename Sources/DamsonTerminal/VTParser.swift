@@ -62,7 +62,11 @@ public final class VTParser {
     public init() {}
 
     public func feed(_ data: Data) {
-        for byte in data { handle(byte) }
+        // Walk the contiguous storage directly — Data's element iterator does a
+        // per-byte bounds/representation check that dominates at flood rates.
+        data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+            for byte in buf { handle(byte) }
+        }
         flushText()
     }
 

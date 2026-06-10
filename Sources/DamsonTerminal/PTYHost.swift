@@ -32,6 +32,12 @@ public final class PTYHost: SessionIOBackend {
     /// natural backpressure with bounded memory, instead of an unbounded main-queue
     /// backlog that freezes the UI.
     private static let maxPendingBytes = 2 * 1024 * 1024
+    /// Max bytes handed to the consumer per drain (one main-runloop turn). This bounds the
+    /// VTParser time spent per turn, so UI events interleave at a steady cadence no matter
+    /// how fast the child produces output — without it, a single drain could carry the whole
+    /// 2MB backlog and stall the UI for however long that takes to parse. The remainder is
+    /// rescheduled onto the next turn.
+    private static let maxDrainBytes = 128 * 1024
 
     public init() {}
 
@@ -234,12 +240,22 @@ public final class PTYHost: SessionIOBackend {
         }
     }
 
-    /// Main-thread side: take everything buffered so far and deliver it as one chunk.
+    /// Main-thread side: deliver up to `maxDrainBytes` of the buffer as one chunk. If more
+    /// remains, keep `drainScheduled` set and re-arm a drain on the NEXT runloop turn — UI
+    /// events get serviced in between, which is what keeps the app responsive while a flood
+    /// is being parsed at full speed.
     private func drainPendingOutput() {
         pendingLock.lock()
-        let chunk = pendingOutput
-        pendingOutput = Data()
-        drainScheduled = false
+        let chunk: Data
+        if pendingOutput.count <= Self.maxDrainBytes {
+            chunk = pendingOutput
+            pendingOutput = Data()
+            drainScheduled = false
+        } else {
+            chunk = pendingOutput.prefix(Self.maxDrainBytes)
+            pendingOutput.removeFirst(Self.maxDrainBytes)
+            DispatchQueue.main.async { [weak self] in self?.drainPendingOutput() }
+        }
         pendingLock.unlock()
         if !chunk.isEmpty { onData?(chunk) }
     }
