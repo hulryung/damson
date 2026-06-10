@@ -220,6 +220,79 @@ final class TmuxControlParserTests: XCTestCase {
         guard case .unhandled = run(["%session-changed"]).first else { return XCTFail() }
     }
 
+    // MARK: - DCS control-mode wrapper (tmux -CC) defensive stripping
+
+    func testDCSEnterPrefixOnFirstBeginParsesAsBeginNotUnhandled() {
+        // tmux -CC glues the DCS "enter control mode" (ESC P1000p) directly onto the very
+        // first %begin. It must parse as a real begin frame (and resolve to a reply), not
+        // get swallowed into .unhandled.
+        let events = run([
+            "\u{1B}P1000p%begin 1781053964 271 0",
+            "%end 1781053964 271 0",
+        ])
+        XCTAssertEqual(events.count, 1)
+        guard case .commandReply(let reply) = events[0] else { return XCTFail("expected reply") }
+        XCTAssertEqual(reply.timestamp, "1781053964")
+        XCTAssertEqual(reply.commandNumber, "271")
+        XCTAssertFalse(reply.isError)
+    }
+
+    func testDCSEnterPrefixOnNotificationIsStripped() {
+        // The wrapper can in principle lead any first line; ensure a notification still parses.
+        guard case .windowAdd(let w) = run(["\u{1B}P1000p%window-add @0"]).first else {
+            return XCTFail("expected windowAdd")
+        }
+        XCTAssertEqual(w, TmuxWindowID(0))
+    }
+
+    func testTrailingSTAfterExitIsHandled() {
+        // tmux -CC ends the stream with ST (ESC \). A line that is exit + trailing ST must
+        // still parse as %exit; a line that is *only* ST collapses to empty and is dropped.
+        let events = run([
+            "%exit\u{1B}\\",
+        ])
+        XCTAssertEqual(events.count, 1)
+        guard case .exit = events[0] else { return XCTFail("expected exit") }
+    }
+
+    func testBareSTLineIsDroppedNotUnhandled() {
+        // A line consisting solely of the ST terminator must produce no event (not .unhandled).
+        let events = run(["\u{1B}\\"])
+        XCTAssertTrue(events.isEmpty, "bare ST should produce no event, got \(events)")
+    }
+
+    func testFullCCFramedFirstBlockRoundTrips() {
+        // The exact shape tmux -CC emits at startup: DCS-wrapped first %begin/%end, then the
+        // usual notifications, ending with %exit + ST. None of it should be .unhandled.
+        let events = run([
+            "\u{1B}P1000p%begin 1781054623 271 0",
+            "%end 1781054623 271 0",
+            "%window-add @0",
+            "%sessions-changed",
+            "%session-changed $0 0",
+            "%exit\u{1B}\\",
+        ])
+        // commandReply, windowAdd, sessionsChanged, sessionChanged, exit = 5 events.
+        XCTAssertEqual(events.count, 5)
+        guard case .commandReply = events[0] else { return XCTFail("0: reply") }
+        guard case .windowAdd = events[1] else { return XCTFail("1: windowAdd") }
+        guard case .sessionsChanged = events[2] else { return XCTFail("2: sessionsChanged") }
+        guard case .sessionChanged = events[3] else { return XCTFail("3: sessionChanged") }
+        guard case .exit = events[4] else { return XCTFail("4: exit") }
+        // Crucially: no .unhandled anywhere.
+        for e in events { if case .unhandled(let l) = e { XCTFail("unexpected unhandled: \(l)") } }
+    }
+
+    func testStripDCSWrapperDirectly() {
+        XCTAssertEqual(TmuxControlParser.stripDCSWrapper("\u{1B}P1000p%begin 1 2 0"), "%begin 1 2 0")
+        XCTAssertEqual(TmuxControlParser.stripDCSWrapper("%exit\u{1B}\\"), "%exit")
+        XCTAssertEqual(TmuxControlParser.stripDCSWrapper("\u{1B}\\"), "")
+        // No wrapper → unchanged (the common -C case).
+        XCTAssertEqual(TmuxControlParser.stripDCSWrapper("%output %1 hi"), "%output %1 hi")
+        // A bare ESC (not the full wrapper) is left untouched.
+        XCTAssertEqual(TmuxControlParser.stripDCSWrapper("\u{1B}[0m"), "\u{1B}[0m")
+    }
+
     func testMixedStreamParsesEachLineIndependently() {
         let events = run([
             "%session-changed $0 main",
