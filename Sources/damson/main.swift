@@ -180,6 +180,9 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     /// IPC with damson-cli. Bound after the first window is created.
     private var controlSocket: ControlSocketServer?
+    /// Active tmux -CC integrations (one per attach). Kept alive here so the client + host
+    /// window survive; removed on teardown — see docs/TMUX-INTEGRATION.md (P1).
+    private var tmuxControllers: [TmuxIntegrationController] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Control macOS press-and-hold (the accent popup). When it's on, holding a key
@@ -212,6 +215,17 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: .damsonKeybindingsChanged, object: nil, queue: .main
         ) { _ in installMainMenu() }
+        // A pane ran `tmux -CC` → take its stream over into native tmux integration.
+        // queue: nil = deliver synchronously on the posting (main) thread, REQUIRED so the
+        // takeover backend is installed before the first control bytes are forwarded.
+        NotificationCenter.default.addObserver(
+            forName: DamsonSession.tmuxControlModeDetectedNotification, object: nil, queue: nil
+        ) { [weak self] note in
+            // Posted on main (PTY data drains on main); hop is a no-op but satisfies actors.
+            MainActor.assumeIsolated {
+                self?.handleTmuxControlModeDetected(note)
+            }
+        }
         bindControlSocket()
         // Sparkle is lazily initialized — it starts automatically on first access.
         _ = DamsonUpdater.shared
@@ -530,6 +544,69 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
         spawnWindow()
     }
 
+    /// "Attach tmux (-CC)…" — prompt for an optional target session, then spawn a tmux -CC
+    /// control client whose windows render as Damson tabs (P1). Empty target = new session.
+    /// See docs/TMUX-INTEGRATION.md.
+    @MainActor
+    @objc func attachTmux(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Attach tmux (-CC)"
+        alert.informativeText = "Enter a tmux target session to attach to, or leave blank to start a new session."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "session name (blank = new)"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Attach")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let target = field.stringValue.trimmingCharacters(in: .whitespaces)
+        var controller: TmuxIntegrationController!
+        controller = TmuxIntegrationController(onTeardown: { [weak self] in
+            self?.tmuxControllers.removeAll { $0 === controller }
+        })
+        tmuxControllers.append(controller)
+        controller.start(target: target.isEmpty ? nil : target)
+    }
+
+    /// tmux ▸ Detach — cleanly detach the control client of the tmux host window that is
+    /// currently key. The session keeps running server-side; `%exit` closes the window.
+    @MainActor
+    @objc func detachTmux(_ sender: Any?) {
+        tmuxController(for: NSApp.keyWindow)?.detach()
+    }
+
+    /// Enable "Detach" only while the key window belongs to a tmux integration.
+    @MainActor
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(detachTmux(_:)) {
+            return tmuxController(for: NSApp.keyWindow) != nil
+        }
+        return true
+    }
+
+    @MainActor
+    private func tmuxController(for window: NSWindow?) -> TmuxIntegrationController? {
+        guard let window else { return nil }
+        return tmuxControllers.first { $0.hostWindow === window }
+    }
+
+    /// A local pane's stream entered tmux `-CC` control mode (the user ran `tmux -CC` in
+    /// it). Take the stream over into a native tmux integration — same UI as the menu
+    /// attach, no manual step. Must run synchronously within the notification so the first
+    /// control bytes (delivered right after the post) land in the takeover backend.
+    @MainActor
+    func handleTmuxControlModeDetected(_ note: Notification) {
+        guard let session = note.object as? DamsonSession else { return }
+        var controller: TmuxIntegrationController!
+        controller = TmuxIntegrationController(takeoverFrom: session, onTeardown: { [weak self] in
+            self?.tmuxControllers.removeAll { $0 === controller }
+        })
+        tmuxControllers.append(controller)
+        // Size from the host pane's current grid so tmux lays out at the real dimensions.
+        controller.startTakeover(cols: session.grid.cols, rows: session.grid.rows)
+    }
+
     /// Cmd+T — if the active window is Compact, add a tab there; otherwise open a new window.
     @MainActor
     @objc func newTab(_ sender: Any?) {
@@ -734,6 +811,27 @@ func installMainMenu() {
         item.tag = n
         windowMenu.addItem(item)
     }
+
+    // tmux menu — control-mode (-CC) integration entry point (docs/TMUX-INTEGRATION.md).
+    // No default shortcut; added directly rather than through the keybinding store.
+    let tmuxItem = NSMenuItem()
+    mainMenu.addItem(tmuxItem)
+    let tmuxMenu = NSMenu(title: "tmux")
+    tmuxItem.submenu = tmuxMenu
+    let attachItem = NSMenuItem(
+        title: "Attach tmux (-CC)…",
+        action: #selector(DamsonAppDelegate.attachTmux(_:)),
+        keyEquivalent: ""
+    )
+    tmuxMenu.addItem(attachItem)
+    // Enabled (via validateMenuItem) only while the key window is a tmux host. Leaves the
+    // session running server-side; closing the window does the same (detach, never kill).
+    let detachItem = NSMenuItem(
+        title: "Detach",
+        action: #selector(DamsonAppDelegate.detachTmux(_:)),
+        keyEquivalent: ""
+    )
+    tmuxMenu.addItem(detachItem)
 
     NSApp.mainMenu = mainMenu
 }

@@ -18,6 +18,18 @@ final class PaneTreeView: NSView {
     /// Called when the last leaf is closed (the host — the tab controller — closes the tab/window).
     var onAllPanesClosed: (() -> Void)?
 
+    /// When set, a user split request (Cmd+D / Cmd+Shift+D) is handed to this hook *instead*
+    /// of mutating the tree locally. Used by tmux-backed tabs so a split issues a tmux
+    /// `split-window` (tmux then drives the native split via `%layout-change`). Returning
+    /// true means "handled externally — don't split locally". The argument is the active
+    /// pane's session so the host can map it to a tmux pane id.
+    var onSplitRequest: ((SplitDirection, DamsonSession) -> Bool)?
+
+    /// When set, a user close-pane request (Cmd+W) is handed to this hook instead of closing
+    /// the leaf locally — tmux-backed tabs issue `kill-pane` and let `%layout-change` collapse
+    /// the split. Returning true means "handled externally". Argument is the active session.
+    var onCloseRequest: ((DamsonSession) -> Bool)?
+
     /// Pane lifecycle animation intent threaded through `rebuild`. `.none` is the
     /// instant/legacy path; `.split` animates the newly-created pane in from the
     /// divider edge; `.close` slides the closing pane's snapshot out to its outer edge.
@@ -85,6 +97,10 @@ final class PaneTreeView: NSView {
 
     func split(direction: SplitDirection) {
         guard case .leaf(let activeSession, _) = activeLeaf.kind else { return }
+        // tmux-backed tab: let the host issue a tmux `split-window`; tmux drives the native
+        // split back via `%layout-change`. (A local split would mint a non-tmux pane in a
+        // tmux tab — see docs §8: a tab is all-tmux or all-local.)
+        if let hook = onSplitRequest, hook(direction, activeSession) { return }
         // A split always inherits the current pane's working directory (shell-integration
         // OSC 7 report → falling back to the cwd at spawn time), since opening a pane
         // alongside within the same project is the common case.
@@ -110,7 +126,38 @@ final class PaneTreeView: NSView {
         rebuild(animation: Motion.enabled ? .split(newLeaf: newLeaf) : .none)
     }
 
-    func closeActive() { closeLeaf(activeLeaf) }
+    /// Replace the entire pane tree with a new root (a tmux `%layout-change` reconcile).
+    /// Reused leaf nodes keep their existing sessions/surfaces — and thus their grids and
+    /// scrollback — so output is continuous across reconciles; the view hierarchy is rebuilt
+    /// around the new split structure. The active pane follows `active` when it's still in
+    /// the new tree, otherwise the current active if still present, else the first leaf.
+    /// Idempotent: applying the same shape twice is a no-op-equivalent rebuild.
+    func setRoot(_ newRoot: PaneNode, active: PaneNode? = nil) {
+        root = newRoot
+        if let active, Self.contains(active, in: newRoot) {
+            activeLeaf = active
+        } else if !Self.contains(activeLeaf, in: newRoot) {
+            activeLeaf = PaneTreeView.firstLeafStatic(of: newRoot)
+        }
+        rebuild()
+    }
+
+    /// True if `target` is `node` or lives anywhere inside it (by === identity).
+    private static func contains(_ target: PaneNode, in node: PaneNode) -> Bool {
+        if node === target { return true }
+        if case .split(_, let a, let b, _) = node.kind {
+            return contains(target, in: a) || contains(target, in: b)
+        }
+        return false
+    }
+
+    func closeActive() {
+        // tmux-backed tab: route Cmd+W to a tmux `kill-pane`; `%layout-change` then collapses
+        // the split (or `%window-close` closes the tab). Falls through to a local close if no
+        // hook is set (normal local tabs).
+        if case .leaf(let s, _) = activeLeaf.kind, let hook = onCloseRequest, hook(s) { return }
+        closeLeaf(activeLeaf)
+    }
 
     /// Closes the leaf holding a session when that session ends (shell exit). The exit
     /// callback may arrive on another thread, so ensure this is invoked on main.

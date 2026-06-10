@@ -271,6 +271,38 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return session
     }
 
+    /// Add a tab backed by an externally-built session (e.g. a tmux `-CC` pane). Returns the
+    /// tree so the caller can later close exactly this tab via `closeTab(matching:)`.
+    @discardableResult
+    func addExternalTab(session: DamsonSession, customTitle: String? = nil) -> PaneTreeView {
+        let tree = PaneTreeView(rootSession: session)
+        addTab(tree: tree, transition: .create, customTitle: customTitle)
+        return tree
+    }
+
+    /// Adopt an already-built `PaneTreeView` as a new tab (e.g. a tmux window reconciled
+    /// into native splits). Unlike `addExternalTab(session:)`, the tree may already hold a
+    /// multi-pane split structure. Returns the tree for later `closeTab(matching:)`.
+    @discardableResult
+    func adoptExternalTree(_ tree: PaneTreeView, customTitle: String? = nil) -> PaneTreeView {
+        addTab(tree: tree, transition: .create, customTitle: customTitle)
+        return tree
+    }
+
+    /// Update the custom title of an externally-owned tab (e.g. a tmux `%window-renamed`).
+    func setExternalTabTitle(matching tree: PaneTreeView, title: String?) {
+        guard let idx = tabs.firstIndex(where: { $0.tree === tree }) else { return }
+        tabs[idx].customTitle = title
+        refreshTabBar()
+    }
+
+    /// Close the tab whose tree matches (by reference). No-op if it's already gone.
+    func closeTab(matching tree: PaneTreeView) {
+        if let idx = tabs.firstIndex(where: { $0.tree === tree }) {
+            closeTab(idx)
+        }
+    }
+
     /// Add an already-built PaneTreeView as a new tab (a new or restored tree).
     private func addTab(tree: PaneTreeView, transition: TabTransition = .none,
                         customTitle: String? = nil) {
@@ -943,7 +975,14 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     // MARK: - NSWindowDelegate
 
+    /// Invoked at the very start of `windowWillClose`, BEFORE the per-tab terminate sweep.
+    /// A tmux-backed host uses this to send `detach-client` first, so the kill-panes the
+    /// sweep would otherwise fire at live panes are suppressed (closing the window means
+    /// detach — leave the tmux session intact — never kill).
+    var onWindowWillClose: (() -> Void)?
+
     func windowWillClose(_ notification: Notification) {
+        onWindowWillClose?()
         for t in tabs { t.tree.root.terminateAll() }
     }
 

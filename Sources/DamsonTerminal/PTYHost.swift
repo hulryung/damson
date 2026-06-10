@@ -3,7 +3,10 @@ import Foundation
 
 /// Spawns the child shell on a PTY and manages read/write/resize/wait.
 /// Reading runs on a dedicated thread; callbacks hop to the main queue.
-public final class PTYHost {
+///
+/// This is the default `SessionIOBackend` (local forkpty). A tmux control-mode
+/// backend will be a sibling conformance — see `docs/TMUX-INTEGRATION.md`.
+public final class PTYHost: SessionIOBackend {
     public enum SpawnError: Error {
         case forkptyFailed(errno: Int32)
     }
@@ -17,6 +20,24 @@ public final class PTYHost {
 
     private let readQueue = DispatchQueue(label: "damson.pty.read", qos: .userInteractive)
     private let waitQueue = DispatchQueue(label: "damson.pty.wait", qos: .utility)
+
+    // Read-side coalescing buffer (see startReading). Guarded by pendingLock; shared
+    // between the read thread (append) and the main thread (drain).
+    private let pendingLock = NSLock()
+    private var pendingOutput = Data()
+    private var drainScheduled = false
+    /// Cap on bytes buffered between the read thread and the main thread. When the main
+    /// thread can't keep up with an output flood (e.g. `yes`), the read thread stalls at
+    /// this cap; the kernel PTY buffer then fills and the child blocks in write() —
+    /// natural backpressure with bounded memory, instead of an unbounded main-queue
+    /// backlog that freezes the UI.
+    private static let maxPendingBytes = 2 * 1024 * 1024
+    /// Max bytes handed to the consumer per drain (one main-runloop turn). This bounds the
+    /// VTParser time spent per turn, so UI events interleave at a steady cadence no matter
+    /// how fast the child produces output — without it, a single drain could carry the whole
+    /// 2MB backlog and stall the UI for however long that takes to parse. The remainder is
+    /// rescheduled onto the next turn.
+    private static let maxDrainBytes = 128 * 1024
 
     public init() {}
 
@@ -169,21 +190,25 @@ public final class PTYHost {
 
     // MARK: - Internals
 
+    /// Read loop. Bytes are NOT delivered one main-queue block per read() — under an
+    /// output flood (`yes`, `cat hugefile`) that enqueues thousands of small blocks per
+    /// second, growing the main queue without bound and freezing the UI. Instead the read
+    /// thread appends into `pendingOutput` and schedules at most ONE main-thread drain at
+    /// a time; each drain hands the consumer everything accumulated since the last turn as
+    /// a single chunk (fewer, larger VTParser feeds — also faster per byte). Combined with
+    /// the `maxPendingBytes` stall this keeps the UI responsive at any output rate.
     private func startReading() {
         isReading = true
         let fd = masterFD
         readQueue.async { [weak self] in
-            let bufferSize = 4096
+            let bufferSize = 65536
             var buffer = [UInt8](repeating: 0, count: bufferSize)
             while self?.isReading == true {
                 let n = buffer.withUnsafeMutableBufferPointer { ptr -> Int in
                     read(fd, ptr.baseAddress, ptr.count)
                 }
                 if n > 0 {
-                    let chunk = Data(buffer.prefix(n))
-                    DispatchQueue.main.async {
-                        self?.onData?(chunk)
-                    }
+                    self?.enqueueOutput(buffer[0..<n])
                 } else if n == 0 {
                     return // EOF
                 } else {
@@ -192,6 +217,47 @@ public final class PTYHost {
                 }
             }
         }
+    }
+
+    /// Read-thread side: append bytes to the pending buffer, schedule a single main-queue
+    /// drain, and stall while the backlog is at the cap (the drain side shrinks it).
+    private func enqueueOutput(_ bytes: ArraySlice<UInt8>) {
+        pendingLock.lock()
+        pendingOutput.append(contentsOf: bytes)
+        let needsSchedule = !drainScheduled
+        drainScheduled = true
+        var backlog = pendingOutput.count
+        pendingLock.unlock()
+
+        if needsSchedule {
+            DispatchQueue.main.async { [weak self] in self?.drainPendingOutput() }
+        }
+        while backlog >= Self.maxPendingBytes && isReading {
+            usleep(2_000)
+            pendingLock.lock()
+            backlog = pendingOutput.count
+            pendingLock.unlock()
+        }
+    }
+
+    /// Main-thread side: deliver up to `maxDrainBytes` of the buffer as one chunk. If more
+    /// remains, keep `drainScheduled` set and re-arm a drain on the NEXT runloop turn — UI
+    /// events get serviced in between, which is what keeps the app responsive while a flood
+    /// is being parsed at full speed.
+    private func drainPendingOutput() {
+        pendingLock.lock()
+        let chunk: Data
+        if pendingOutput.count <= Self.maxDrainBytes {
+            chunk = pendingOutput
+            pendingOutput = Data()
+            drainScheduled = false
+        } else {
+            chunk = pendingOutput.prefix(Self.maxDrainBytes)
+            pendingOutput.removeFirst(Self.maxDrainBytes)
+            DispatchQueue.main.async { [weak self] in self?.drainPendingOutput() }
+        }
+        pendingLock.unlock()
+        if !chunk.isEmpty { onData?(chunk) }
     }
 
     private func startWaiting() {

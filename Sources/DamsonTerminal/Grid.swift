@@ -381,11 +381,17 @@ public final class Grid {
     }
 
     private func pushToScrollback(_ line: Line) {
+        // Evict in batches, not per line: removeFirst shifts the whole array, so a
+        // 1-line evict at the cap costs O(maxScrollbackLines) per scrolled line —
+        // quadratic under output floods (`yes`), saturating the main thread. Dropping
+        // an eighth at once amortizes eviction to O(1) per line while preserving the
+        // `count ≤ maxScrollbackLines` invariant (depth oscillates within max−batch…max).
+        if scrollback.count >= maxScrollbackLines {
+            let batch = max(1, maxScrollbackLines / 8)
+            scrollback.removeFirst(min(scrollback.count, scrollback.count - maxScrollbackLines + batch))
+        }
         scrollback.append(line)
         scrollbackPushCount &+= 1
-        if scrollback.count > maxScrollbackLines {
-            scrollback.removeFirst(scrollback.count - maxScrollbackLines)
-        }
     }
 
     // MARK: - 커서 이동 (CSI)
@@ -771,9 +777,11 @@ public final class Grid {
                 for r in 0..<savedRowOffset {
                     saved.scrollback.append(saved.cells[r])
                     saved.scrollbackPushCount &+= 1
-                    if saved.scrollback.count > maxScrollbackLines {
-                        saved.scrollback.removeFirst(saved.scrollback.count - maxScrollbackLines)
-                    }
+                }
+                // Clamp once after the batch (a resize pushes at most a screenful, but
+                // there's no reason to shift the array per line).
+                if saved.scrollback.count > maxScrollbackLines {
+                    saved.scrollback.removeFirst(saved.scrollback.count - maxScrollbackLines)
                 }
             }
             saved.cells = Self.resizeCellsArray(
