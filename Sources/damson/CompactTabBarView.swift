@@ -1,4 +1,5 @@
 import AppKit
+import DamsonTerminal  // Motion (shared animation timing)
 
 /// Custom tab bar for compact mode only. Disables NSWindow's native tabs
 /// (tabbingMode = .disallowed) and places this at the very top of contentView → tabs
@@ -26,6 +27,13 @@ final class CompactTabBarView: NSView {
     private var tabButtons: [TabButton] = []
     private let newTabButton = NSButton()
     private var selectedIndex: Int = 0
+
+    /// The selection highlight, detached from the buttons so it can SLIDE between tabs on a
+    /// switch (the buttons are recreated on every update, which can only ever snap). Lives
+    /// at the bottom of the bar's layer stack; buttons render on top of it.
+    private let selectionPill = CALayer()
+    /// The tab index the pill currently sits on (-1 = not placed yet → first placement snaps).
+    private var pillDisplayedIndex: Int = -1
 
     // Drag-reorder state.
     private var perTab: CGFloat = 100   // current per-tab width (updated in layout)
@@ -59,6 +67,12 @@ final class CompactTabBarView: NSView {
         wantsLayer = true
         // Transparent — so the NSVisualEffectView behind it shows through.
         layer?.backgroundColor = NSColor.clear.cgColor
+
+        // Selection pill UNDER the buttons (insert at 0; subview layers append above).
+        selectionPill.cornerRadius = 5
+        selectionPill.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        selectionPill.isHidden = true
+        layer?.insertSublayer(selectionPill, at: 0)
 
         newTabButton.title = "+"
         newTabButton.bezelStyle = .inline
@@ -129,6 +143,8 @@ final class CompactTabBarView: NSView {
         guard active != reorderModeActive else { return }
         reorderModeActive = active
         tabButtons.forEach { $0.setReorderMode(active) }
+        // The pill doesn't track the chip drag — hide it for the mode, re-place on exit.
+        positionSelectionPill()
         if active {
             if savedIsMovable == nil { savedIsMovable = window?.isMovable }
             window?.isMovable = false
@@ -320,6 +336,33 @@ final class CompactTabBarView: NSView {
                 newTabButton.frame.origin.x = nx
             }
         }
+        positionSelectionPill()
+    }
+
+    /// Place the selection pill on the selected tab. A selection CHANGE slides it there
+    /// (same 0.16s/easeOut as the content cross-slide, so the bar and the content move as
+    /// one gesture); anything else — title refresh, window resize, tab add/remove — snaps,
+    /// so the pill simply tracks layout. Hidden while reorder mode rearranges the buttons.
+    private func positionSelectionPill() {
+        guard !reorderModeActive, selectedIndex >= 0, selectedIndex < tabButtons.count else {
+            selectionPill.isHidden = true
+            if reorderModeActive { pillDisplayedIndex = -1 }  // re-place (snap) after reorder
+            return
+        }
+        let target = tabButtons[selectedIndex].frame
+        let isSwitch = pillDisplayedIndex != -1 && pillDisplayedIndex != selectedIndex
+        pillDisplayedIndex = selectedIndex
+
+        CATransaction.begin()
+        if isSwitch && Motion.enabled {
+            CATransaction.setAnimationDuration(Motion.duration)
+            CATransaction.setAnimationTimingFunction(Motion.timing)
+        } else {
+            CATransaction.setDisableActions(true)
+        }
+        selectionPill.isHidden = false
+        selectionPill.frame = target
+        CATransaction.commit()
     }
 
     @objc private func newTabClicked() {
@@ -407,9 +450,10 @@ private final class TabButton: NSView {
 
     private func updateBackground() {
         layer?.cornerRadius = 5
-        layer?.backgroundColor = isSelected
-            ? NSColor.white.withAlphaComponent(0.10).cgColor
-            : NSColor.clear.cgColor
+        // The selection highlight is the bar's sliding pill (rendered beneath the buttons),
+        // so the button itself stays clear in normal mode — a per-button background could
+        // only ever snap, since buttons are recreated on every update.
+        layer?.backgroundColor = NSColor.clear.cgColor
     }
 
     /// Pop-out styling while Cmd+Shift reorder mode is active: accent border +
