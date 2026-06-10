@@ -72,6 +72,16 @@ final class TmuxControlClientIntegrationTests: XCTestCase {
         }
     }
 
+    /// Run a tmux CLI command against the isolated test server (TMUX_TMPDIR is in env).
+    private func tmuxCLI(_ args: [String]) {
+        let task = Process()
+        task.launchPath = "/usr/bin/env"
+        task.arguments = ["tmux"] + args
+        task.environment = ProcessInfo.processInfo.environment
+        try? task.run()
+        task.waitUntilExit()
+    }
+
     // MARK: - Tests
 
     /// Attaching a fresh `tmux -C new-session` must yield well-formed `%begin/%end` frames
@@ -256,5 +266,135 @@ final class TmuxControlClientIntegrationTests: XCTestCase {
         // Decoded bytes (real LF), proving the octal decode ran on the extended-output payload.
         XCTAssertTrue((outputByPane[pane] ?? Data()).contains(0x0A),
                       "expected a decoded LF in extended-output payload")
+    }
+
+    /// P3-3 reply correlation: `sendCommand(onReply:)` must receive ITS OWN command's
+    /// `%begin/%end` block — not the connect-time guard block (flags 0) and not another
+    /// command's. Two commands sent back-to-back must resolve in order with the right bodies.
+    func testCommandReplyCorrelation() throws {
+        let client = TmuxControlClient()
+        defer { client.terminate() }
+
+        try client.attach(target: nil, cols: 80, rows: 24)
+
+        var first: TmuxCommandReply?
+        var second: TmuxCommandReply?
+        client.sendCommand("display-message -p FIRSTREPLY") { first = $0 }
+        client.sendCommand("display-message -p SECONDREPLY") { second = $0 }
+
+        pump(until: { first != nil && second != nil })
+        XCTAssertEqual(try XCTUnwrap(first).lines, ["FIRSTREPLY"],
+                       "first handler got the wrong reply body")
+        XCTAssertEqual(try XCTUnwrap(second).lines, ["SECONDREPLY"],
+                       "second handler got the wrong reply body")
+        XCTAssertFalse(try XCTUnwrap(first).isError)
+    }
+
+    /// P3-3 attach to an EXISTING session: list-windows must report the pre-existing
+    /// window's id+layout (the enumeration the controller uses), and capture-pane must
+    /// return content printed BEFORE we attached (the backfill source).
+    func testEnumerationAndCapturePaneOnExistingSession() throws {
+        let marker = "PREEXIST_\(UInt32.random(in: 1000...99999))"
+        // Build the session before any control client attaches: one window, split into two
+        // panes, marker printed in pane 0.
+        tmuxCLI(["new-session", "-d", "-s", "pre", "-x", "80", "-y", "24"])
+        tmuxCLI(["send-keys", "-t", "pre", "printf '\(marker)\\n'", "Enter"])
+        tmuxCLI(["split-window", "-h", "-t", "pre"])
+        Thread.sleep(forTimeInterval: 0.4)  // let the shell print the marker
+
+        let client = TmuxControlClient()
+        defer { client.terminate() }
+        try client.attach(target: "pre", cols: 80, rows: 24)
+
+        // Enumerate: the existing window must come back with a two-pane layout.
+        var layoutLine: String?
+        client.sendCommand("list-windows -F \"#{window_id} #{window_layout}\"") { reply in
+            layoutLine = reply.lines.first
+        }
+        pump(until: { layoutLine != nil })
+        let fields = try XCTUnwrap(layoutLine).split(separator: " ").map(String.init)
+        XCTAssertEqual(fields.count, 2)
+        XCTAssertNotNil(TmuxWindowID(token: fields[0]))
+        let tree = try XCTUnwrap(TmuxLayoutTree.parse(fields[1]),
+                                 "layout from list-windows must parse: \(fields[1])")
+        XCTAssertEqual(tree.paneIDs.count, 2, "expected the pre-made split to show 2 panes")
+
+        // Backfill: capture-pane on the first pane must contain the pre-attach marker.
+        let firstPane = tree.paneIDs[0]
+        var captured: [String]?
+        client.sendCommand("capture-pane -peqJ -t \(firstPane.token) -S -2000") { reply in
+            captured = reply.isError ? [] : reply.lines
+        }
+        pump(until: { captured != nil })
+        let content = (captured ?? []).joined(separator: "\n")
+        XCTAssertTrue(content.contains(marker),
+                      "capture-pane should return pre-attach content; got: \(content.prefix(500))")
+    }
+
+    /// P3-4 DCS auto-detect end-to-end with REAL tmux: a DamsonSession whose child is
+    /// `tmux -CC new-session` (what running it in a pane looks like to the PTY) must (1)
+    /// post the takeover notification, (2) deliver the control stream — including the
+    /// remainder glued to the DCS introducer — into a TmuxControlClient via
+    /// TmuxTakeoverBackend, (3) round-trip input via send-keys, and (4) restore normal
+    /// parsing after %exit (kill-server).
+    func testDCSTakeoverEndToEnd() throws {
+        var config = DamsonConfig()
+        config.argv = ["/usr/bin/env", "tmux", "-CC", "new-session"]
+        config.env = ProcessInfo.processInfo.environment
+        config.env["TERM"] = "xterm-256color"
+
+        var client: TmuxControlClient?
+        var windowAdds: [TmuxWindowID] = []
+        var outputByPane: [TmuxPaneID: Data] = [:]
+        var firstPane: TmuxPaneID?
+        var sawExit = false
+
+        // The app-side observer: create the takeover backend+client synchronously inside
+        // the notification (the contract that preserves the post-DCS remainder).
+        let observer = NotificationCenter.default.addObserver(
+            forName: DamsonSession.tmuxControlModeDetectedNotification, object: nil, queue: nil
+        ) { note in
+            guard let session = note.object as? DamsonSession else { return }
+            let c = TmuxControlClient(backend: TmuxTakeoverBackend(session: session))
+            c.onWindowAdd = { windowAdds.append($0) }
+            c.onPaneOutput = { pane, data in
+                if firstPane == nil { firstPane = pane }
+                outputByPane[pane, default: Data()].append(data)
+            }
+            c.onExit = { _ in sawExit = true }
+            c.adoptStream(cols: 80, rows: 24)
+            client = c
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        let session = DamsonSession(config: config)
+        defer { session.terminate() }
+
+        pump(until: { client != nil })
+        XCTAssertNotNil(client, "tmux -CC DCS was not detected / notification not posted")
+        XCTAssertTrue(session.inTmuxControlMode)
+
+        pump(until: { !windowAdds.isEmpty })
+        XCTAssertFalse(windowAdds.isEmpty,
+                       "%window-add did not flow through the takeover backend (startup frame lost?)")
+
+        // Input round-trip through the taken-over stream.
+        pump(until: { firstPane != nil })
+        let pane = try XCTUnwrap(firstPane)
+        let marker = "TAKEOVER_\(UInt32.random(in: 1000...99999))"
+        outputByPane[pane] = Data()
+        client?.sendKeys(to: pane, data: Data("printf '\(marker)\\n'\n".utf8))
+        pump(until: {
+            String(decoding: outputByPane[pane] ?? Data(), as: UTF8.self).contains(marker)
+        })
+        XCTAssertTrue(String(decoding: outputByPane[pane] ?? Data(), as: UTF8.self).contains(marker),
+                      "send-keys through the takeover stream did not round-trip")
+
+        // Kill the server → %exit → the session must resume normal parsing.
+        client?.sendCommand("kill-server")
+        pump(until: { sawExit })
+        XCTAssertTrue(sawExit, "%exit did not arrive after kill-server")
+        session.endTmuxControlMode()
+        XCTAssertFalse(session.inTmuxControlMode)
     }
 }

@@ -603,3 +603,48 @@ tmux 3.6b를 `tmux -C`로 직접 구동해 다음을 확인했고, 이게 P2 설
 - 파서 단위: `%extended-output` 디코드(+payload 내 `" : "` 보존), `%pause`/`%continue`(`TmuxControlParserTests`).
 - 실기 통합: flow control 켠 상태에서 marker가 `%extended-output` 경로로 grid까지 도달
   (`testFlowControlExtendedOutputStillDelivers`). 실제 `%pause` 트리거는 타이밍 의존이라 flaky → 생략.
+
+---
+
+## 14. P3-3 / P3-4 구현 노트 (마감 항목, 실제 구현됨)
+
+### 14.1 P3-3 — command-reply 상관 + 기존 세션 attach 열거 + 백필
+
+- **reply 상관**: 실기 확인 — connect 시 tmux가 자발적으로 내는 guard 블록은 flags `0`,
+  stdin 명령에 대한 응답은 flags `1`. `sendCommand(_:onReply:)`가 핸들러를 FIFO 큐에 넣고,
+  flags≠0인 `commandReply`만 큐를 소비한다. 연결이 죽은 뒤의 send는 합성 error reply로 즉시 실패.
+- **프레이밍 강화**: `%begin` 블록 안에서 `%end`/`%error`로 시작하는 줄은 **command number가
+  열린 블록과 일치할 때만** 종결자다 — capture-pane 내용에 "%end …" 같은 줄이 있어도 body로 취급.
+- **attach 열거**: `%session-changed` 수신 시 `list-windows -F "#{window_id} #{window_layout}
+  #{window_name}"`를 질의해 기존 window들을 reconcile (신규 세션에도 무해 — idempotent).
+- **백필**: 열거 경로로 만들어진 pane은 `capture-pane -peqJ -t %N -S -2000`으로 기존
+  내용+히스토리(≤2000줄)를 가져와 grid에 먼저 주입, 그 동안 도착한 라이브 `%output`은
+  `awaitingBackfill` 동안 버퍼 → 백필 후 방출 (순서 보존). 후행 빈 줄은 trim.
+
+### 14.2 P3-4 — `tmux -CC` DCS 자동 감지 (takeover)
+
+사용자가 **일반 Damson pane 안에서 `tmux -CC`를 직접 치면** 그 pane의 바이트 스트림이
+control protocol로 바뀐다. 이제 이를 자동 감지해 메뉴 attach와 동일한 네이티브 통합을 연다.
+
+- **VTParser**: DCS 상태 추가 (`ESC P` → param 수집 → final byte). final `p` + params `[1000]`이면
+  `tmuxControlModeDetected`를 세우고 `.tmuxTakeover` 상태로 — 이후 모든 바이트는 해석 없이
+  `takeTakeoverRemainder()` 버퍼로. **그 외 DCS**(sixel, DECRQSS 등)는 ST까지 swallow
+  (이전엔 payload가 텍스트로 새던 것도 함께 수정). 근접 오인(`1000q`, `999p`, `1000;1p`) 거부.
+- **DamsonSession**: 감지 시 `tmuxControlModeDetectedNotification`을 **동기로 post한 뒤**
+  DCS 뒤에 붙어 온 나머지 바이트를 `onTmuxControlData`로 전달 — 옵저버(앱)가 notification 안에서
+  `TmuxTakeoverBackend`를 만들어 훅을 먼저 설치하므로 첫 control 바이트가 유실되지 않는다.
+  이후 `handlePTYData`는 파서를 건너뛰고 raw 전달. `endTmuxControlMode()`로 복원.
+- **TmuxTakeoverBackend**: 기존 세션의 PTY를 control 채널로 쓰는 `SessionIOBackend`.
+  `write`→`session.write`(tmux client stdin), `terminate`=no-op (**아래 셸을 죽이면 안 됨**).
+- **TmuxIntegrationController**: `init(takeoverFrom:)`+`startTakeover(cols:rows:)` 경로 추가.
+  teardown 시 `detach-client` 요청 후 `session.endTmuxControlMode()` — `%exit` 뒤 셸 프롬프트로 복귀.
+- **검증**: `testDCSTakeoverEndToEnd` — 실제 `tmux -CC`를 child로 둔 DamsonSession에서
+  감지→notification→remainder 포함 control 스트림 유입→`send-keys` 왕복→`kill-server` 후
+  `%exit`→복원까지 헤드리스로 증명.
+
+### 14.3 잔여 제약 (알려진 것, 의도된 범위)
+
+- takeover 후 원래 pane은 `tmux -CC` 입력 시점 화면으로 동결된다 (iTerm2도 유사한 placeholder).
+  detach(`%exit`) 후 Enter를 치면 프롬프트가 돌아온다.
+- scrollback: 백필(-S -2000) + attach 이후 라이브 출력은 Damson 자체 scrollback에 쌓인다.
+  그보다 오래된 히스토리는 tmux copy-mode를 통해서만 접근 가능 (§8 물려받은 제약).

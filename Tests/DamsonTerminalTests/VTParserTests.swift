@@ -145,3 +145,52 @@ final class VTParserTests: XCTestCase {
         ])
     }
 }
+
+// MARK: - DCS / tmux -CC takeover (P3-4)
+
+extension VTParserTests {
+    /// `ESC P1000p` is tmux's "enter control mode": the parser must flag detection, stop
+    /// interpreting, and stash everything after the final byte as the takeover remainder.
+    func testTmuxControlModeDCSDetected() {
+        let p = VTParser()
+        let d = RecordingDelegate()
+        p.delegate = d
+        p.feed(Data("before\u{1B}P1000p%begin 1 2 0\r\n".utf8))
+        XCTAssertTrue(p.tmuxControlModeDetected)
+        XCTAssertEqual(d.events, [.text("before")], "nothing after the DCS may be interpreted")
+        XCTAssertEqual(p.takeTakeoverRemainder(), Data("%begin 1 2 0\r\n".utf8))
+        // Subsequent feeds keep accumulating raw control bytes.
+        p.feed(Data("%output %0 hi\r\n".utf8))
+        XCTAssertEqual(p.takeTakeoverRemainder(), Data("%output %0 hi\r\n".utf8))
+        XCTAssertEqual(d.events, [.text("before")])
+        // endTmuxTakeover resumes normal parsing.
+        p.endTmuxTakeover()
+        XCTAssertFalse(p.tmuxControlModeDetected)
+        p.feed(Data("after".utf8))
+        XCTAssertEqual(d.events, [.text("before"), .text("after")])
+    }
+
+    /// A non-tmux DCS (e.g. DECRQSS/sixel-shaped) must be swallowed up to ST — its payload
+    /// may not leak into the grid as text — and must NOT trigger takeover.
+    func testOtherDCSIsSwallowedWithoutTakeover() {
+        let events = parse("a\u{1B}P0;1qPAYLOAD\u{1B}\\b")
+        XCTAssertEqual(events, [.text("a"), .text("b")])
+
+        let p = VTParser()
+        p.feed(Data("\u{1B}P0;1qPAYLOAD\u{1B}\\".utf8))
+        XCTAssertFalse(p.tmuxControlModeDetected)
+    }
+
+    /// The detection requires exactly params [1000] and final 'p' — `1000q` or `999p`
+    /// must not take the stream over.
+    func testNearMissDCSDoesNotTakeOver() {
+        for s in ["\u{1B}P1000qX\u{1B}\\t", "\u{1B}P999pX\u{1B}\\t", "\u{1B}P1000;1pX\u{1B}\\t"] {
+            let p = VTParser()
+            let d = RecordingDelegate()
+            p.delegate = d
+            p.feed(Data(s.utf8))
+            XCTAssertFalse(p.tmuxControlModeDetected, "near-miss \(s.debugDescription) took over")
+            XCTAssertEqual(d.events, [.text("t")], "payload of \(s.debugDescription) leaked")
+        }
+    }
+}

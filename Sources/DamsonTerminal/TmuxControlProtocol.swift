@@ -15,6 +15,11 @@ public struct TmuxWindowID: Hashable, CustomStringConvertible {
     /// The numeric id without the leading `@`.
     public let raw: Int
     public init(_ raw: Int) { self.raw = raw }
+    /// Parse a wire token like `@1` (e.g. from a `list-windows` format reply).
+    public init?(token: String) {
+        guard token.hasPrefix("@"), let n = Int(token.dropFirst()) else { return nil }
+        self.raw = n
+    }
     /// The token as it appears on the wire, e.g. `@1`.
     public var token: String { "@\(raw)" }
     public var description: String { token }
@@ -117,9 +122,17 @@ public final class TmuxControlParser {
 
         // Inside a %begin block: every line up to %end/%error is reply body, EXCEPT the
         // closing %end/%error itself. (Notifications don't interleave inside a block.)
-        if pending != nil {
+        // The closer must carry the SAME command number as the %begin — pane content from
+        // capture-pane could legitimately contain a line that starts with "%end", and the
+        // matching number is what tmux provides to disambiguate exactly this case.
+        if let block = pending {
             if line.hasPrefix("%end") || line.hasPrefix("%error") {
-                return closeBlock(with: line)
+                let (_, rest) = Self.splitFirstToken(line)
+                let f = rest.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+                if f.count > 1, f[1] == block.commandNumber {
+                    return closeBlock(with: line)
+                }
+                // Number mismatch (or malformed closer) → body content, not the real closer.
             }
             pending?.lines.append(line)
             return nil

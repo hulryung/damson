@@ -152,9 +152,46 @@ public final class DamsonSession: ObservableObject {
 
     // MARK: - Internals
 
+    /// Posted (object = the session) when this session's output stream entered tmux `-CC`
+    /// control mode — i.e. the user ran `tmux -CC …` in this pane. The app observes this to
+    /// take the byte stream over into a `TmuxControlClient` (native tmux windows).
+    public static let tmuxControlModeDetectedNotification =
+        Notification.Name("DamsonSessionTmuxControlModeDetected")
+
+    /// True while this session's stream is a tmux control-mode stream (post-DCS-takeover):
+    /// bytes route to `onTmuxControlData` instead of the VT parser/grid.
+    public private(set) var inTmuxControlMode = false
+
+    /// Raw control-stream consumer while in tmux control mode. Set by `TmuxTakeoverBackend`
+    /// (synchronously, inside the takeover notification) so the first control bytes that
+    /// followed the DCS introducer aren't lost.
+    public var onTmuxControlData: ((Data) -> Void)?
+
+    /// Resume normal terminal parsing after the control stream ended (`%exit` — the user
+    /// detached or the tmux server quit). The wrapped shell is back at its prompt.
+    public func endTmuxControlMode() {
+        inTmuxControlMode = false
+        onTmuxControlData = nil
+        parser.endTmuxTakeover()
+    }
+
     private func handlePTYData(_ data: Data) {
+        if inTmuxControlMode {
+            onTmuxControlData?(data)
+            return
+        }
         onOutput?(data)
         parser.feed(data)
+        if parser.tmuxControlModeDetected {
+            // The user ran `tmux -CC` in this pane. Post FIRST so an observer can install
+            // `onTmuxControlData` (via TmuxTakeoverBackend), THEN hand over the control
+            // bytes that arrived in the same chunk as the DCS introducer.
+            inTmuxControlMode = true
+            NotificationCenter.default.post(
+                name: Self.tmuxControlModeDetectedNotification, object: self)
+            let remainder = parser.takeTakeoverRemainder()
+            if !remainder.isEmpty { onTmuxControlData?(remainder) }
+        }
         gridChanged.send()
     }
 

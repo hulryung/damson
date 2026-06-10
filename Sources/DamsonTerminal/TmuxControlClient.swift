@@ -44,6 +44,11 @@ public final class TmuxControlClient {
     private var didExit = false
     /// Last client size we told tmux (so we don't spam refresh-client on no-op resizes).
     private var lastSize: (cols: Int, rows: Int)?
+    /// FIFO of per-command reply handlers (nil = caller doesn't care). tmux replies to
+    /// stdin commands strictly in order. The startup guard block tmux emits on its own at
+    /// connect carries flags `0` while replies to client commands carry flags `1` (verified
+    /// against tmux 3.6b), so only flags≠0 blocks consume from this queue.
+    private var pendingReplies: [((TmuxCommandReply) -> Void)?] = []
 
     /// Inject a custom backend (e.g. for tests). Defaults to a local `PTYHost` so the
     /// real client forkpty's tmux itself.
@@ -90,6 +95,20 @@ public final class TmuxControlClient {
         setClientSize(cols: cols, rows: rows)
     }
 
+    /// Begin control mode over an ALREADY-streaming backend (the DCS takeover path — a
+    /// `tmux -CC` the user launched inside an existing Damson pane). Nothing to spawn; just
+    /// announce the client size so tmux lays the windows out (see `attach` for why this
+    /// must be the first `refresh-client -C`).
+    public func adoptStream(cols: Int = 80, rows: Int = 24) {
+        setClientSize(cols: cols, rows: rows)
+    }
+
+    /// Ask tmux to detach this control client cleanly (`%exit` follows). Used by the
+    /// takeover teardown path, where killing the backend would kill the user's shell.
+    public func requestDetach() {
+        sendCommand("detach-client")
+    }
+
     // MARK: - Writers to tmux (docs §4.8)
 
     /// Send input bytes to a pane via `send-keys -t %N -H <hex…>`. The `-H` form takes
@@ -111,11 +130,20 @@ public final class TmuxControlClient {
     }
 
     /// Write a raw one-line tmux command to the control client's stdin (newline appended).
-    public func sendCommand(_ line: String) {
-        guard !didExit else { return }
+    /// `onReply` (optional) is invoked with this command's `%begin/%end|%error` reply —
+    /// matched FIFO over flags≠0 blocks (see `pendingReplies`).
+    public func sendCommand(_ line: String, onReply: ((TmuxCommandReply) -> Void)? = nil) {
+        guard !didExit else {
+            // The connection is gone; fail the reply handler with a synthesized error so
+            // callers awaiting enumeration/backfill don't hang silently.
+            onReply?(TmuxCommandReply(timestamp: "", commandNumber: "", flags: "",
+                                      lines: [], isError: true))
+            return
+        }
         var cmd = line
         if !cmd.hasSuffix("\n") { cmd += "\n" }
         if let data = cmd.data(using: .utf8) {
+            pendingReplies.append(onReply)
             backend.write(data)
         }
     }
@@ -201,6 +229,12 @@ public final class TmuxControlClient {
     private func dispatch(_ event: TmuxControlEvent) {
         switch event {
         case .commandReply(let reply):
+            // Replies to OUR commands carry flags≠0; the connect-time guard block is flags 0
+            // and must not consume a queued handler.
+            if reply.flags != "0", !pendingReplies.isEmpty {
+                let handler = pendingReplies.removeFirst()
+                handler?(reply)
+            }
             onCommandReply?(reply)
         case .output(let pane, let data):
             onPaneOutput?(pane, data)

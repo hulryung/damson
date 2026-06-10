@@ -23,8 +23,11 @@ import DamsonTerminal
 /// multi-window session on attach (tmux doesn't volunteer those layouts; it must be queried).
 @MainActor
 final class TmuxIntegrationController {
-    private let client = TmuxControlClient()
+    private let client: TmuxControlClient
     private let window: CompactWindowController
+    /// Set on the DCS-takeover path: the local session whose PTY now carries the control
+    /// stream (the user typed `tmux -CC` there). Teardown must restore it, not kill it.
+    private weak var takeoverSession: DamsonSession?
 
     // Per-window state.
     private var windowTrees: [TmuxWindowID: PaneTreeView] = [:]
@@ -47,13 +50,29 @@ final class TmuxIntegrationController {
     private var pendingOutput: [TmuxPaneID: Data] = [:]
     /// Panes tmux has paused for which a resume is already scheduled (flow control).
     private var pausedPanes: Set<TmuxPaneID> = []
+    /// Panes whose capture-pane backfill is in flight. Live `%output` for them buffers in
+    /// `pendingOutput` until the (older) captured content has been fed, preserving order.
+    private var awaitingBackfill: Set<TmuxPaneID> = []
 
     private var onTeardown: (() -> Void)?
 
     /// Create the controller and its host window. `onTeardown` is called when the tmux
     /// connection ends (so the app delegate can drop its reference).
     init(onTeardown: (() -> Void)? = nil) {
+        self.client = TmuxControlClient()
         self.window = CompactWindowController()
+        self.onTeardown = onTeardown
+        wireClient()
+    }
+
+    /// DCS-takeover construction: the user ran `tmux -CC` in `session`'s pane and its byte
+    /// stream is now the control protocol. MUST be created synchronously inside the
+    /// takeover notification (the `TmuxTakeoverBackend` init installs the raw-data hook
+    /// before the post-DCS remainder is delivered).
+    init(takeoverFrom session: DamsonSession, onTeardown: (() -> Void)? = nil) {
+        self.client = TmuxControlClient(backend: TmuxTakeoverBackend(session: session))
+        self.window = CompactWindowController()
+        self.takeoverSession = session
         self.onTeardown = onTeardown
         wireClient()
     }
@@ -74,6 +93,15 @@ final class TmuxIntegrationController {
             NSLog("tmux: attach failed: %@", String(describing: error))
             presentAttachError(error)
         }
+    }
+
+    /// Begin control over a taken-over stream (see `init(takeoverFrom:)`).
+    func startTakeover(cols: Int = 80, rows: Int = 24) {
+        window.window?.title = "tmux"
+        window.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        client.adoptStream(cols: cols, rows: rows)
+        client.enableFlowControl(pauseAfter: 1)
     }
 
     var hostWindow: NSWindow? { window.window }
@@ -109,6 +137,13 @@ final class TmuxIntegrationController {
         client.onPause = { [weak self] pane in
             self?.resumeWhenDrained(pane)
         }
+        client.onSessionChanged = { [weak self] _, _ in
+            // Attaching to an EXISTING session: tmux does not volunteer the layouts of its
+            // windows (verified — only %session-changed/%window-renamed arrive), so query
+            // them. Harmless for a brand-new session too (one window, reconcile is
+            // idempotent with the %layout-change that refresh-client triggers).
+            self?.enumerateExistingWindows()
+        }
         client.onExit = { [weak self] _ in
             self?.teardown()
         }
@@ -124,16 +159,38 @@ final class TmuxIntegrationController {
         reconcile(window: win, layout: tree)
     }
 
+    /// Query the layouts/names of windows that existed BEFORE we attached (tmux doesn't
+    /// volunteer them) and reconcile each — with capture-pane backfill so existing pane
+    /// content/history shows instead of a blank pane. Reply lines are
+    /// `@<id> <layout> <name…>` per the format string.
+    private func enumerateExistingWindows() {
+        client.sendCommand("list-windows -F \"#{window_id} #{window_layout} #{window_name}\"") {
+            [weak self] reply in
+            guard let self, !reply.isError else { return }
+            for line in reply.lines {
+                let f = line.split(separator: " ", maxSplits: 2,
+                                   omittingEmptySubsequences: false).map(String.init)
+                guard f.count >= 2, let win = TmuxWindowID(token: f[0]),
+                      let tree = TmuxLayoutTree.parse(f[1]) else { continue }
+                if f.count >= 3, !f[2].isEmpty { self.windowTitles[win] = f[2] }
+                self.reconcile(window: win, layout: tree, backfillNewPanes: true)
+            }
+        }
+    }
+
     /// Make the window's Damson tab match `layout`: ensure a session per pane id (reusing
     /// existing ones), fold the N-ary layout into a binary `PaneNode` tree, and apply it.
     /// Panes that left this window are dropped. Idempotent — the same layout twice converges.
-    private func reconcile(window win: TmuxWindowID, layout: TmuxLayoutTree) {
+    /// `backfillNewPanes` is set on the attach-enumeration path, where panes predate us and
+    /// their on-screen content must be fetched via capture-pane.
+    private func reconcile(window win: TmuxWindowID, layout: TmuxLayoutTree,
+                           backfillNewPanes: Bool = false) {
         windowLayouts[win] = layout
         let desired = layout.paneIDs
         let desiredSet = Set(desired)
 
         // 1) Ensure a session+leaf for each desired pane (flushing any buffered output).
-        for pane in desired { ensurePane(pane, window: win) }
+        for pane in desired { ensurePane(pane, window: win, backfill: backfillNewPanes) }
 
         // 2) Fold the N-ary layout into a BINARY tree, reusing leaves by pane id.
         let root = TmuxLayoutReconciler.build(layout) { [weak self] pane in
@@ -156,8 +213,10 @@ final class TmuxIntegrationController {
     }
 
     /// Create the session/backend/leaf for `pane` if it doesn't exist yet, binding it to
-    /// `win`. Flushes any output that arrived before the session existed.
-    private func ensurePane(_ pane: TmuxPaneID, window win: TmuxWindowID) {
+    /// `win`. With `backfill`, the pane predates our attach: fetch its existing content via
+    /// capture-pane first and buffer any live output behind it (order preserved). Otherwise
+    /// flush any output that raced ahead of the pane's creation.
+    private func ensurePane(_ pane: TmuxPaneID, window win: TmuxWindowID, backfill: Bool = false) {
         paneToWindow[pane] = win
         if sessions[pane] != nil { return }
 
@@ -172,6 +231,33 @@ final class TmuxIntegrationController {
         backends[pane] = backend
         paneLeaves[pane] = PaneNode.leaf(session)
 
+        if backfill {
+            // -p print, -e escape sequences (colors), -q quiet on bad target, -J join
+            // wrapped lines, -S -2000: include up to 2000 lines of history so the user can
+            // scroll back to content from before the attach.
+            awaitingBackfill.insert(pane)
+            client.sendCommand("capture-pane -peqJ -t \(pane.token) -S -2000") { [weak self] reply in
+                self?.completeBackfill(pane: pane, reply: reply)
+            }
+        } else if let buffered = pendingOutput.removeValue(forKey: pane) {
+            backend.deliver(buffered)
+        }
+    }
+
+    /// Feed the captured (pre-attach) pane content into the grid, then release any live
+    /// output that arrived while the capture was in flight.
+    private func completeBackfill(pane: TmuxPaneID, reply: TmuxCommandReply) {
+        awaitingBackfill.remove(pane)
+        guard let backend = backends[pane] else { return }  // pane dropped meanwhile
+        if !reply.isError {
+            // capture-pane pads the visible region with trailing blank lines; trim them so
+            // the cursor lands right after the last real content (the prompt line).
+            var lines = reply.lines
+            while let last = lines.last, last.isEmpty { lines.removeLast() }
+            if !lines.isEmpty {
+                backend.deliver(Data(lines.joined(separator: "\r\n").utf8))
+            }
+        }
         if let buffered = pendingOutput.removeValue(forKey: pane) {
             backend.deliver(buffered)
         }
@@ -195,7 +281,11 @@ final class TmuxIntegrationController {
     }
 
     private func deliverOutput(pane: TmuxPaneID, data: Data) {
-        if let backend = backends[pane] {
+        if awaitingBackfill.contains(pane) {
+            // Live output racing the capture-pane backfill — hold it so the (older)
+            // captured content lands in the grid first.
+            pendingOutput[pane, default: Data()].append(data)
+        } else if let backend = backends[pane] {
             backend.deliver(data)
         } else {
             // Output ahead of the pane's first %layout-change — buffer until ensurePane.
@@ -293,11 +383,21 @@ final class TmuxIntegrationController {
         pendingOutput.removeValue(forKey: pane)
         paneSizes.removeValue(forKey: pane)
         pausedPanes.remove(pane)
+        awaitingBackfill.remove(pane)
     }
 
     private func teardown() {
         for win in Array(windowTrees.keys) { dropWindow(win) }
-        client.terminate()
+        if let session = takeoverSession {
+            // Takeover: ask tmux to detach (no-op if %exit already happened — the client
+            // guards on didExit), then give the pane back to normal VT parsing. The
+            // backend's terminate is a no-op, so the user's shell survives.
+            client.requestDetach()
+            client.terminate()
+            session.endTmuxControlMode()
+        } else {
+            client.terminate()
+        }
         let cb = onTeardown
         onTeardown = nil
         cb?()

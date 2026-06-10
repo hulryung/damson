@@ -215,6 +215,17 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: .damsonKeybindingsChanged, object: nil, queue: .main
         ) { _ in installMainMenu() }
+        // A pane ran `tmux -CC` → take its stream over into native tmux integration.
+        // queue: nil = deliver synchronously on the posting (main) thread, REQUIRED so the
+        // takeover backend is installed before the first control bytes are forwarded.
+        NotificationCenter.default.addObserver(
+            forName: DamsonSession.tmuxControlModeDetectedNotification, object: nil, queue: nil
+        ) { [weak self] note in
+            // Posted on main (PTY data drains on main); hop is a no-op but satisfies actors.
+            MainActor.assumeIsolated {
+                self?.handleTmuxControlModeDetected(note)
+            }
+        }
         bindControlSocket()
         // Sparkle is lazily initialized — it starts automatically on first access.
         _ = DamsonUpdater.shared
@@ -556,6 +567,22 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
         })
         tmuxControllers.append(controller)
         controller.start(target: target.isEmpty ? nil : target)
+    }
+
+    /// A local pane's stream entered tmux `-CC` control mode (the user ran `tmux -CC` in
+    /// it). Take the stream over into a native tmux integration — same UI as the menu
+    /// attach, no manual step. Must run synchronously within the notification so the first
+    /// control bytes (delivered right after the post) land in the takeover backend.
+    @MainActor
+    func handleTmuxControlModeDetected(_ note: Notification) {
+        guard let session = note.object as? DamsonSession else { return }
+        var controller: TmuxIntegrationController!
+        controller = TmuxIntegrationController(takeoverFrom: session, onTeardown: { [weak self] in
+            self?.tmuxControllers.removeAll { $0 === controller }
+        })
+        tmuxControllers.append(controller)
+        // Size from the host pane's current grid so tmux lays out at the real dimensions.
+        controller.startTakeover(cols: session.grid.cols, rows: session.grid.rows)
     }
 
     /// Cmd+T — if the active window is Compact, add a tab there; otherwise open a new window.
