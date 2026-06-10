@@ -1,32 +1,45 @@
 import AppKit
 import DamsonTerminal
 
-/// App-level orchestration for a single tmux `-CC` attach (P1).
+/// App-level orchestration for a single tmux `-CC` attach.
 ///
-/// Owns a `TmuxControlClient` and a dedicated Compact window to host the tmux session's
-/// windows as Damson tabs. Mapping (P1, per docs §7):
-///   - tmux window `@N` → one Damson tab
-///   - that window's active pane `%M` → one `DamsonSession` backed by `TmuxPaneBackend`
-///   - `%output %M` → that session's grid
+/// Owns a `TmuxControlClient` and a dedicated Compact window that hosts the tmux session's
+/// windows as Damson tabs. Mapping (docs §5):
+///   - tmux window `@N` → one Damson tab (a `PaneTreeView`)
+///   - tmux pane `%M` → one `DamsonSession` (a leaf in that window's tree)
+///   - `%layout-change @N <layout>` → reconcile that window's tree into **native splits**
+///   - `%output %M` → that pane's grid
 ///   - keyboard input → routed back to tmux via the pane backend's `sendKeys`
 ///   - `%window-close`/`%exit` → close the tab / tear down
 ///
-/// P1 keeps multi-pane windows minimal: only the window's active pane is shown as a single
-/// Damson pane (native splits are P2 via `%layout-change` reconcile).
+/// **P2**: `%layout-change` is the single source of truth for a window's pane structure
+/// (verified: tmux re-sends it after splits *and* after a pane dies). We parse it into an
+/// N-ary `TmuxLayoutTree`, fold that into a BINARY `PaneNode` tree (`TmuxLayoutReconciler`)
+/// reusing each pane's existing session by pane id, and apply it to the window's
+/// `PaneTreeView` — so agent-team split panes appear as Damson-native simultaneous panes.
+///
+/// Out of P2 scope (deferred to P3): per-pane resize negotiation (only a sole-pane window
+/// drives the control-client size here), flow control, and enumerating an *existing*
+/// multi-window session on attach (tmux doesn't volunteer those layouts; it must be queried).
 @MainActor
 final class TmuxIntegrationController {
     private let client = TmuxControlClient()
     private let window: CompactWindowController
 
-    // Per-pane state.
-    private var backends: [TmuxPaneID: TmuxPaneBackend] = [:]
-    private var sessions: [TmuxPaneID: DamsonSession] = [:]
-    private var trees: [TmuxPaneID: PaneTreeView] = [:]
-
-    // Window ↔ active pane binding.
-    private var windowToPane: [TmuxWindowID: TmuxPaneID] = [:]
-    private var paneToWindow: [TmuxPaneID: TmuxWindowID] = [:]
+    // Per-window state.
+    private var windowTrees: [TmuxWindowID: PaneTreeView] = [:]
     private var windowTitles: [TmuxWindowID: String] = [:]
+    /// The pane tmux reports as active for a window, so a reconcile can restore focus to it.
+    private var windowActivePane: [TmuxWindowID: TmuxPaneID] = [:]
+
+    // Per-pane state.
+    private var sessions: [TmuxPaneID: DamsonSession] = [:]
+    private var backends: [TmuxPaneID: TmuxPaneBackend] = [:]
+    private var paneLeaves: [TmuxPaneID: PaneNode] = [:]
+    private var paneToWindow: [TmuxPaneID: TmuxWindowID] = [:]
+    /// Output that arrived for a pane before it had a session (a `%output` racing ahead of
+    /// its `%layout-change`). Flushed into the session the moment the pane is created.
+    private var pendingOutput: [TmuxPaneID: Data] = [:]
 
     private var onTeardown: (() -> Void)?
 
@@ -58,94 +71,167 @@ final class TmuxIntegrationController {
 
     private func wireClient() {
         client.onWindowAdd = { [weak self] win in
+            // The pane(s) for this window arrive via %layout-change; remember a placeholder
+            // title until then. (refresh-client, sent at attach, makes the active window emit
+            // a layout-change promptly, so the tab appears without further prompting.)
             self?.windowTitles[win] = self?.windowTitles[win] ?? win.token
-            // The pane for this window arrives via %window-pane-changed / %layout-change /
-            // %output; the tab is created lazily when we first see that pane.
         }
         client.onWindowClose = { [weak self] win in
-            self?.closeWindow(win)
+            self?.dropWindow(win)
         }
         client.onWindowRenamed = { [weak self] win, name in
-            self?.windowTitles[win] = name
-            // The tab title follows the session title; nothing else to do in P1.
+            self?.renameWindow(win, to: name)
         }
         client.onWindowPaneChanged = { [weak self] win, pane in
-            self?.bind(window: win, pane: pane)
+            self?.focusPane(win: win, pane: pane)
         }
         client.onLayoutChange = { [weak self] win, layout in
-            if let pane = Self.firstPaneID(in: layout.layout) {
-                self?.bind(window: win, pane: pane)
-            }
+            self?.applyLayout(win, layout)
         }
         client.onPaneOutput = { [weak self] pane, data in
             self?.deliverOutput(pane: pane, data: data)
         }
-        client.onPaneExit = { [weak self] pane in
-            self?.closePane(pane)
+        client.onPaneExit = { _ in
+            // tmux drives structure via %layout-change (it re-sends a window's layout right
+            // after a pane dies), so there's nothing structural to do here. Kept for logging.
         }
         client.onExit = { [weak self] _ in
             self?.teardown()
         }
     }
 
-    // MARK: - Window ↔ pane
+    // MARK: - Layout reconcile (P2 core)
 
-    /// Bind a window to its active pane, creating the tab+session on first sight.
-    private func bind(window win: TmuxWindowID, pane: TmuxPaneID) {
-        windowToPane[win] = pane
-        paneToWindow[pane] = win
-        ensureTab(for: pane)
+    private func applyLayout(_ win: TmuxWindowID, _ layout: TmuxLayout) {
+        guard let tree = TmuxLayoutTree.parse(layout.layout) else {
+            NSLog("tmux: could not parse layout for %@: %@", win.token, layout.layout)
+            return
+        }
+        reconcile(window: win, layout: tree)
     }
 
-    /// Create the session+tab for `pane` if it doesn't exist yet.
-    @discardableResult
-    private func ensureTab(for pane: TmuxPaneID) -> DamsonSession {
-        if let existing = sessions[pane] { return existing }
+    /// Make the window's Damson tab match `layout`: ensure a session per pane id (reusing
+    /// existing ones), fold the N-ary layout into a binary `PaneNode` tree, and apply it.
+    /// Panes that left this window are dropped. Idempotent — the same layout twice converges.
+    private func reconcile(window win: TmuxWindowID, layout: TmuxLayoutTree) {
+        let desired = layout.paneIDs
+        let desiredSet = Set(desired)
+
+        // 1) Ensure a session+leaf for each desired pane (flushing any buffered output).
+        for pane in desired { ensurePane(pane, window: win) }
+
+        // 2) Fold the N-ary layout into a BINARY tree, reusing leaves by pane id.
+        let root = TmuxLayoutReconciler.build(layout) { [weak self] pane in
+            self?.paneLeaves[pane] ?? PaneNode.leaf(DamsonSession(config: .fromUserDefaults()))
+        }
+
+        // 3) Apply to the window's tree (create the tab on first sight). Restore focus to the
+        //    pane tmux considers active, if we know its leaf.
+        let activeLeaf = windowActivePane[win].flatMap { paneLeaves[$0] }
+        if let view = windowTrees[win] {
+            view.setRoot(root, active: activeLeaf)
+        } else {
+            let view = PaneTreeView(restoredRoot: root)
+            windowTrees[win] = view
+            window.adoptExternalTree(view, customTitle: windowTitles[win])
+        }
+
+        // 4) Drop panes that are no longer part of this window.
+        let stale = paneToWindow.filter { $0.value == win && !desiredSet.contains($0.key) }
+            .map(\.key)
+        for pane in stale { dropPaneRefs(pane) }
+    }
+
+    /// Create the session/backend/leaf for `pane` if it doesn't exist yet, binding it to
+    /// `win`. Flushes any output that arrived before the session existed.
+    private func ensurePane(_ pane: TmuxPaneID, window win: TmuxWindowID) {
+        paneToWindow[pane] = win
+        if sessions[pane] != nil { return }
 
         let backend = TmuxPaneBackend(client: client, pane: pane)
-        // A tmux-backed config: the spawn args are irrelevant (TmuxPaneBackend.spawn is a
-        // no-op), but inherit the user's font/theme/etc.
-        let config = DamsonConfig.fromUserDefaults()
-        let session = DamsonSession(config: config, backend: backend)
-        let title = paneToWindow[pane].flatMap { windowTitles[$0] }
-        let tree = window.addExternalTab(session: session, customTitle: title)
-
-        backends[pane] = backend
+        backend.onResize = { [weak self] p, cols, rows in
+            self?.paneResized(p, cols: cols, rows: rows)
+        }
+        // Inherit the user's font/theme/etc.; the spawn argv is irrelevant (tmux owns the
+        // pane process, so TmuxPaneBackend.spawn is a no-op).
+        let session = DamsonSession(config: .fromUserDefaults(), backend: backend)
         sessions[pane] = session
-        trees[pane] = tree
+        backends[pane] = backend
+        paneLeaves[pane] = PaneNode.leaf(session)
 
-        // When the grid resizes (user resizes the window), tell tmux the client size.
-        session.resize(cols: session.grid.cols, rows: session.grid.rows)
-        return session
+        if let buffered = pendingOutput.removeValue(forKey: pane) {
+            backend.deliver(buffered)
+        }
     }
+
+    // MARK: - Output / focus / size
 
     private func deliverOutput(pane: TmuxPaneID, data: Data) {
-        // Create the tab on first output if we haven't seen a layout/pane-changed yet.
-        ensureTab(for: pane)
-        backends[pane]?.deliver(data)
+        if let backend = backends[pane] {
+            backend.deliver(data)
+        } else {
+            // Output ahead of the pane's first %layout-change — buffer until ensurePane.
+            pendingOutput[pane, default: Data()].append(data)
+        }
     }
 
-    private func closeWindow(_ win: TmuxWindowID) {
-        guard let pane = windowToPane[win] else { return }
-        closePane(pane)
+    /// `%window-pane-changed @W %P` — tmux's active pane for a window changed. Track it for
+    /// focus restoration on reconcile, and focus it now if its leaf is live. If the window
+    /// has no tab yet, create one from this pane (covers a window that hasn't emitted a
+    /// %layout-change — the imminent one will reconcile it).
+    private func focusPane(win: TmuxWindowID, pane: TmuxPaneID) {
+        windowActivePane[win] = pane
+        guard let view = windowTrees[win] else {
+            ensurePane(pane, window: win)
+            let view = PaneTreeView(restoredRoot: paneLeaves[pane]!)
+            windowTrees[win] = view
+            window.adoptExternalTree(view, customTitle: windowTitles[win])
+            return
+        }
+        if let leaf = paneLeaves[pane] { view.setActive(leaf) }
     }
 
-    private func closePane(_ pane: TmuxPaneID) {
-        if let tree = trees[pane] {
-            window.closeTab(matching: tree)
+    /// A pane's display area resized. Only a *sole-pane* window maps 1:1 onto the
+    /// control-client size, so only then do we forward it; multi-pane per-pane sizing is P3
+    /// (so one pane can't shrink the whole client).
+    private func paneResized(_ pane: TmuxPaneID, cols: Int, rows: Int) {
+        guard let win = paneToWindow[pane] else { return }
+        let paneCount = paneToWindow.values.filter { $0 == win }.count
+        guard paneCount == 1 else { return }
+        client.setClientSize(cols: cols, rows: rows)
+    }
+
+    // MARK: - Window lifecycle
+
+    private func renameWindow(_ win: TmuxWindowID, to name: String) {
+        windowTitles[win] = name
+        if let view = windowTrees[win] {
+            window.setExternalTabTitle(matching: view, title: name)
         }
-        backends[pane]?.reportExit()
-        if let win = paneToWindow[pane] {
-            windowToPane.removeValue(forKey: win)
+    }
+
+    private func dropWindow(_ win: TmuxWindowID) {
+        if let view = windowTrees[win] {
+            window.closeTab(matching: view)
         }
-        backends.removeValue(forKey: pane)
+        windowTrees.removeValue(forKey: win)
+        windowTitles.removeValue(forKey: win)
+        windowActivePane.removeValue(forKey: win)
+        for (pane, owner) in paneToWindow where owner == win { dropPaneRefs(pane) }
+    }
+
+    /// Drop a pane's bookkeeping. The leaf is already absent from the (rebuilt) tree, so its
+    /// session/surface deallocate naturally — no `kill-pane` is sent (tmux already removed it).
+    private func dropPaneRefs(_ pane: TmuxPaneID) {
         sessions.removeValue(forKey: pane)
-        trees.removeValue(forKey: pane)
+        backends.removeValue(forKey: pane)
+        paneLeaves.removeValue(forKey: pane)
         paneToWindow.removeValue(forKey: pane)
+        pendingOutput.removeValue(forKey: pane)
     }
 
     private func teardown() {
-        for pane in Array(sessions.keys) { closePane(pane) }
+        for win in Array(windowTrees.keys) { dropWindow(win) }
         client.terminate()
         let cb = onTeardown
         onTeardown = nil
@@ -165,63 +251,5 @@ final class TmuxIntegrationController {
         alert.addButton(withTitle: "OK")
         alert.runModal()
         teardown()
-    }
-
-    // MARK: - layout helpers
-
-    /// Extract the first pane id from a tmux layout string. A layout is a tree of cells
-    /// `WxH,x,y[,paneid | {children} | [children]]`; a leaf cell ends in its pane id. The
-    /// first pane id is the integer following the third comma of the first leaf cell.
-    /// Returns nil if the layout has no leaf (shouldn't happen).
-    static func firstPaneID(in layout: String) -> TmuxPaneID? {
-        // Strip the leading checksum if present: `<hex4>,<rest>` — the checksum has no `x`,
-        // while every cell starts with `WxH`. We scan for the first leaf cell.
-        // A leaf cell looks like: digitsxdigits,digits,digits,digits
-        // We walk tokens split on the structural delimiters and find the first one of the
-        // form `WxH` followed by three comma-separated integers where the 4th is the id.
-        let chars = Array(layout)
-        var i = 0
-        // skip checksum + comma if the layout starts with "<hex>," and the hex has no 'x'
-        // Find first occurrence of a `WxH,` cell and read its trailing id.
-        func readInt(_ start: Int) -> (value: Int, next: Int)? {
-            var j = start
-            var s = ""
-            while j < chars.count, chars[j].isNumber { s.append(chars[j]); j += 1 }
-            guard let v = Int(s) else { return nil }
-            return (v, j)
-        }
-        while i < chars.count {
-            // Try to match a cell `W x H , x , y , id` starting at i.
-            guard let w = readInt(i) else { i += 1; continue }
-            var j = w.next
-            guard j < chars.count, chars[j] == "x" else { i = w.next; continue }
-            j += 1
-            guard let h = readInt(j) else { i = j; continue }
-            j = h.next
-            guard j < chars.count, chars[j] == "," else { i = j; continue }
-            j += 1
-            guard let x = readInt(j) else { i = j; continue }
-            j = x.next
-            guard j < chars.count, chars[j] == "," else { i = j; continue }
-            j += 1
-            guard let y = readInt(j) else { i = j; continue }
-            j = y.next
-            guard j < chars.count, chars[j] == "," else {
-                // This cell is a split group (next is `{` or `[`) — descend by advancing
-                // past the structural char and keep scanning for the first leaf inside.
-                i = j + 1
-                continue
-            }
-            j += 1
-            // Next is either the pane id (leaf) or another nested group.
-            if j < chars.count, chars[j] == "{" || chars[j] == "[" {
-                i = j + 1
-                continue
-            }
-            guard let id = readInt(j) else { i = j; continue }
-            _ = (w.value, h.value, x.value, y.value)
-            return TmuxPaneID(id.value)
-        }
-        return nil
     }
 }

@@ -184,4 +184,41 @@ final class TmuxControlClientIntegrationTests: XCTestCase {
                       "tmux %output did not reach the DamsonSession Grid via TmuxPaneBackend; grid was:\n" +
                       gridText(session.grid))
     }
+
+    /// P2 driver proof (headless): a real `split-window -h` makes tmux emit a `%layout-change`
+    /// whose layout string parses into a two-leaf horizontal split — exactly the input
+    /// `TmuxIntegrationController` folds into a native Damson split. We verify the REAL tmux
+    /// layout flowing through the client parses to the structure the reconciler consumes.
+    func testSplitWindowYieldsTwoPaneLayout() throws {
+        let client = TmuxControlClient()
+        defer { client.terminate() }
+
+        var lastLayout: TmuxLayout?
+        client.onLayoutChange = { _, layout in lastLayout = layout }
+
+        try client.attach(target: nil, cols: 80, rows: 24)
+
+        // The initial active-window layout (single pane) arrives via the refresh-client at
+        // attach. Wait for it, then split and wait for the two-pane layout.
+        pump(until: { lastLayout != nil })
+        let single = try XCTUnwrap(lastLayout.flatMap { TmuxLayoutTree.parse($0.layout) },
+                                   "no initial %layout-change parsed on attach")
+        XCTAssertEqual(single.paneIDs.count, 1, "fresh session should start as one pane")
+
+        lastLayout = nil
+        client.sendCommand("split-window -h")
+        pump(until: {
+            guard let l = lastLayout.flatMap({ TmuxLayoutTree.parse($0.layout) }) else { return false }
+            return l.paneIDs.count == 2
+        })
+
+        let split = try XCTUnwrap(lastLayout.flatMap { TmuxLayoutTree.parse($0.layout) },
+                                  "no %layout-change after split-window")
+        XCTAssertEqual(split.paneIDs.count, 2, "split-window -h should yield two panes")
+        guard case let .split(orientation, _, _, _, _, children) = split else {
+            return XCTFail("expected a split layout, got a leaf: \(split)")
+        }
+        XCTAssertEqual(orientation, .horizontal, "split-window -h is a left/right (horizontal) split")
+        XCTAssertEqual(children.count, 2)
+    }
 }

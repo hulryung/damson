@@ -280,6 +280,22 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return tree
     }
 
+    /// Adopt an already-built `PaneTreeView` as a new tab (e.g. a tmux window reconciled
+    /// into native splits). Unlike `addExternalTab(session:)`, the tree may already hold a
+    /// multi-pane split structure. Returns the tree for later `closeTab(matching:)`.
+    @discardableResult
+    func adoptExternalTree(_ tree: PaneTreeView, customTitle: String? = nil) -> PaneTreeView {
+        addTab(tree: tree, transition: .create, customTitle: customTitle)
+        return tree
+    }
+
+    /// Update the custom title of an externally-owned tab (e.g. a tmux `%window-renamed`).
+    func setExternalTabTitle(matching tree: PaneTreeView, title: String?) {
+        guard let idx = tabs.firstIndex(where: { $0.tree === tree }) else { return }
+        tabs[idx].customTitle = title
+        refreshTabBar()
+    }
+
     /// Close the tab whose tree matches (by reference). No-op if it's already gone.
     func closeTab(matching tree: PaneTreeView) {
         if let idx = tabs.firstIndex(where: { $0.tree === tree }) {

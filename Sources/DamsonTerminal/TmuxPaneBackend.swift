@@ -17,6 +17,12 @@ public final class TmuxPaneBackend: SessionIOBackend {
     private weak var client: TmuxControlClient?
     public let pane: TmuxPaneID
 
+    /// Invoked when this pane's display area resizes (cols×rows in cells). The orchestrator
+    /// decides what to do with it — a single-pane window forwards it to the control client's
+    /// size, while a multi-pane window leaves tmux's per-pane sizes alone (full per-pane
+    /// resize negotiation is P3). Set by `TmuxIntegrationController`; nil → resize is ignored.
+    public var onResize: ((_ pane: TmuxPaneID, _ cols: Int, _ rows: Int) -> Void)?
+
     public init(client: TmuxControlClient, pane: TmuxPaneID) {
         self.client = client
         self.pane = pane
@@ -33,11 +39,12 @@ public final class TmuxPaneBackend: SessionIOBackend {
         client?.sendKeys(to: pane, data: data)
     }
 
-    /// In P1 the whole control client shares one size (one window = one tab = one pane),
-    /// so a pane resize forwards to the client size. Per-pane sizing arrives with native
-    /// splits in P2.
+    /// A pane's display area resized. Rather than blindly setting the whole control-client
+    /// size (which is correct only when this pane *is* the whole window), hand it to the
+    /// orchestrator via `onResize`, which knows whether this is a sole pane (forward to the
+    /// client size) or one of several (leave tmux's layout alone until P3 sizing).
     public func resize(cols: Int, rows: Int) {
-        client?.setClientSize(cols: cols, rows: rows)
+        onResize?(pane, cols, rows)
     }
 
     public func terminate() {

@@ -110,6 +110,31 @@ final class PaneTreeView: NSView {
         rebuild(animation: Motion.enabled ? .split(newLeaf: newLeaf) : .none)
     }
 
+    /// Replace the entire pane tree with a new root (a tmux `%layout-change` reconcile).
+    /// Reused leaf nodes keep their existing sessions/surfaces — and thus their grids and
+    /// scrollback — so output is continuous across reconciles; the view hierarchy is rebuilt
+    /// around the new split structure. The active pane follows `active` when it's still in
+    /// the new tree, otherwise the current active if still present, else the first leaf.
+    /// Idempotent: applying the same shape twice is a no-op-equivalent rebuild.
+    func setRoot(_ newRoot: PaneNode, active: PaneNode? = nil) {
+        root = newRoot
+        if let active, Self.contains(active, in: newRoot) {
+            activeLeaf = active
+        } else if !Self.contains(activeLeaf, in: newRoot) {
+            activeLeaf = PaneTreeView.firstLeafStatic(of: newRoot)
+        }
+        rebuild()
+    }
+
+    /// True if `target` is `node` or lives anywhere inside it (by === identity).
+    private static func contains(_ target: PaneNode, in node: PaneNode) -> Bool {
+        if node === target { return true }
+        if case .split(_, let a, let b, _) = node.kind {
+            return contains(target, in: a) || contains(target, in: b)
+        }
+        return false
+    }
+
     func closeActive() { closeLeaf(activeLeaf) }
 
     /// Closes the leaf holding a session when that session ends (shell exit). The exit
