@@ -62,6 +62,22 @@ public enum Motion {
             var rect = surface.convert(surface.bounds, to: view)
             if view.isFlipped { rect.origin.y = bounds.height - rect.maxY }
             metalImage.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+
+            // Re-composite the overlay layers that sit ABOVE the terminal content (the
+            // inactive-pane dim scrim and active border live on the surface's parent at
+            // zPosition > 0). The base cacheDisplay drew them, but the Metal frame was just
+            // drawn OVER that — without this, a dimmed pane flashes undimmed for the
+            // duration of any snapshot-driven transition.
+            if let host = surface.superview?.layer,
+               let ctx = NSGraphicsContext.current?.cgContext {
+                for sub in host.sublayers ?? [] where sub.zPosition > 0 && !sub.isHidden {
+                    ctx.saveGState()
+                    ctx.translateBy(x: rect.origin.x, y: rect.origin.y)
+                    ctx.setAlpha(CGFloat(sub.opacity))
+                    sub.render(in: ctx)
+                    ctx.restoreGState()
+                }
+            }
         }
         return image
     }

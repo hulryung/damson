@@ -338,26 +338,28 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         guard index >= 0, index < tabs.count else { return }
         if swipeActive || swipeAnimating { abortSwipe() }
 
-        // Capture the outgoing tab's pixels BEFORE removeFromSuperview() tears it down.
-        // Only for a real switch between two distinct, animation-enabled tabs.
-        var switchOverlay: (image: NSImage, frame: NSRect, fromIndex: Int)?
+        // Cross-slide the LIVE outgoing tree instead of a snapshot. Snapshotting was the
+        // visible pre-animation hitch: cacheDisplay + one offscreen Metal re-render and
+        // GPU→CPU readback per pane + CPU compositing, all synchronous on main BEFORE the
+        // first animation frame. Keeping the outgoing view attached until the animation
+        // completes costs nothing up front AND is pixel-faithful — the dim/border overlay
+        // layers ride along live (the snapshot composited the Metal frame OVER the dim
+        // scrim, so inactive panes flashed undimmed during the slide).
+        var switchOutgoing: (tree: PaneTreeView, fromIndex: Int)?
         if case .switch(let fromIndex) = transition,
            Motion.enabled,
            TabTransitionStyle.current != .none,
            fromIndex >= 0, fromIndex < tabs.count, fromIndex != index {
             let outgoing = tabs[fromIndex].tree
-            // Only snapshot if that tree is actually the one on screen right now, and the
-            // capture succeeds (zero-size → nil → instant path, spec §Snapshot fidelity).
-            if outgoing.superview === contentContainer,
-               let image = Motion.snapshot(of: outgoing) {
-                // outgoing.frame is in contentContainer's coordinates — exactly where the
-                // overlay must sit.
-                switchOverlay = (image, outgoing.frame, fromIndex)
+            // Only animate if that tree is actually the one on screen right now.
+            if outgoing.superview === contentContainer {
+                switchOutgoing = (outgoing, fromIndex)
             }
         }
 
         currentIndex = index
-        for t in tabs { t.tree.removeFromSuperview() }
+        // Keep the animating outgoing tree attached; everything else detaches as before.
+        for t in tabs where t.tree !== switchOutgoing?.tree { t.tree.removeFromSuperview() }
         let tree = tabs[index].tree
         // The pane last used in this tab. When addSubview attaches the tree to the window,
         // each surface's viewDidMoveToWindow → makeFirstResponder → onFocus fires synchronously
@@ -398,11 +400,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             animateTabCreate(tree)
         }
 
-        // Run the switch animation only if we captured a snapshot above. Otherwise this is
-        // the instant path (disabled / create / first show / nil-snapshot) — identical to today.
-        if let ov = switchOverlay {
-            animateTabSwitch(incoming: tree, overlayImage: ov.image,
-                             overlayFrame: ov.frame, fromIndex: ov.fromIndex, toIndex: index)
+        // Run the switch animation only if the outgoing tree is still attached (decided
+        // above). Otherwise this is the instant path (disabled / create / first show) —
+        // identical to today.
+        if let out = switchOutgoing, out.tree !== tree {
+            animateTabSwitch(incoming: tree, outgoing: out.tree,
+                             fromIndex: out.fromIndex, toIndex: index)
         }
     }
 
@@ -462,19 +465,20 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         })
     }
 
-    /// Tab-switch motion: the outgoing tab (a bitmap overlay) and the incoming live tab both
-    /// slide horizontally by a small delta while crossfading. Direction follows the index sign:
-    /// moving to a higher index slides content left (new tab enters from the right), lower
-    /// slides right. Layer-only — never touches frames — so the live surface never reflows.
+    /// Tab-switch motion: the outgoing tab and the incoming tab — BOTH live views — slide
+    /// horizontally while crossfading. Direction follows the index sign: moving to a higher
+    /// index slides content left (new tab enters from the right), lower slides right.
+    /// Layer-only — never touches frames — so the live surfaces never reflow.
     /// (Index order == visual order, even after drag-reorder; see Task 6 preamble.)
     ///
-    /// Idiom note: the overlay (detached CALayer from Motion.overlay) uses the CAAnimationGroup
-    /// + fillMode=.forwards + isRemovedOnCompletion=false idiom — NO model writes, exactly like
-    /// closeTab. The incoming live PaneTreeView layer uses the Motion.run
-    /// allowsImplicitAnimation idiom — exactly like animateTabCreate.
-    private func animateTabSwitch(incoming tree: PaneTreeView, overlayImage: NSImage,
-                                  overlayFrame: NSRect, fromIndex: Int, toIndex: Int) {
-        guard let incomingLayer = tree.layer else { return }  // layer-backed; should not be nil
+    /// No snapshot: the outgoing tree stays attached until the animation completes (then
+    /// detaches in the completion). Both sides use EXPLICIT CABasicAnimations because both
+    /// are live NSView backing layers under Auto Layout — an implicit transform animation
+    /// gets clobbered by AppKit's layout-driven geometry updates. Hit-testing during the
+    /// 0.16s overlap resolves to the incoming view (added later = topmost).
+    private func animateTabSwitch(incoming tree: PaneTreeView, outgoing: PaneTreeView,
+                                  fromIndex: Int, toIndex: Int) {
+        guard let incomingLayer = tree.layer, let outgoingLayer = outgoing.layer else { return }
         // Ensure constraints have produced the final frame before we read/animate it.
         contentContainer.layoutSubtreeIfNeeded()
 
@@ -509,20 +513,29 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             timing = Motion.timing
         }
 
-        // Outgoing overlay sits exactly where the old tree was; it slides to `outgoingEnd`.
-        let overlay = Motion.overlay(image: overlayImage, frame: overlayFrame, in: contentContainer)
-
-        // BOTH sides use EXPLICIT CABasicAnimation. The incoming is a live NSView's
-        // backing layer under Auto Layout; an implicit transform animation on it
-        // gets clobbered by AppKit's layout-driven geometry updates (the layer
-        // snaps to identity → "one screen frozen, one sliding"). An explicit
-        // animation plays on the presentation layer regardless of the model, so the
-        // model stays at the final (identity) value and the slide actually runs.
-        incomingLayer.opacity = 1   // model = final; the anim drives the presentation
+        // Models stay at their final values; the explicit animations drive the
+        // presentation. The outgoing's end state (off-screen/faded) is pinned by
+        // fillMode=.forwards until the completion detaches the view.
+        incomingLayer.opacity = 1
 
         CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak tree] in
-            overlay.removeFromSuperlayer()
+        CATransaction.setCompletionBlock { [weak self, weak tree, weak outgoing] in
+            if let outgoing {
+                // Detach unless something re-selected it mid-animation (it would then be
+                // the currently-shown tree and must stay).
+                if let self, self.tabs.indices.contains(self.currentIndex),
+                   self.tabs[self.currentIndex].tree === outgoing {
+                    // re-selected — leave attached
+                } else {
+                    outgoing.removeFromSuperview()
+                }
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                outgoing.layer?.removeAnimation(forKey: "switchOut")
+                outgoing.layer?.transform = CATransform3DIdentity
+                outgoing.layer?.opacity = 1
+                CATransaction.commit()
+            }
             tree?.layer?.removeAnimation(forKey: "switchIn")
         }
 
@@ -543,8 +556,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         iGroup.timingFunction = timing
         incomingLayer.add(iGroup, forKey: "switchIn")
 
-        // Outgoing overlay (detached CALayer): slide 0 → outgoingEnd (+ optional fade out).
-        // fillMode=.forwards pins the end state until the completion removes it.
+        // Outgoing live layer: slide 0 → outgoingEnd (+ optional fade out).
+        // fillMode=.forwards pins the end state until the completion detaches the view.
         let oSlide = CABasicAnimation(keyPath: "transform.translation.x")
         oSlide.fromValue = 0
         oSlide.toValue = outgoingEnd
@@ -561,7 +574,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         oGroup.timingFunction = timing
         oGroup.isRemovedOnCompletion = false
         oGroup.fillMode = .forwards
-        overlay.add(oGroup, forKey: "switchOut")
+        outgoingLayer.add(oGroup, forKey: "switchOut")
 
         CATransaction.commit()
     }
