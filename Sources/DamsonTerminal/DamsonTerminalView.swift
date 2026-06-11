@@ -1421,27 +1421,18 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         let newSize = max(6, baseSize * fontSizeMultiplier)
         // Use a font with the cascade for zoom too — keep Nerd glyph fallback even on Menlo, etc.
         let font = fontWithNerdFallback(family: session.config.fontFamily, size: newSize)
-        let oldCols = session.grid.cols
-        let oldRows = session.grid.rows
         backend.setRenderFont(font)
         lastRenderedVersion = .max
-        // iTerm2-style zoom: keep cols×rows CONSTANT by resizing the WINDOW to the
-        // new cell size (sole-pane window, not fullscreen). Re-gridding on every
-        // zoom step fires a SIGWINCH storm; the shell's coalesced redraws then run
-        // against momentarily stale geometry and strand prompt copies / blank gaps
-        // in the history (§zoom gap — reproduced with starship + zoom mashing).
-        // A window-size zoom never touches the grid, so that whole class vanishes.
-        // Fallback (splits / fullscreen / screen-clamped): the old re-grid path.
-        if canZoomByWindowResize {
-            adjustWindowToKeepGrid(cols: oldCols, rows: oldRows)
-        }
-        // Zoom-burst debounce: when the grid DOES have to change (splits/fullscreen/
-        // screen-clamped), mashing zoom must not fire a SIGWINCH per step — the
-        // shell's coalesced redraws against momentarily stale geometry are what
-        // strand prompt copies. Treat the burst like a live window drag: reflow the
-        // grid visually per step (resizeGridOnly via the inZoomBurst branch in
-        // reportSizeIfChanged) and flush ONE real resize (SIGWINCH) 150ms after the
-        // last step, when geometry has settled.
+        // Zoom-burst debounce — the fix for zoom-mash artifacts (prompt copies /
+        // gaps): the shell must NOT redraw per zoom step. A SIGWINCH per step makes
+        // the shell's coalesced redraws run against momentarily stale geometry,
+        // stranding debris in the history. Treat the burst like a live window drag:
+        // reflow the grid visually per step (resizeGridOnly via the inZoomBurst
+        // branch in reportSizeIfChanged — no PTY notify, so no shell redraw) and
+        // flush ONE real resize (SIGWINCH) 150ms after the last step, when geometry
+        // has settled. The shell then redraws exactly once, at the correct size.
+        // (An earlier iteration resized the WINDOW to keep cols×rows constant,
+        // iTerm2-style; rejected — zoom shouldn't move the window frame.)
         inZoomBurst = true
         zoomBurstTimer?.invalidate()
         zoomBurstTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) {
@@ -1451,8 +1442,8 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             self.reportSizeIfChanged()   // settled size → single SIGWINCH
             self.renderNow()
         }
-        // Confirms the kept grid (no-op) or reflows grid-only for the fallback
-        // and screen-clamped cases (PTY flush deferred to the burst timer).
+        // Reflows the grid to the new cell size (grid-only during the burst; the
+        // PTY flush is deferred to the burst timer above).
         reportSizeIfChanged()
         // Redraw immediately with the new font even on a small zoom step where cols/rows don't change.
         renderNow()
@@ -1464,45 +1455,6 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     /// reportSizeIfChanged reflows the grid without notifying the PTY.
     private var inZoomBurst = false
     private var zoomBurstTimer: Timer?
-
-    /// Window-resize zoom is only safe when this surface is the window's SOLE
-    /// terminal pane (with splits, moving the window frame re-grids the siblings
-    /// instead) and the window can actually change size (not fullscreen).
-    private var canZoomByWindowResize: Bool {
-        guard let window, !window.styleMask.contains(.fullScreen) else { return false }
-        return Self.countSurfaces(in: window.contentView) == 1
-    }
-
-    private static func countSurfaces(in view: NSView?) -> Int {
-        guard let view else { return 0 }
-        if view is DamsonSurfaceView { return 1 }
-        return view.subviews.reduce(0) { $0 + countSurfaces(in: $1) }
-    }
-
-    /// Resize the window so the drawable area fits exactly `cols`×`rows` at the
-    /// CURRENT (just-changed) cell size, clamped to the screen. The top-left corner
-    /// stays put (terminal windows grow/shrink toward the bottom-right).
-    private func adjustWindowToKeepGrid(cols: Int, rows: Int) {
-        guard let window else { return }
-        let (cellW, cellH) = measuredCellSize()
-        let (usableW, usableH) = usableSize()
-        // +1pt slack so floor(usable/cell) can't dip below the target from float rounding.
-        let dW = (CGFloat(cols) * cellW + 1) - usableW
-        let dH = (CGFloat(rows) * cellH + 1) - usableH
-        guard abs(dW) > 0.5 || abs(dH) > 0.5 else { return }
-
-        var frame = window.frame
-        frame.size.width += dW
-        frame.size.height += dH
-        frame.origin.y -= dH   // frames are bottom-left anchored; keep the TOP edge fixed
-        if let vis = window.screen?.visibleFrame {
-            frame.size.width = min(frame.size.width, vis.width)
-            frame.size.height = min(frame.size.height, vis.height)
-            frame.origin.x = min(max(frame.origin.x, vis.minX), max(vis.minX, vis.maxX - frame.width))
-            frame.origin.y = min(max(frame.origin.y, vis.minY), max(vis.minY, vis.maxY - frame.height))
-        }
-        window.setFrame(frame, display: true)
-    }
 
     /// The selector sent by Edit > Copy / Cmd+C. Pushes the selected text to the pasteboard.
     @objc public func copy(_ sender: Any?) {
