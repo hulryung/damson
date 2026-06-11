@@ -51,12 +51,13 @@ fi
 
 # sign_update output: " sparkle:edSignature=\"...\" length=\"NNN\""
 # Local: the private key is read automatically from the keychain.
-# CI: no keychain, so pass SPARKLE_PRIVATE_KEY (base64 EdDSA private key) via -s.
-SIGN_ARGS=("$DMG")
+# CI: no keychain — pipe SPARKLE_PRIVATE_KEY (base64 EdDSA key) via --ed-key-file -.
+# (Sparkle 2.9 removed the old `-s <key>` argument outright.)
 if [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
-    SIGN_ARGS+=(-s "$SPARKLE_PRIVATE_KEY")
+    SIG_LINE="$(printf '%s' "$SPARKLE_PRIVATE_KEY" | "$SIGN" --ed-key-file - "$DMG")"
+else
+    SIG_LINE="$("$SIGN" "$DMG")"
 fi
-SIG_LINE="$("$SIGN" "${SIGN_ARGS[@]}")"
 # sign_update already emits BOTH attributes: sparkle:edSignature="..." length="NNN".
 # Use it verbatim and do NOT add our own length — a duplicate attribute is invalid XML
 # (Sparkle's own appcast tooling treats sign_update's length as authoritative anyway).
