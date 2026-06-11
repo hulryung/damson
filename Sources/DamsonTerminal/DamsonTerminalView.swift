@@ -1355,6 +1355,12 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     /// Scroll so the active match row is shown around the middle of the viewport.
     private func scrollToActiveMatch() {
         guard activeMatchIndex >= 0, activeMatchIndex < findMatchesOrdered.count else { return }
+        // Release follow-bottom — the user is navigating search results now. Without
+        // this the very next render's follow alignment yanked the view straight back
+        // to the cursor, making the jump-to-match appear to "not stick". (Same rule
+        // as jumpPrompt.) Follow resumes naturally on terminal input or on scrolling
+        // back to the bottom.
+        followingBottom = false
         let row = findMatchesOrdered[activeMatchIndex].row
         let visHeight = backend.viewportHeight
         let rowY = CGFloat(row) * cellMetrics.height + backend.contentInset.height
