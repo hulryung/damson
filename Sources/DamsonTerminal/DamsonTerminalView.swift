@@ -867,49 +867,48 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             while e < cells.count && cells[e].hyperlink == uri { e += 1 }
             return (url, s..<e)
         }
-        return detectURLRangeAtColumn(pos.col, in: cells)
+        // Plain-text URL — may span multiple rows (soft wrap, or a TUI's own hard
+        // wrap with indented continuations). The hover highlight shows the segment
+        // on the hovered row; the URL itself is the full joined match.
+        guard let m = multiRowURLMatch(at: pos) else { return nil }
+        guard let seg = m.segments.first(where: { $0.row == pos.row }) else { return nil }
+        var range = seg.cols
+        // Include the trailing continuation cell of a wide-char URL.
+        var endEx = range.upperBound
+        while endEx < cells.count && cells[endEx].isContinuation { endEx += 1 }
+        range = range.lowerBound..<endEx
+        return (m.url, range)
     }
 
-    private func detectURLRangeAtColumn(
-        _ col: Int, in cells: [Cell]
-    ) -> (url: URL, range: Range<Int>)? {
-        var rowText = ""
-        var colToCharIndex: [Int] = []
-        var charIndexToCol: [Int] = []
-        colToCharIndex.reserveCapacity(cells.count)
-        for (i, cell) in cells.enumerated() {
-            if cell.isContinuation {
-                colToCharIndex.append(max(0, rowText.count - 1))
-                continue
+    /// Multi-row plain-URL detection at a unified (row, col) — adapter from the grid
+    /// to MultiRowURLDetector. See that type for the joining rules.
+    private func multiRowURLMatch(
+        at pos: (row: Int, col: Int)
+    ) -> MultiRowURLDetector.Match? {
+        let grid = session.grid
+        let sbCount = grid.scrollback.count
+        let total = sbCount + grid.rows
+        return MultiRowURLDetector.match(
+            at: pos.row, col: pos.col, totalCols: grid.cols
+        ) { r in
+            guard r >= 0, r < total else { return nil }
+            let cells: [Cell]
+            let wrapped: Bool
+            if r < sbCount {
+                cells = grid.scrollback[r].cells
+                wrapped = grid.scrollback[r].wrapped
+            } else {
+                cells = grid.row(r - sbCount)
+                wrapped = grid.rowWrapped(r - sbCount)
             }
-            colToCharIndex.append(rowText.count)
-            charIndexToCol.append(i)
-            rowText.append(cell.char)
-        }
-        guard col < colToCharIndex.count else { return nil }
-        let charIndex = colToCharIndex[col]
-        guard let detector = try? NSDataDetector(
-            types: NSTextCheckingResult.CheckingType.link.rawValue
-        ) else { return nil }
-        let nsRange = NSRange(rowText.startIndex..<rowText.endIndex, in: rowText)
-        let matches = detector.matches(in: rowText, options: [], range: nsRange)
-        for match in matches where NSLocationInRange(charIndex, match.range) {
-            guard let url = match.url else { continue }
-            guard match.range.location < charIndexToCol.count else { continue }
-            let startCol = charIndexToCol[match.range.location]
-            let lastCharIdx = min(
-                match.range.location + match.range.length - 1,
-                charIndexToCol.count - 1
-            )
-            var endColExclusive = charIndexToCol[lastCharIdx] + 1
-            // Include the trailing continuation cell of a wide-char URL.
-            while endColExclusive < cells.count
-                && cells[endColExclusive].isContinuation {
-                endColExclusive += 1
+            var chars: [Character] = []
+            var cols: [Int] = []
+            for (i, c) in cells.enumerated() where !c.isContinuation && !c.isWideSpacer {
+                chars.append(c.char)
+                cols.append(i)
             }
-            return (url, startCol..<endColExclusive)
+            return MultiRowURLDetector.RowData(chars: chars, cols: cols, wrapped: wrapped)
         }
-        return nil
     }
 
     // State for the 2-finger horizontal swipe → tab switch gesture (decided once per gesture).
@@ -1126,36 +1125,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         if let uri = cells[pos.col].hyperlink, let url = URL(string: uri) {
             return url
         }
-        // 2. Detect a plain URL via NSDataDetector
-        return detectURLAtColumn(pos.col, in: cells)
-    }
-
-    /// Finds URL patterns in a row's cell sequence via NSDataDetector and, if the
-    /// given col falls within a match, returns that URL.
-    private func detectURLAtColumn(_ col: Int, in cells: [Cell]) -> URL? {
-        // cell → char index mapping. A continuation cell points to the preceding character (the 2nd column of a wide char).
-        var rowText = ""
-        var colToCharIndex: [Int] = []
-        colToCharIndex.reserveCapacity(cells.count)
-        for cell in cells {
-            if cell.isContinuation {
-                colToCharIndex.append(max(0, rowText.count - 1))
-                continue
-            }
-            colToCharIndex.append(rowText.count)
-            rowText.append(cell.char)
-        }
-        guard col < colToCharIndex.count else { return nil }
-        let charIndex = colToCharIndex[col]
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
-            return nil
-        }
-        let nsRange = NSRange(rowText.startIndex..<rowText.endIndex, in: rowText)
-        let matches = detector.matches(in: rowText, options: [], range: nsRange)
-        for match in matches where NSLocationInRange(charIndex, match.range) {
-            if let url = match.url { return url }
-        }
-        return nil
+        // 2. Plain-text URL — joined across soft-wrapped rows and TUI-style
+        //    indented hard-wrapped continuations (see MultiRowURLDetector).
+        return multiRowURLMatch(at: pos)?.url
     }
 
     /// Converts `event.locationInWindow` to (row, col) in the textView content coordinate system.
