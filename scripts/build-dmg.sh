@@ -47,6 +47,12 @@ if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
         NOTARY_ARGS=()
         if [[ -n "${NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
             NOTARY_ARGS=(--keychain-profile "$NOTARY_KEYCHAIN_PROFILE")
+        elif [[ -n "${APP_STORE_CONNECT_KEY_FILE:-}" && -n "${APP_STORE_CONNECT_KEY_ID:-}" && -n "${APP_STORE_CONNECT_ISSUER:-}" ]]; then
+            NOTARY_ARGS=(
+                --key "$APP_STORE_CONNECT_KEY_FILE"
+                --key-id "$APP_STORE_CONNECT_KEY_ID"
+                --issuer "$APP_STORE_CONNECT_ISSUER"
+            )
         elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
             NOTARY_ARGS=(
                 --apple-id "$APPLE_ID"

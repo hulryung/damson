@@ -110,6 +110,13 @@ echo "==> xcrun notarytool submit --timeout 30m (this can take a few minutes)"
 NOTARY_ARGS=()
 if [[ -n "${NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
     NOTARY_ARGS=(--keychain-profile "$NOTARY_KEYCHAIN_PROFILE")
+elif [[ -n "${APP_STORE_CONNECT_KEY_FILE:-}" && -n "${APP_STORE_CONNECT_KEY_ID:-}" && -n "${APP_STORE_CONNECT_ISSUER:-}" ]]; then
+    # App Store Connect API key (CI-friendly: no app-specific password needed).
+    NOTARY_ARGS=(
+        --key "$APP_STORE_CONNECT_KEY_FILE"
+        --key-id "$APP_STORE_CONNECT_KEY_ID"
+        --issuer "$APP_STORE_CONNECT_ISSUER"
+    )
 elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
     NOTARY_ARGS=(
         --apple-id "$APPLE_ID"
@@ -117,7 +124,7 @@ elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" && -n "${APP
         --team-id "$APPLE_TEAM_ID"
     )
 else
-    echo "error: set NOTARY_KEYCHAIN_PROFILE, OR APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID" >&2
+    echo "error: set NOTARY_KEYCHAIN_PROFILE, OR APP_STORE_CONNECT_KEY_FILE/_KEY_ID/_ISSUER, OR APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID" >&2
     exit 1
 fi
 

@@ -8,9 +8,11 @@ name: release
 #   APPLE_CERTIFICATE_BASE64      Developer ID Application .p12 → base64 -i cert.p12
 #   APPLE_CERTIFICATE_PASSWORD    .p12 import password
 #   APPLE_SIGNING_IDENTITY        "Developer ID Application: Your Name (TEAMID)"
-#   APPLE_ID                      Apple ID 이메일
-#   APPLE_APP_SPECIFIC_PASSWORD   appleid.apple.com 발급
+#   APP_STORE_CONNECT_KEY_B64     App Store Connect API key(.p8) → base64
+#   APP_STORE_CONNECT_KEY_ID      ASC API Key ID (예: 87VR84KH53)
+#   APP_STORE_CONNECT_ISSUER      ASC Issuer ID (UUID)
 #   APPLE_TEAM_ID                 ABCDE12345
+#   (레거시 대안: APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD)
 #   SPARKLE_PUBLIC_KEY            base64 EdDSA public key (sparkle-keygen.sh 출력)
 #   SPARKLE_PRIVATE_KEY           base64 EdDSA private key (keychain export → base64)
 
@@ -82,13 +84,22 @@ jobs:
           SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_PUBLIC_KEY }}
           BUILD_CHANNEL: release
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APP_STORE_CONNECT_KEY_B64: ${{ secrets.APP_STORE_CONNECT_KEY_B64 }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER: ${{ secrets.APP_STORE_CONNECT_ISSUER }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          # 공증: ASC API 키(.p8) 우선 — 파일로 풀어 notarytool --key 경로로 전달.
+          if [[ -n "$APP_STORE_CONNECT_KEY_B64" ]]; then
+            echo "$APP_STORE_CONNECT_KEY_B64" | base64 --decode > "$RUNNER_TEMP/asc_key.p8"
+            export APP_STORE_CONNECT_KEY_FILE="$RUNNER_TEMP/asc_key.p8"
+          fi
           CLEAN=1 ./scripts/build-app.sh
           ./scripts/sign-and-notarize.sh
           ./scripts/build-dmg.sh
+          rm -f "$RUNNER_TEMP/asc_key.p8"
 
       - name: Create GitHub Release (upload dmg)
         env:
