@@ -209,7 +209,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     /// held, that URL is shown brightly underlined + a pointing-hand cursor.
     /// A click only opens the URL while Cmd is held.
     private var cmdKeyDown: Bool = false
-    private var hoveredURL: (row: Int, colRange: Range<Int>, url: URL)?
+    private var hoveredURL: (url: URL, segments: [(row: Int, colRange: Range<Int>)])?
     private var mouseTrackingArea: NSTrackingArea?
 
     /// "Follow live output" tracking flag. Becomes false when the user scrolls
@@ -832,10 +832,13 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         if let info = urlInfoAtCell(pos) {
             let changed: Bool = {
                 guard let cur = hoveredURL else { return true }
-                return cur.row != pos.row || cur.colRange != info.range
+                guard cur.url == info.url, cur.segments.count == info.segments.count else { return true }
+                return !zip(cur.segments, info.segments).allSatisfy {
+                    $0.row == $1.row && $0.colRange == $1.colRange
+                }
             }()
             if changed {
-                hoveredURL = (row: pos.row, colRange: info.range, url: info.url)
+                hoveredURL = (url: info.url, segments: info.segments)
                 NSCursor.pointingHand.set()
                 scheduleRender()
             }
@@ -852,12 +855,13 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
     }
 
-    /// If a given (row, col) cell falls within a URL region, returns the URL and the cell col range.
-    /// For an OSC 8 hyperlink, the range of adjacent cells sharing the same URI.
-    /// For a plain text URL, the cell range of the NSDataDetector match.
+    /// If a given (row, col) cell falls within a URL region, returns the URL and its
+    /// per-row cell col ranges. For an OSC 8 hyperlink, the adjacent same-URI run on
+    /// the hovered row. For a plain text URL, every row segment of the (possibly
+    /// multi-row) NSDataDetector match.
     private func urlInfoAtCell(
         _ pos: (row: Int, col: Int)
-    ) -> (url: URL, range: Range<Int>)? {
+    ) -> (url: URL, segments: [(row: Int, colRange: Range<Int>)])? {
         let cells = cellsForTextViewRow(pos.row)
         guard pos.col >= 0, pos.col < cells.count else { return nil }
         if let uri = cells[pos.col].hyperlink, let url = URL(string: uri) {
@@ -865,19 +869,20 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             while s > 0 && cells[s - 1].hyperlink == uri { s -= 1 }
             var e = pos.col + 1
             while e < cells.count && cells[e].hyperlink == uri { e += 1 }
-            return (url, s..<e)
+            return (url, [(pos.row, s..<e)])
         }
         // Plain-text URL — may span multiple rows (soft wrap, or a TUI's own hard
-        // wrap with indented continuations). The hover highlight shows the segment
-        // on the hovered row; the URL itself is the full joined match.
+        // wrap with indented continuations). EVERY row's segment is returned so the
+        // hover underline covers the whole link, not just the hovered row.
         guard let m = multiRowURLMatch(at: pos) else { return nil }
-        guard let seg = m.segments.first(where: { $0.row == pos.row }) else { return nil }
-        var range = seg.cols
-        // Include the trailing continuation cell of a wide-char URL.
-        var endEx = range.upperBound
-        while endEx < cells.count && cells[endEx].isContinuation { endEx += 1 }
-        range = range.lowerBound..<endEx
-        return (m.url, range)
+        let segments: [(row: Int, colRange: Range<Int>)] = m.segments.map { seg in
+            // Include the trailing continuation cell of a wide-char URL.
+            let rowCells = cellsForTextViewRow(seg.row)
+            var endEx = seg.cols.upperBound
+            while endEx < rowCells.count && rowCells[endEx].isContinuation { endEx += 1 }
+            return (seg.row, seg.cols.lowerBound..<endEx)
+        }
+        return (m.url, segments)
     }
 
     /// Multi-row plain-URL detection at a unified (row, col) — adapter from the grid
@@ -1808,7 +1813,8 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         let findKey = "\(findQuery)|\(findMatchesByRow.count)|\(activeMatchIndex)"
         let hoverKey: String = {
             guard let h = hoveredURL else { return "" }
-            return "\(h.row)|\(h.colRange.lowerBound)|\(h.colRange.upperBound)"
+            return h.segments.map { "\($0.row):\($0.colRange.lowerBound)-\($0.colRange.upperBound)" }
+                .joined(separator: ",")
         }()
         // blink phase — include in the dedupe key so each phase toggle re-renders when ON.
         let blinkKey = session.config.cursorBlink ? (cursorBlinkVisible ? "1" : "0") : "x"
@@ -1891,8 +1897,10 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             findMatchesByRow: findMatchesByRow,
             activeFindRow: active?.row,
             activeFindRange: active?.range,
-            hoveredRow: hoveredURL?.row,
-            hoveredRange: hoveredURL?.colRange,
+            hoveredSegments: hoveredURL.map { h in
+                Dictionary(h.segments.map { ($0.row, $0.colRange) },
+                           uniquingKeysWith: { a, _ in a })
+            } ?? [:],
             cursorBlinkEnabled: session.config.cursorBlink,
             cursorBlinkVisible: cursorBlinkVisible
         )

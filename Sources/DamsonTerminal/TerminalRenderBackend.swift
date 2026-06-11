@@ -45,8 +45,9 @@ public struct RenderState: Equatable {
     public var activeFindRow: Int?
     public var activeFindRange: Range<Int>?
     /// Cmd-hovered URL highlight (row + column range), if any.
-    public var hoveredRow: Int?
-    public var hoveredRange: Range<Int>?
+    /// Hovered-URL highlight, per unified row → column range. A URL wrapped across
+    /// rows highlights every segment (not just the row under the mouse).
+    public var hoveredSegments: [Int: Range<Int>]
     /// Cursor blink: whether blinking is enabled, and whether it's visible now.
     public var cursorBlinkEnabled: Bool
     public var cursorBlinkVisible: Bool
@@ -58,8 +59,7 @@ public struct RenderState: Equatable {
         findMatchesByRow: [Int: [Range<Int>]] = [:],
         activeFindRow: Int? = nil,
         activeFindRange: Range<Int>? = nil,
-        hoveredRow: Int? = nil,
-        hoveredRange: Range<Int>? = nil,
+        hoveredSegments: [Int: Range<Int>] = [:],
         cursorBlinkEnabled: Bool = false,
         cursorBlinkVisible: Bool = true
     ) {
@@ -69,8 +69,7 @@ public struct RenderState: Equatable {
         self.findMatchesByRow = findMatchesByRow
         self.activeFindRow = activeFindRow
         self.activeFindRange = activeFindRange
-        self.hoveredRow = hoveredRow
-        self.hoveredRange = hoveredRange
+        self.hoveredSegments = hoveredSegments
         self.cursorBlinkEnabled = cursorBlinkEnabled
         self.cursorBlinkVisible = cursorBlinkVisible
     }

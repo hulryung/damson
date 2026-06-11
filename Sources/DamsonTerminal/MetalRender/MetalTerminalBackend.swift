@@ -588,7 +588,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             let sel = selectedColumns(state, row: row, cols: cols)
             let finds = state.findMatchesByRow[row] ?? []
             let activeFind: Range<Int>? = (state.activeFindRow == row) ? state.activeFindRange : nil
-            let hover: Range<Int>? = (state.hoveredRow == row) ? state.hoveredRange : nil
+            let hover: Range<Int>? = state.hoveredSegments[row]
 
             // Ligatures (opt-in): shape the row once; shaped glyph ids replace the
             // per-char glyphs across each shapable run (bg/overlays stay per-cell).

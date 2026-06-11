@@ -92,8 +92,7 @@ final class MetalRenderImageTests: XCTestCase {
         let metrics = CellMetrics(width: max(("M" as NSString)
             .size(withAttributes: [.font: font]).width, 1),
                                   height: max(measuredLineHeight(font), 1))
-        var state = RenderState()
-        state.hoveredRow = nil
+        let state = RenderState()
 
         let scale: CGFloat = 2
         let image = backend.renderToCGImage(grid: grid, config: config, state: state,
