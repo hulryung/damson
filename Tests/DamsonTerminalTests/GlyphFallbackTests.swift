@@ -162,3 +162,61 @@ final class GlyphFallbackTests: XCTestCase {
                      "non-CJK missing glyph must stay blank (minimal fallback)")
     }
 }
+
+// MARK: - Symbol fallback (circled digits etc. — field report: ④ rendered blank)
+
+extension GlyphFallbackTests {
+    /// Characters most monospace coding fonts lack must still render via the
+    /// pinned-CJK or system fallback tiers — never blank.
+    func testSymbolsRenderViaFallbackTiers() throws {
+        let size: CGFloat = 17
+        let base = NSFont(name: "Menlo", size: size) ?? NSFont.systemFont(ofSize: size)
+        let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
+
+        for ch in ["④", "⑩", "⑳", "①", "☆", "※"] as [Character] {
+            let bmp = r.raster(ch, bold: false, wide: Cell.isWide(ch))
+            XCTAssertNotNil(bmp, "\(ch) must render through a fallback tier, not blank")
+            if let bmp {
+                XCTAssertTrue(bmp.bytes.contains { $0 != 0 }, "\(ch) bitmap must have ink")
+            }
+        }
+    }
+
+    /// The fallback glyph must be CONTAINED in its cell (shrink-to-fit) — a
+    /// full-square ④ from a CJK face must not spill into the neighbor cell.
+    func testFallbackSymbolFitsCell() throws {
+        let size: CGFloat = 17
+        let base = NSFont(name: "Menlo", size: size) ?? NSFont.systemFont(ofSize: size)
+        let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
+
+        let wide = Cell.isWide("④")
+        guard let bmp = r.raster("④", bold: false, wide: wide) else {
+            return XCTFail("④ did not render")
+        }
+        // Bitmap is exactly the cell box (1 or 2 cells) — ink reaching the bitmap
+        // is by construction inside the cell; just sanity-check dimensions.
+        let expectedW = Int(ceil((wide ? cellW * 2 : cellW) * 2 /* scale */))
+        XCTAssertEqual(bmp.width, expectedW, "bitmap must be exactly the cell box")
+        // Ink must also exist in the horizontal center region (a clipped-off glyph
+        // would leave only edge artifacts).
+        var centerInk = false
+        let cx0 = bmp.width / 4, cx1 = bmp.width * 3 / 4
+        for y in 0..<bmp.height {
+            let row = y * bmp.width
+            for x in cx0..<cx1 where bmp.bytes[row + x] != 0 { centerInk = true; break }
+            if centerInk { break }
+        }
+        XCTAssertTrue(centerInk, "④ ink must occupy the cell center, not just edges")
+    }
+
+    /// Bold variants of fallback symbols must render too (separate cache path).
+    func testFallbackSymbolBold() throws {
+        let size: CGFloat = 17
+        let base = NSFont(name: "Menlo", size: size) ?? NSFont.systemFont(ofSize: size)
+        let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
+        XCTAssertNotNil(r.raster("④", bold: true, wide: Cell.isWide("④")))
+    }
+}

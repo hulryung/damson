@@ -5,14 +5,17 @@ import CoreText
 /// full cell (1 cell wide, or 2 for wide/CJK), at the backing scale for retina
 /// crispness.
 ///
-/// **Minimal fallback policy.** The configured base font draws everything it can.
-/// The *only* fallback is for East-Asian (CJK) characters the base font lacks —
-/// those come from `cjkFallbackFont` (the D2Coding family). Glyph lookup is a direct
-/// per-font cmap query (`CTFontGetGlyphsForCharacters`), which does NOT honor
-/// `NSFont.cascadeList`; the CJK fallback is therefore resolved explicitly here so
-/// it matches the legacy backend's cascade font exactly. A non-CJK character the
-/// base font lacks is left blank (tofu) on purpose, keeping the base font's
-/// coverage visible instead of masking it with broad substitution.
+/// **Fallback policy.** The configured base font draws everything it can. What it
+/// lacks falls through, in order, to: (1) the pinned CJK face (`cjkFallbackFont`,
+/// D2Coding family) — tried for ANY missing character, not just East-Asian, so
+/// symbols that Korean coding fonts carry (circled digits ①–⑳ etc.) render
+/// deterministically the same on every machine; (2) the system-recommended font
+/// for that character (`CTFontCreateForString` — Apple Symbols, Hiragino, …),
+/// scaled down to fit the cell when its ink overflows (ambiguous-width symbols
+/// like ④ drawn into a 1-cell box). Glyph lookup is a direct per-font cmap query
+/// (`CTFontGetGlyphsForCharacters`), which does NOT honor `NSFont.cascadeList`;
+/// fallbacks are therefore resolved explicitly here. Only a character no installed
+/// font can draw stays blank.
 ///
 /// Rasterizing into the full cell (rather than a tight bbox) trades atlas space
 /// for simplicity: the render quad is exactly the cell rect, no per-glyph
@@ -66,9 +69,9 @@ final class GlyphRasterizer {
     /// unrenderable glyphs.
     ///
     /// Tiers: (1) emoji-presentation chars → Apple Color Emoji as a **color** BGRA
-    /// bitmap; (2) base font mask; (3) CJK fallback mask (East-Asian only). A
-    /// non-CJK, non-emoji char the base font lacks stays blank (tofu) — see the
-    /// type doc for the minimal-fallback rationale.
+    /// bitmap; (2) base font mask; (3) pinned CJK face for anything the base
+    /// lacks (Hangul, and symbols like ④ that coding fonts carry); (4) the
+    /// system-recommended font, fit-scaled into the cell. See the type doc.
     func raster(_ ch: Character, bold: Bool, wide: Bool) -> Bitmap? {
         if ch == " " || ch == "\u{00A0}" { return nil }
         // Emoji first: emoji-presentation chars (incl. VS16 / ZWJ sequences) render
@@ -79,11 +82,68 @@ final class GlyphRasterizer {
         if let bmp = draw(ch, in: bold ? boldFont : font, wide: wide) {
             return bmp
         }
-        // CJK-only fallback: only East-Asian characters the base font couldn't draw.
-        if Cell.isWide(ch), let cjk = bold ? boldCJKFont : cjkFont {
-            return draw(ch, in: cjk, wide: wide)
+        // Pinned fallback face — deterministic across machines.
+        if let cjk = bold ? boldCJKFont : cjkFont,
+           let bmp = draw(ch, in: cjk, wide: wide) {
+            return bmp
         }
-        return nil
+        // System fallback: whatever CoreText recommends for this character.
+        return drawSystemFallback(ch, bold: bold, wide: wide)
+    }
+
+    /// Tier-4 fallback: ask CoreText which installed font covers `ch`
+    /// (`CTFontCreateForString`) and rasterize with it, scaled down to fit the
+    /// cell box if the glyph ink overflows (e.g. full-square ④ in a 1-cell box).
+    /// nil when even the system has no coverage — genuine tofu.
+    private func drawSystemFallback(_ ch: Character, bold: Bool, wide: Bool) -> Bitmap? {
+        let str = String(ch)
+        let base = (bold ? boldFont : font) as CTFont
+        let resolved = CTFontCreateForString(base, str as CFString,
+                                             CFRange(location: 0, length: str.utf16.count))
+        // Same face as the base → its cmap already failed in draw(); nothing new.
+        if CFEqual(resolved, base) { return nil }
+        var f = resolved as NSFont
+        if bold { f = NSFontManager.shared.convert(f, toHaveTrait: .boldFontMask) }
+        return drawFitted(ch, in: f, wide: wide)
+    }
+
+    /// Rasterize via CTLine with shrink-to-fit (never upscaled): used for system-
+    /// fallback glyphs whose metrics don\'t match the monospace cell.
+    private func drawFitted(_ ch: Character, in f: NSFont, wide: Bool) -> Bitmap? {
+        let glyphCellW = wide ? cellW * 2 : cellW
+        let pw = Int(ceil(glyphCellW * scale))
+        let ph = Int(ceil(cellH * scale))
+        guard pw > 0, ph > 0 else { return nil }
+
+        let line = CTLineCreateWithAttributedString(
+            NSAttributedString(string: String(ch), attributes: [.font: f]))
+
+        var data = [UInt8](repeating: 0, count: pw * ph)
+        let ok = data.withUnsafeMutableBytes { raw -> Bool in
+            guard let ctx = CGContext(
+                data: raw.baseAddress, width: pw, height: ph, bitsPerComponent: 8,
+                bytesPerRow: pw, space: gray, bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return false }
+            ctx.setShouldAntialias(true)
+            ctx.setAllowsAntialiasing(true)
+            ctx.setShouldSmoothFonts(false)
+            ctx.scaleBy(x: scale, y: scale)
+            ctx.setFillColor(CGColor(gray: 1.0, alpha: 1.0))
+
+            let ib = CTLineGetImageBounds(line, ctx)
+            guard ib.width > 0, ib.height > 0 else { return false }
+            // Shrink-to-fit only (cap 1): center the ink in the cell box.
+            let fit = min(1, min(glyphCellW / ib.width, cellH / ib.height))
+            let drawnW = ib.width * fit, drawnH = ib.height * fit
+            ctx.translateBy(x: (glyphCellW - drawnW) / 2 - fit * ib.minX,
+                            y: (cellH - drawnH) / 2 - fit * ib.minY)
+            ctx.scaleBy(x: fit, y: fit)
+            ctx.textPosition = .zero
+            CTLineDraw(line, ctx)
+            return true
+        }
+        guard ok, data.contains(where: { $0 != 0 }) else { return nil }
+        return Bitmap(bytes: data, width: pw, height: ph)
     }
 
     /// Rasterize a color-emoji grapheme via CoreText (CTLine shapes ZWJ/flag/
