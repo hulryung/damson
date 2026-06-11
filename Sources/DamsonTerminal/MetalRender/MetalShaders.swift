@@ -146,6 +146,7 @@ enum MetalShaders {
         float4 tint;         // rgb phosphor tint (a unused)
         float4 coeffs2;      // x=curvature, y=monochrome amount, z=aberration px, w=grain
         float4 coeffs3;      // x=invert, y=pixelate block px, z=aperture grille, w reserved
+        float4 bgColor;      // terminal bg (premultiplied) — bezel = dimmed bg
     };
     struct PostFXVOut {
         float4 position [[position]];
@@ -277,10 +278,12 @@ enum MetalShaders {
             float d = distance(uv, float2(0.5));
             color *= 1.0 - smoothstep(0.35, 0.85, d) * vig;
         }
-        // Tube bezel: outside the curved image the screen is opaque black (the
-        // clamp sampler would otherwise smear the edge pixels outward).
-        color *= bezel;
-        float alpha = max(src.a, 1.0 - bezel);
+        // Tube bezel: outside the curved image, show the terminal background
+        // slightly dimmed (the clamp sampler would otherwise smear the edge
+        // pixels outward). Premultiplied like everything else in this pipeline.
+        float3 bezelColor = p.bgColor.rgb * 0.78;
+        color = mix(bezelColor, color, bezel);
+        float alpha = mix(p.bgColor.a, src.a, bezel);
         return float4(max(color, float3(0.0)), alpha);
     }
     """

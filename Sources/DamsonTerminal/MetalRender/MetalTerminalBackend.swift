@@ -516,6 +516,11 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                screenSize: SIMD2<Float>(Float(drawable.texture.width), Float(drawable.texture.height)),
                intensity: Float(config.screenEffectIntensity)),
            let fxEnc = cmd.makeRenderCommandEncoder(descriptor: postfxPass(drawable.texture)) {
+            // The tube bezel (outside the curved image) shows the terminal
+            // background, dimmed in the shader — same source as the clear color.
+            let bg = clearColor(config.theme.background, opacity: opacity)
+            params.bgColor = SIMD4<Float>(Float(bg.red), Float(bg.green),
+                                          Float(bg.blue), Float(bg.alpha))
             fxEnc.setRenderPipelineState(md.postfxPipeline)
             fxEnc.setFragmentTexture(sceneTex, index: 0)
             fxEnc.setFragmentSamplerState(md.glyphSampler, index: 0)

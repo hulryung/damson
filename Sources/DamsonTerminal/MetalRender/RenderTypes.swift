@@ -43,4 +43,7 @@ struct PostFXParams {
     var coeffs2: SIMD4<Float>
     /// x=invert, y=pixelate block px, z=aperture grille strength, w reserved
     var coeffs3: SIMD4<Float> = .zero
+    /// Terminal background (premultiplied by window opacity) — the tube-bezel
+    /// area outside the curved image is this color, slightly dimmed.
+    var bgColor: SIMD4<Float> = .zero
 }
