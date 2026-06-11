@@ -443,17 +443,19 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // (window resize, etc.) when followingBottom, so if the user intends to
         // stay at the bottom we pull them there, but if the area above the cursor
         // is alive we leave it as-is.
+        let inset = backend.contentInset.height
         let cursorViewRow = session.grid.scrollback.count + session.grid.cursorRow
-        let cursorY = CGFloat(cursorViewRow) * cellMetrics.height
-            + backend.contentInset.height
+        let cursorY = CGFloat(cursorViewRow) * cellMetrics.height + inset
         let cursorBottom = cursorY + cellMetrics.height
         let curScroll = backend.scrollYPixels
         let visTop = curScroll
         let visBottom = curScroll + visHeight
-        if cursorBottom > visBottom {
-            backend.setScrollY(cursorBottom - visHeight, animated: false)
-        } else if cursorY < visTop {
-            backend.setScrollY(cursorY, animated: false)
+        // Include the adjacent padding when revealing the cursor (see followTargetY) —
+        // cursor on the last row must land at the TRUE bottom, padding and all.
+        if cursorBottom + inset > visBottom {
+            backend.setScrollY(cursorBottom + inset - visHeight, animated: false)
+        } else if cursorY - inset < visTop {
+            backend.setScrollY(max(0, cursorY - inset), animated: false)
         } else {
             backend.reflectScroll()
         }
@@ -1034,16 +1036,21 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             // (grid bottom). Also matches the anchor in layout().
             return CGFloat(grid.scrollback.count) * cellMetrics.height + inset
         }
-        // Normal shell — cursor-visible policy.
+        // Normal shell — cursor-visible policy. When revealing the cursor, include
+        // the adjacent padding (bottom inset when scrolling down, top inset when
+        // scrolling up): with the cursor on the last row, the target then equals the
+        // true bottom (yMax). Without this the view stopped `inset` short of the
+        // bottom — invisible at the old 4pt inset, but an obvious "didn't quite
+        // scroll down" with a larger configured padding.
         let visHeight = backend.viewportHeight
         let cursorViewRow = grid.scrollback.count + grid.cursorRow
         let cursorY = CGFloat(cursorViewRow) * cellMetrics.height + inset
         let cursorBottom = cursorY + cellMetrics.height
         let curY = backend.scrollYPixels
-        if cursorBottom > curY + visHeight {
-            return cursorBottom - visHeight
-        } else if cursorY < curY {
-            return cursorY
+        if cursorBottom + inset > curY + visHeight {
+            return cursorBottom + inset - visHeight
+        } else if cursorY - inset < curY {
+            return max(0, cursorY - inset)
         }
         return nil // cursor already in the visible area — no scroll needed.
     }
