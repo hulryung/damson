@@ -52,7 +52,8 @@ public enum ScreenEffect: String, CaseIterable, Sendable {
                 coeffs: SIMD4<Float>(0.18 * k, 0.22 * k, 0.40 * k, 1.5),
                 // Slightly warm phosphor tint (nearly neutral). Interpolated neutral↔tint by intensity.
                 tint: SIMD4<Float>(mix(1.0, 1.02, k), mix(1.0, 1.0, k), mix(1.0, 0.97, k), 1.0),
-                // Center bulge — corners pinned, only the middle eases out slightly. Proportional to intensity, subtle.
+                // Tube curve — the image edges bow inward (rounded bezel at the
+                // corners); no content is pushed off-screen. Proportional to intensity.
                 // y = monochrome amount.
                 coeffs2: SIMD4<Float>(0.12 * k, 0, 0, 0))
         case .greenPhosphor:

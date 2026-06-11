@@ -161,14 +161,18 @@ enum MetalShaders {
         return out;
     }
 
-    // Gentle center-magnify bulge: the 4 corners stay put, the middle is
-    // slightly enlarged (sampled from a contracted region). amount 0 = identity.
-    // Always stays inside [0,1] (no outward push), so there's no off-tube bezel.
+    // Tube curve, edges bowing INWARD: the sample coordinate is pushed outward
+    // more the further it is from the center, so the scene's edges land inside
+    // the display and its boundary bows toward the middle (most at the corners
+    // → rounded tube bezel). Every scene pixel maps to SOME display position,
+    // so no terminal content is ever pushed off-screen — display pixels whose
+    // sample falls outside [0,1] are the bezel and get masked to black.
+    // (The previous center-magnify bulge spread the middle rows outward, which
+    // visually shoved content off the left/right edges.) amount 0 = identity.
     static inline float2 crt_curve(float2 uv, float amount) {
         float2 c = uv * 2.0 - 1.0;          // -1..1, center origin
-        float r2 = dot(c, c) * 0.5;         // 0 at center, 1 at the corners
-        float scale = 1.0 - amount * (1.0 - r2);   // <1 in the middle, =1 at corners
-        c *= scale;                         // contract toward center → magnify middle
+        float r2 = dot(c, c);               // 0 at center, 2 at the corners
+        c *= 1.0 + amount * r2;             // sample beyond the scene near edges
         return c * 0.5 + 0.5;               // back to 0..1
     }
 
@@ -188,8 +192,17 @@ enum MetalShaders {
         float grille = p.coeffs3.z;
 
         // Curve the sampling coordinate; everything below samples/measures in
-        // bulge space so scanlines and vignette follow the magnified middle.
+        // tube space so scanlines and vignette follow the curved image. Display
+        // pixels whose curved sample falls outside the scene are the tube bezel:
+        // `bezel` fades to 0 there (with a ~0.4% soft edge for AA) and the final
+        // color is masked to opaque black.
         float2 uv = (curve > 0.0) ? crt_curve(in.uv, curve) : in.uv;
+        float bezel = 1.0;
+        if (curve > 0.0) {
+            float2 inside = smoothstep(float2(-0.004), float2(0.004), uv)
+                          * (1.0 - smoothstep(float2(0.996), float2(1.004), uv));
+            bezel = inside.x * inside.y;
+        }
 
         // Pixelate: quantize the sample coordinate to square blocks (device px).
         if (pixPx > 0.0) {
@@ -264,7 +277,11 @@ enum MetalShaders {
             float d = distance(uv, float2(0.5));
             color *= 1.0 - smoothstep(0.35, 0.85, d) * vig;
         }
-        return float4(max(color, float3(0.0)), src.a);
+        // Tube bezel: outside the curved image the screen is opaque black (the
+        // clamp sampler would otherwise smear the edge pixels outward).
+        color *= bezel;
+        float alpha = max(src.a, 1.0 - bezel);
+        return float4(max(color, float3(0.0)), alpha);
     }
     """
 }
