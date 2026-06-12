@@ -104,7 +104,10 @@ final class ScreenEffectPreviewTests: XCTestCase {
         var paths: [String] = []
         for effect in ScreenEffect.allCases where effect.isAnimated {
             var frames: [CGImage] = []
-            for (i, t) in [Float(0.8), 2.9, 5.3].enumerated() {
+            // Wide spacing: the rain field is deliberately slow (bead
+            // lifecycles ~45s, rivulet episodes 30-50s) — nearby clocks would
+            // barely differ.
+            for (i, t) in [Float(0.8), 17.0, 33.0].enumerated() {
                 let cg = try render(effect: effect, time: t)
                 frames.append(cg)
                 paths.append(try pngWrite(cg, "damson_fx_\(effect.rawValue)_t\(i).png"))

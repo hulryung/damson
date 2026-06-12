@@ -148,12 +148,12 @@ public enum ScreenEffect: String, CaseIterable, Sendable {
                 coeffs2: SIMD4<Float>(0, 0, 0, 0),
                 coeffs3: SIMD4<Float>(min(1, 0.5 + 0.5 * k), 0, 0, 0))
         case .rainGlass:
-            // Rainy window: drop lenses + wet streaks + condensation blur, with
-            // a cold overcast grade and a touch of vignette for mood.
+            // Rainy window: pinned condensation beads + slow rivulets over an
+            // out-of-focus pane, with a cold overcast grade and mild vignette.
             return PostFXParams(
                 screenSize: screenSize,
-                coeffs: SIMD4<Float>(0, 0, 0.12 * k, 0),
-                tint: SIMD4<Float>(mix(1.0, 0.95, k), mix(1.0, 0.98, k), mix(1.0, 1.03, k), 1.0),
+                coeffs: SIMD4<Float>(0, 0, 0.14 * k, 0),
+                tint: SIMD4<Float>(mix(1.0, 0.90, k), mix(1.0, 0.96, k), mix(1.0, 1.06, k), 1.0),
                 coeffs2: .zero,
                 coeffs3: .zero,
                 coeffs4: SIMD4<Float>(0, 1, k, 0))
