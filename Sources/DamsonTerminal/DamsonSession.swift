@@ -332,6 +332,15 @@ public final class DamsonSession: ObservableObject {
         case 0x42: grid.cursorDown(p1)      // B — CUD
         case 0x43: grid.cursorForward(p1)   // C — CUF
         case 0x44: grid.cursorBack(p1)      // D — CUB
+        case 0x45:                          // E — CNL: down n lines, to column 1
+            grid.cursorDown(p1)
+            grid.setCursorColumn(1)
+        case 0x46:                          // F — CPL: up n lines, to column 1.
+            // Multi-line progress UIs (Homebrew's concurrent downloads) repaint
+            // their status block with this; dropping it duplicates the block
+            // below on every refresh.
+            grid.cursorUp(p1)
+            grid.setCursorColumn(1)
         case 0x48, 0x66:                    // H / f — CUP / HVP
             let r = (params.count > 0 && params[0] > 0) ? params[0] : 1
             let c = (params.count > 1 && params[1] > 0) ? params[1] : 1
