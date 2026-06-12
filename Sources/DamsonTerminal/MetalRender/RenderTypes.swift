@@ -43,6 +43,11 @@ struct PostFXParams {
     var coeffs2: SIMD4<Float>
     /// x=invert, y=pixelate block px, z=aperture grille strength, w reserved
     var coeffs3: SIMD4<Float> = .zero
+    /// Animated effects. x=time (seconds, injected by the backend each frame),
+    /// y=mode (0 none, 1 rain, 2 snow, 3 underwater), z=intensity, w reserved.
+    /// Effects with y > 0 need continuous redraw — the backend runs a
+    /// display-link loop while one is active (see `ScreenEffect.isAnimated`).
+    var coeffs4: SIMD4<Float> = .zero
     /// Terminal background (premultiplied by window opacity) — the tube-bezel
     /// area outside the curved image is this color, slightly dimmed.
     var bgColor: SIMD4<Float> = .zero

@@ -138,14 +138,17 @@ enum MetalShaders {
 
     // ---- Post-processing (screen effects) ----------------------------------
     // A fullscreen pass that samples the rendered terminal (offscreen scene
-    // texture) and applies a screen effect. Static — no time input, so it only
-    // runs on the frames the terminal already redraws (zero idle cost).
+    // texture) and applies a screen effect. Static effects have no time input,
+    // so they only run on the frames the terminal already redraws (zero idle
+    // cost). Animated effects (coeffs4.y > 0) read coeffs4.x as time; the
+    // backend keeps a display-link redraw loop running while one is active.
     struct PostFXParams {
         float2 screenSize;   // drawable size in pixels
         float4 coeffs;       // x=scanline, y=glow, z=vignette, w=glowRadiusPx
         float4 tint;         // rgb phosphor tint (a unused)
         float4 coeffs2;      // x=curvature, y=monochrome amount, z=aberration px, w=grain
         float4 coeffs3;      // x=invert, y=pixelate block px, z=aperture grille, w reserved
+        float4 coeffs4;      // x=time s, y=anim mode (1 rain, 2 snow, 3 underwater), z=intensity
         float4 bgColor;      // terminal bg (premultiplied) — bezel = dimmed bg
     };
     struct PostFXVOut {
@@ -160,6 +163,113 @@ enum MetalShaders {
         out.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
         out.uv = float2(p.x, 1.0 - p.y);   // scene stores rows top-down
         return out;
+    }
+
+    static inline float2 hash22(float2 p) {
+        float n = sin(dot(p, float2(41.3, 289.1))) * 21753.715;
+        return fract(float2(n, n * 1.6180339));
+    }
+
+    // ---- Animated effects ---------------------------------------------------
+    // All droplet/flake math runs in aspect-corrected uv ("auv": x *= aspect) so
+    // shapes stay round regardless of window proportions. Each helper is a pure
+    // function of (auv, time) — no state, the motion lives in the math.
+
+    // One layer of raindrops sliding down a grid of tall cells. Each occupied
+    // cell runs its own drop on its own clock: the drop accelerates down the
+    // cell, swaying slightly, leaving a thin wet streak above it. Returns
+    // float4(refraction offset in auv units, wet mask, specular highlight).
+    static inline float4 rain_layer(float2 auv, float t, float2 cells, float seed) {
+        float2 st = auv * cells + float2(seed * 13.7, seed * 7.31);
+        float2 id = floor(st);
+        float2 f = fract(st);
+        float2 rnd = hash22(id);
+        float n = rnd.x;
+        if (n < 0.14) { return float4(0.0); }   // some cells stay dry
+        // Per-cell clock: phase and speed both random, so drops never sync up.
+        float ti = fract(t * (0.08 + 0.22 * rnd.y) + n * 7.0);
+        // Accelerating fall (gravity-ish), with a fade at both ends of the loop
+        // so drops condense in and slide out instead of popping.
+        float fy = mix(0.08, 0.92, ti * ti);
+        float fx = 0.5 + (n - 0.5) * 0.55 + sin(ti * 21.0 + n * 43.0) * 0.04;
+        float fade = smoothstep(0.0, 0.10, ti) * (1.0 - smoothstep(0.85, 1.0, ti));
+        // Distance from the drop center in auv units (cells are non-square).
+        float2 toC = (f - float2(fx, fy)) / cells;
+        float r = (0.009 + 0.010 * fract(n * 9.7));
+        float d = length(toC);
+        float drop = (1.0 - smoothstep(r * 0.7, r, d)) * fade;
+        // Wet streak: a thin clear band above the drop, strongest right behind
+        // it and fading toward where the drop started.
+        float sx = abs(toC.x);
+        float streakW = r * (0.55 + 0.35 * rnd.y);
+        float streak = (1.0 - smoothstep(streakW * 0.35, streakW, sx))
+                     * step(f.y, fy)
+                     * clamp(1.0 - (fy - f.y) / max(fy - 0.05, 0.001), 0.0, 1.0)
+                     * fade * 0.85;
+        // Refraction: the drop is a tiny lens — sample across its center,
+        // magnified, so the world appears inverted inside it. The streak only
+        // smears horizontally, and much less.
+        float2 off = -toC * drop * 3.0;
+        off.x += -toC.x * streak * 0.6;
+        // Specular: a small bright dot up-left of center, plus a faint rim ring
+        // at the drop boundary — on a dark terminal the rim is what makes the
+        // bead read as glass at all.
+        float hi = (1.0 - smoothstep(r * 0.12, r * 0.35,
+                                     length(toC - float2(-r * 0.30, -r * 0.35)))) * drop;
+        float rim = (smoothstep(r * 0.50, r * 0.80, d)
+                   - smoothstep(r * 0.80, r * 1.04, d)) * fade;
+        return float4(off, max(drop, streak), hi + rim * 0.26);
+    }
+
+    // Drifting snow: three parallax layers of flakes, each layer a grid of
+    // mostly-empty cells with one jittered, twinkling flake. Returns additive
+    // brightness 0..1.
+    static inline float snow_field(float2 auv, float t) {
+        float acc = 0.0;
+        for (int i = 0; i < 3; i++) {
+            float fi = float(i);
+            float g = 11.0 + fi * 9.0;                 // far layers are denser…
+            float speed = 0.16 - fi * 0.045;           // …slower…
+            float rr = 0.085 - fi * 0.022;             // …and smaller (cell units)
+            float sway = sin(t * (0.6 + fi * 0.23) + auv.y * 2.7 + fi * 5.0) * 0.6;
+            float2 st = float2(auv.x * g + sway, auv.y * g - t * speed * g);
+            float2 id = floor(st);
+            float2 f = fract(st);
+            float2 rnd = hash22(id + fi * 31.7);
+            if (rnd.x < 0.72) { continue; }            // sparse
+            float2 c = 0.25 + 0.5 * hash22(id + 17.3 + fi);
+            float d = length(f - c);
+            float flake = 1.0 - smoothstep(rr * 0.45, rr, d);
+            float twinkle = 0.7 + 0.3 * sin(t * 2.6 + rnd.y * 41.0);
+            acc += flake * twinkle * (1.0 - fi * 0.28);
+        }
+        return min(acc, 1.0);
+    }
+
+    // Rising bubbles for the underwater mode: same grid trick as snow, drifting
+    // upward, drawn as a thin ring with a highlight dot (a bubble is mostly
+    // transparent — only its rim catches light). Returns additive brightness.
+    static inline float bubble_field(float2 auv, float t) {
+        float acc = 0.0;
+        for (int i = 0; i < 2; i++) {
+            float fi = float(i);
+            float g = 7.0 + fi * 6.0;
+            float speed = 0.10 + fi * 0.05;
+            float sway = sin(t * (0.8 + fi * 0.3) + auv.y * 4.0 + fi * 2.0) * 0.25;
+            float2 st = float2(auv.x * g + sway, auv.y * g + t * speed * g);
+            float2 id = floor(st);
+            float2 f = fract(st);
+            float2 rnd = hash22(id + fi * 53.1);
+            if (rnd.x < 0.78) { continue; }            // bubbles are rare
+            float2 c = 0.3 + 0.4 * hash22(id + 7.7 + fi);
+            float r = 0.05 + 0.07 * rnd.y;
+            float d = length(f - c);
+            float ring = smoothstep(r, r * 0.82, d) - smoothstep(r * 0.66, r * 0.40, d);
+            float hi = 1.0 - smoothstep(0.0, r * 0.30,
+                                        length(f - c - float2(-r * 0.35, -r * 0.35)));
+            acc += ring * 0.5 + hi * 0.55;
+        }
+        return min(acc, 1.0);
     }
 
     // Tube curve, edges bowing INWARD: the sample coordinate is pushed outward
@@ -211,6 +321,34 @@ enum MetalShaders {
             uv = (floor(uv / block) + 0.5) * block;
         }
 
+        // Animated effects — pre-sample stage: distort the sampling coordinate
+        // (raindrop lenses, underwater wobble) and collect masks for the
+        // post-sample stages below.
+        float animMode = p.coeffs4.y;
+        float animT = p.coeffs4.x;
+        float animK = p.coeffs4.z;
+        float aspect = p.screenSize.x / p.screenSize.y;
+        float rainWet = 0.0, rainSpec = 0.0, fogMix = 0.0;
+        if (animMode > 0.5 && animMode < 1.5) {
+            // Rain on glass: two drop layers at different scales/clocks so the
+            // pattern never reads as a grid.
+            float2 auv = float2(uv.x * aspect, uv.y);
+            float4 d1 = rain_layer(auv, animT, float2(20.0, 3.0), 0.0);
+            float4 d2 = rain_layer(auv, animT * 0.85 + 11.0, float2(13.0, 2.0), 3.7);
+            float2 off = d1.xy + d2.xy;
+            rainWet = max(d1.z, d2.z);
+            rainSpec = max(d1.w, d2.w);
+            uv += float2(off.x / aspect, off.y) * animK;
+            // Condensation: everything fogs except where water has wiped the
+            // glass clear (drops and their streaks stay sharp).
+            fogMix = animK * 0.65 * (1.0 - rainWet);
+        } else if (animMode > 2.5) {
+            // Underwater: layered sine wobble — slow large swell + faster ripple.
+            uv.x += (sin(uv.y * 21.0 + animT * 1.6) * 0.0035
+                   + sin(uv.y * 6.7 - animT * 1.1) * 0.0020) * animK;
+            uv.y += sin(uv.x * 17.0 + animT * 1.2) * 0.0022 * animK;
+        }
+
         float4 src;
         float3 color;
         if (aber > 0.0) {
@@ -224,6 +362,18 @@ enum MetalShaders {
         } else {
             src = scene.sample(samp, uv);
             color = src.rgb;
+        }
+
+        // Rain condensation: a soft 5-tap blur plus a faint lift, mixed in
+        // everywhere the glass hasn't been wiped clear by a drop.
+        if (fogMix > 0.0) {
+            float2 texel = 4.0 / p.screenSize;
+            float3 blur = color * 0.2;
+            blur += scene.sample(samp, uv + float2( texel.x,  texel.y)).rgb * 0.2;
+            blur += scene.sample(samp, uv + float2(-texel.x,  texel.y)).rgb * 0.2;
+            blur += scene.sample(samp, uv + float2( texel.x, -texel.y)).rgb * 0.2;
+            blur += scene.sample(samp, uv + float2(-texel.x, -texel.y)).rgb * 0.2;
+            color = mix(color, blur + 0.022, fogMix);
         }
 
         // Phosphor glow: cheap 3x3 box blur, lighten-mixed back in.
@@ -272,6 +422,28 @@ enum MetalShaders {
         if (grain > 0.0) {
             float n = hash21(floor(in.uv * p.screenSize)) - 0.5;
             color += n * grain;
+        }
+        // Animated effects — post-sample overlays. These read the UNdistorted
+        // screen coordinate (in.uv) so flakes/bubbles float over the content
+        // rather than being bent by it.
+        if (animMode > 1.5 && animMode < 2.5) {
+            float2 auv = float2(in.uv.x * aspect, in.uv.y);
+            color += snow_field(auv, animT) * 0.85 * animK * float3(0.92, 0.96, 1.05);
+        } else if (animMode > 2.5) {
+            float2 auv = float2(in.uv.x * aspect, in.uv.y);
+            // Caustic shimmer: two crossing moving interference patterns,
+            // sharpened so only the crests read as light.
+            float c1 = sin(auv.x * 23.0 + animT * 2.1) * sin(auv.y * 17.0 - animT * 1.55);
+            float c2 = sin(auv.x * 31.0 - animT * 1.3) * sin(auv.y * 23.0 + animT * 1.9);
+            float caust = pow(max(c1 * c2, 0.0), 2.0);
+            // Brighten lit content AND add a faint glow — the additive part is
+            // what keeps caustics visible over the (near-black) terminal bg.
+            color *= 1.0 + caust * 0.10 * animK;
+            color += caust * float3(0.020, 0.045, 0.055) * animK;
+            color += bubble_field(auv, animT) * 0.40 * animK;
+        }
+        if (rainSpec > 0.0) {
+            color += rainSpec * 0.5 * animK;
         }
         // Vignette: darken toward the corners.
         if (vig > 0.0) {

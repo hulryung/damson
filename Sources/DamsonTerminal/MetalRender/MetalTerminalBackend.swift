@@ -47,6 +47,24 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// Recreated when the drawable size changes.
     private var sceneTexture: MTLTexture?
 
+    /// Animated screen effects (rain / snow / underwater): a dedicated display
+    /// link drives continuous redraws while one is active. The shader reads
+    /// time from `PostFXParams.coeffs4.x`. The link stops automatically when
+    /// the surface is occluded (AnimationLink does that) and restarts on the
+    /// next visible render. Time is measured against an epoch and wrapped
+    /// hourly so it stays Float-precise; the wrap just re-rolls every drop
+    /// once an hour, indistinguishable from the constant re-rolling anyway.
+    private lazy var effectAnimLink = AnimationLink(view: metalView)
+    private let effectEpoch: CFTimeInterval = CACurrentMediaTime()
+    private var lastEffectRenderTime: CFTimeInterval = 0
+    /// Test hook: freezes the shader clock so captures are deterministic.
+    var effectTimeOverride: Float?
+    private var effectTime: Float {
+        if let t = effectTimeOverride { return t }
+        return Float((CACurrentMediaTime() - effectEpoch)
+            .truncatingRemainder(dividingBy: 3600))
+    }
+
     /// Render rate limiting. `nextDrawable()` blocks the main thread until the next
     /// vsync once the drawable pool (3) fills, starving PTY input. We remember the
     /// last present time and coalesce renders called more often than the refresh
@@ -236,6 +254,27 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         // Keep going while an ease is in flight. Otherwise stop once the idle grace period passes (gesture + momentum ended).
         if scroll.animating { return false }
         return renderLoopIdleTicks > renderLoopMaxIdleTicks
+    }
+
+    // MARK: - animated screen-effect redraw loop
+
+    /// Keep redrawing while an animated screen effect (rain / snow / underwater)
+    /// is selected. Renders are capped at ~60fps (same cap as glyph animations)
+    /// so a 120Hz link doesn't double the full-pipeline cost. The loop ends the
+    /// moment the effect is switched off; AnimationLink itself stops on
+    /// occlusion and the next visible render restarts us.
+    private func ensureEffectAnimLoop() {
+        guard !effectAnimLink.isRunning else { return }
+        effectAnimLink.start { [weak self] _ in
+            guard let self, self.config.screenEffect.isAnimated, self.lastGrid != nil
+            else { return true }
+            let now = CACurrentMediaTime()
+            if now - self.lastEffectRenderTime >= Self.glyphRenderMinInterval {
+                self.lastEffectRenderTime = now
+                self.redrawLast()
+            }
+            return false
+        }
     }
 
     /// NSLogs once per second when env `DAMSON_FPS_LOG=1` (the HUD is handled separately via onPerfSample).
@@ -440,6 +479,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         // offscreen sceneTexture, then composite onto the drawable with a fullscreen
         // post-fx pass. When off, draw directly to the drawable.
         let effect = config.screenEffect
+        if effect.isAnimated { ensureEffectAnimLoop() }
         let sceneTarget: MTLTexture = effect.isActive
             ? ensureSceneTexture(matching: drawable.texture)
             : drawable.texture
@@ -524,6 +564,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             let bg = clearColor(config.theme.background, opacity: opacity)
             params.bgColor = SIMD4<Float>(Float(bg.red), Float(bg.green),
                                           Float(bg.blue), Float(bg.alpha))
+            params.coeffs4.x = effectTime
             fxEnc.setRenderPipelineState(md.postfxPipeline)
             fxEnc.setFragmentTexture(sceneTex, index: 0)
             fxEnc.setFragmentSamplerState(md.glyphSampler, index: 0)
@@ -1153,13 +1194,39 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         drawGlyphs(colorGlyphs, pipeline: md.colorGlyphPipeline, texture: atlas?.colorTexture)
         drawBg(overlay)
         enc.endEncoding()
+
+        // Screen effect: run the same fullscreen post-fx pass as on-screen
+        // rendering (into a second texture — a pass can't sample its own
+        // target), so captures match the display. Animated effects use the
+        // live clock, or `effectTimeOverride` for deterministic test shots.
+        var outTex = tex
+        let effect = config.screenEffect
+        if effect.isActive,
+           var params = effect.postFXParams(
+               screenSize: SIMD2<Float>(Float(pw), Float(ph)),
+               intensity: Float(config.screenEffectIntensity)),
+           let fxTex = md.device.makeTexture(descriptor: td),
+           let fxEnc = cmd.makeRenderCommandEncoder(descriptor: postfxPass(fxTex)) {
+            let bgc = clearColor(config.theme.background)
+            params.bgColor = SIMD4<Float>(Float(bgc.red), Float(bgc.green),
+                                          Float(bgc.blue), Float(bgc.alpha))
+            params.coeffs4.x = effectTime
+            fxEnc.setRenderPipelineState(md.postfxPipeline)
+            fxEnc.setFragmentTexture(tex, index: 0)
+            fxEnc.setFragmentSamplerState(md.glyphSampler, index: 0)
+            fxEnc.setFragmentBytes(&params, length: MemoryLayout<PostFXParams>.stride, index: 0)
+            fxEnc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+            fxEnc.endEncoding()
+            outTex = fxTex
+        }
+
         cmd.commit()
         cmd.waitUntilCompleted()
 
         let bytesPerRow = pw * 4
         var raw = [UInt8](repeating: 0, count: bytesPerRow * ph)
-        tex.getBytes(&raw, bytesPerRow: bytesPerRow,
-                     from: MTLRegionMake2D(0, 0, pw, ph), mipmapLevel: 0)
+        outTex.getBytes(&raw, bytesPerRow: bytesPerRow,
+                        from: MTLRegionMake2D(0, 0, pw, ph), mipmapLevel: 0)
         guard let provider = CGDataProvider(data: Data(raw) as CFData),
               let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         // bgra8Unorm in memory == little-endian 32-bit with alpha first → BGRA.

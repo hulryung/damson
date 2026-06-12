@@ -18,6 +18,9 @@ public enum ScreenEffect: String, CaseIterable, Sendable {
     case bloom
     case pixelate
     case invert
+    case rainGlass
+    case snowfall
+    case underwater
 
     public var displayName: String {
         switch self {
@@ -33,13 +36,27 @@ public enum ScreenEffect: String, CaseIterable, Sendable {
         case .bloom: return "Bloom (soft glow)"
         case .pixelate: return "Pixelate (chunky retro blocks)"
         case .invert: return "Invert (negative)"
+        case .rainGlass: return "Rain on Glass (drops + condensation)"
+        case .snowfall: return "Snowfall (drifting flakes)"
+        case .underwater: return "Underwater (waves + bubbles)"
         }
     }
 
     var isActive: Bool { self != .none }
 
+    /// Animated effects are functions of time: the shader reads `coeffs4.x`
+    /// (seconds) and the backend keeps a display-link redraw loop running while
+    /// one is active. Static effects keep the zero-idle-cost contract.
+    public var isAnimated: Bool {
+        switch self {
+        case .rainGlass, .snowfall, .underwater: return true
+        default: return false
+        }
+    }
+
     /// Post-fx parameters scaled by `intensity` (0~1). nil when `.none`.
-    /// Static effects only (no time input) — no redraw needed while idle.
+    /// For animated effects the backend injects the current time into
+    /// `coeffs4.x` after this returns (the params are otherwise pure).
     func postFXParams(screenSize: SIMD2<Float>, intensity: Float) -> PostFXParams? {
         let k = max(0, min(1, intensity))
         switch self {
@@ -130,6 +147,35 @@ public enum ScreenEffect: String, CaseIterable, Sendable {
                 tint: SIMD4<Float>(1.0, 1.0, 1.0, 1.0),
                 coeffs2: SIMD4<Float>(0, 0, 0, 0),
                 coeffs3: SIMD4<Float>(min(1, 0.5 + 0.5 * k), 0, 0, 0))
+        case .rainGlass:
+            // Rainy window: drop lenses + wet streaks + condensation blur, with
+            // a cold overcast grade and a touch of vignette for mood.
+            return PostFXParams(
+                screenSize: screenSize,
+                coeffs: SIMD4<Float>(0, 0, 0.12 * k, 0),
+                tint: SIMD4<Float>(mix(1.0, 0.95, k), mix(1.0, 0.98, k), mix(1.0, 1.03, k), 1.0),
+                coeffs2: .zero,
+                coeffs3: .zero,
+                coeffs4: SIMD4<Float>(0, 1, k, 0))
+        case .snowfall:
+            // Drifting parallax snow over a slightly cool grade.
+            return PostFXParams(
+                screenSize: screenSize,
+                coeffs: .zero,
+                tint: SIMD4<Float>(mix(1.0, 0.97, k), mix(1.0, 0.99, k), mix(1.0, 1.03, k), 1.0),
+                coeffs2: .zero,
+                coeffs3: .zero,
+                coeffs4: SIMD4<Float>(0, 2, k, 0))
+        case .underwater:
+            // Sine-wobble refraction + caustic shimmer + rising bubbles, graded
+            // blue-green and vignetted toward the depths.
+            return PostFXParams(
+                screenSize: screenSize,
+                coeffs: SIMD4<Float>(0, 0, 0.30 * k, 0),
+                tint: SIMD4<Float>(mix(1.0, 0.68, k), mix(1.0, 0.90, k), mix(1.0, 1.05, k), 1.0),
+                coeffs2: .zero,
+                coeffs3: .zero,
+                coeffs4: SIMD4<Float>(0, 3, k, 0))
         }
     }
 }
