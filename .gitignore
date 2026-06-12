@@ -9,3 +9,4 @@ dist/
 # build artifact from scripts/build-icon.sh; regenerated from icon-source.svg.
 Resources/Damson-1024.png
 .claude/
+__pycache__/
