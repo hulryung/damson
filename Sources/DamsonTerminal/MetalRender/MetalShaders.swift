@@ -207,7 +207,7 @@ enum MetalShaders {
         float d = length(f - c);
         float m = (1.0 - smoothstep(r * 0.68, r, d)) * smoothstep(0.0, 0.04, presence);
         // Gentle lens inversion; tiny beads barely bend the view.
-        float2 off = -((f - c) / grid) * m * 1.7;
+        float2 off = -((f - c) / grid) * m * 0.8;
         // Sky crescent near the lower edge + a faint rim all around.
         float cres = (1.0 - smoothstep(r * 0.12, r * 0.38,
                                        length(f - c - float2(0.0, r * 0.45)))) * m;
@@ -261,8 +261,8 @@ enum MetalShaders {
         float head = (1.0 - smoothstep(hr * 0.7, hr, length(toH)))
                    * running * smoothstep(0.0, 0.05, prog) * go;
         // Refraction: full lens in the head, sideways-only bend in the thread.
-        float2 off = -toH * head * 4.5;
-        off.x += -(auv.x - lineX) * strand * 2.2;
+        float2 off = -toH * head * 2.2;
+        off.x += -(auv.x - lineX) * strand * 1.2;
         float hi = (1.0 - smoothstep(hr * 0.12, hr * 0.36,
                                      length(toH - float2(0.0, hr * 0.42)))) * head;
         float wet = max(head, strand * 0.8);
