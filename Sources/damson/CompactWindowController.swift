@@ -628,6 +628,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         let neighborStart = swipeFromRight ? width : -width
         setSwipeTranslation(tabs[currentIndex].tree.layer, dx)
         setSwipeTranslation(swipeNeighborLayer, neighborStart + dx)
+
+        // Track the tab-bar selection pill to the swipe progress so it moves with
+        // the finger (like the keyboard switch animation) instead of snapping only
+        // after the settle completes.
+        let fraction = min(1, abs(dx) / width)
+        tabBar.swipePillTrack(fromIndex: currentIndex, toIndex: swipeNeighborIndex,
+                              fraction: fraction)
     }
 
     /// Release: commit the switch if dragged past ~20% of the width in the locked
@@ -648,6 +655,11 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         let neighborIndex = swipeNeighborIndex
         swipeActive = false
         swipeAnimating = true
+
+        // Settle the tab-bar pill onto its target in sync with the content slide
+        // (same duration + curve), so the bar finishes exactly when the page does.
+        tabBar.swipePillSettle(toIndex: commit ? neighborIndex : currentIndex,
+                               duration: Self.tabSlideDuration, timing: Self.tabSlideTiming())
 
         // Settle both layers from the release offset to the target: commit →
         // dx = -neighborStart (neighbor reaches 0, current slides fully off);
@@ -712,6 +724,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         swipeNeighborIndex = -1
         swipeActive = false
         swipeAnimating = false
+        tabBar.swipePillEnd()   // hand the pill back to the normal selectTab path
     }
 
     /// Tear down an in-flight swipe before a non-swipe path (keyboard/click switch)

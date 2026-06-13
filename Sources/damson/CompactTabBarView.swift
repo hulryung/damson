@@ -34,6 +34,10 @@ final class CompactTabBarView: NSView {
     private let selectionPill = CALayer()
     /// The tab index the pill currently sits on (-1 = not placed yet → first placement snaps).
     private var pillDisplayedIndex: Int = -1
+    /// While an interactive trackpad swipe drives the pill directly, a stray
+    /// `update()` (e.g. a PTY title refresh) must not snap the pill back — the
+    /// controller owns its position until `swipePillEnd()`.
+    private var swipePillTracking = false
 
     // Drag-reorder state.
     private var perTab: CGFloat = 100   // current per-tab width (updated in layout)
@@ -343,7 +347,52 @@ final class CompactTabBarView: NSView {
     /// (same 0.16s/easeOut as the content cross-slide, so the bar and the content move as
     /// one gesture); anything else — title refresh, window resize, tab add/remove — snaps,
     /// so the pill simply tracks layout. Hidden while reorder mode rearranges the buttons.
+    /// Interactive trackpad swipe: place the pill at the interpolated position
+    /// between the `from` and `to` tab frames (fraction 0 = from … 1 = to),
+    /// tracking the finger with no animation. Mirrors the content cross-slide so
+    /// the bar and the content move as one gesture (keyboard switches already get
+    /// this for free via the animated `positionSelectionPill`). The controller
+    /// drives this every gesture frame.
+    func swipePillTrack(fromIndex: Int, toIndex: Int, fraction: CGFloat) {
+        guard !reorderModeActive,
+              fromIndex >= 0, fromIndex < tabButtons.count,
+              toIndex >= 0, toIndex < tabButtons.count else { return }
+        swipePillTracking = true
+        let f = max(0, min(1, fraction))
+        let a = tabButtons[fromIndex].frame
+        let b = tabButtons[toIndex].frame
+        let frame = NSRect(x: a.minX + (b.minX - a.minX) * f,
+                           y: a.minY + (b.minY - a.minY) * f,
+                           width: a.width + (b.width - a.width) * f,
+                           height: a.height + (b.height - a.height) * f)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        selectionPill.isHidden = false
+        selectionPill.frame = frame
+        CATransaction.commit()
+    }
+
+    /// Settle the pill onto `index`'s tab over the given motion, in sync with the
+    /// content swipe settle. Records `index` as displayed so the follow-up
+    /// `selectTab` snap is a no-op.
+    func swipePillSettle(toIndex index: Int, duration: CFTimeInterval,
+                         timing: CAMediaTimingFunction) {
+        guard !reorderModeActive, index >= 0, index < tabButtons.count else { return }
+        pillDisplayedIndex = index
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(duration)
+        CATransaction.setAnimationTimingFunction(timing)
+        selectionPill.isHidden = false
+        selectionPill.frame = tabButtons[index].frame
+        CATransaction.commit()
+    }
+
+    /// End interactive ownership of the pill (controller's swipe teardown).
+    func swipePillEnd() { swipePillTracking = false }
+
     private func positionSelectionPill() {
+        // The controller is driving the pill through a live swipe — don't fight it.
+        if swipePillTracking { return }
         guard !reorderModeActive, selectedIndex >= 0, selectedIndex < tabButtons.count else {
             selectionPill.isHidden = true
             if reorderModeActive { pillDisplayedIndex = -1 }  // re-place (snap) after reorder
