@@ -2105,12 +2105,24 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }()
         // blink phase — include in the dedupe key so each phase toggle re-renders when ON.
         let blinkKey = session.config.cursorBlink ? (cursorBlinkVisible ? "1" : "0") : "x"
-        if grid.version == lastRenderedVersion
+        let nonBlinkUnchanged = grid.version == lastRenderedVersion
             && markedText == lastRenderedMarkedText
             && selKey == lastRenderedSelectionKey
             && findKey == lastRenderedFindKey
             && hoverKey == lastRenderedHoverKey
-            && blinkKey == lastRenderedBlinkKey {
+        if nonBlinkUnchanged && blinkKey == lastRenderedBlinkKey {
+            return
+        }
+        // Blink-only change with an overlay cursor (bar/underline): that cursor
+        // is a CALayer strip, NOT baked into the Metal frame, so a phase toggle
+        // only needs the overlay refreshed — no full-screen re-encode. Without
+        // this, a blinking cursor re-renders the entire grid ~2×/s while idle
+        // (measurable idle CPU). The block cursor IS baked into the frame (the
+        // cursor cell is drawn inverted), so it still takes the full path below.
+        // Skipped during IME (markedText present → preedit lives in the frame).
+        if nonBlinkUnchanged, session.grid.cursorShape != .block, markedText.isEmpty {
+            lastRenderedBlinkKey = blinkKey
+            refreshCursorOverlayNow()
             return
         }
         lastRenderedVersion = grid.version
