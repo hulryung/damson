@@ -1,6 +1,14 @@
 import AppKit
 import DamsonTerminal  // Motion (shared animation timing)
 
+/// Marker for views that must receive clicks IMMEDIATELY when they sit in the
+/// window's titlebar region. The theme frame otherwise holds every titlebar
+/// click for the system double-click interval (~0.5s) to disambiguate the
+/// title-bar double-click action — which made tab clicks feel laggy.
+/// `CompactWindow.sendEvent` forwards clicks that hit one of these straight to
+/// it and skips the delay.
+protocol ImmediateTitlebarClick: NSView {}
+
 /// Custom tab bar for compact mode only. Disables NSWindow's native tabs
 /// (tabbingMode = .disallowed) and places this at the very top of contentView → tabs
 /// appear in the same row as the traffic lights.
@@ -105,7 +113,20 @@ final class CompactTabBarView: NSView {
 
     func update(titles: [String], selectedIndex: Int) {
         self.selectedIndex = selectedIndex
-        // Remove the existing buttons and recreate them. Fine since the tab count doesn't change often.
+        // When only titles/selection change (the common case — every PTY title
+        // refresh calls here), reuse the existing buttons in place. Recreating
+        // them would remove the view the user is mid-click on: a title refresh
+        // landing between mouseDown and mouseUp drops the click, so tab switches
+        // intermittently fail. Reuse also avoids per-refresh view churn.
+        // Only a tab add/remove (count change) rebuilds.
+        if tabButtons.count == titles.count {
+            for (i, title) in titles.enumerated() {
+                tabButtons[i].setTitle(title)
+                tabButtons[i].setSelected(i == selectedIndex)
+            }
+            needsLayout = true
+            return
+        }
         tabButtons.forEach { $0.removeFromSuperview() }
         tabButtons.removeAll()
         for (i, title) in titles.enumerated() {
@@ -422,7 +443,7 @@ final class CompactTabBarView: NSView {
 /// One tab: title + trailing close X. Click selects, the X closes. In reorder
 /// mode (Cmd+Shift) a horizontal drag is reported to the bar; the window is
 /// pinned immovable then, so these drag events actually reach us.
-private final class TabButton: NSView {
+private final class TabButton: NSView, ImmediateTitlebarClick {
     var onClick: (() -> Void)?
     var onClose: (() -> Void)?
     /// Committed inline rename (Return or focus loss). "" reverts to the auto title.
@@ -486,6 +507,33 @@ private final class TabButton: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    /// In-place title update (button reuse path). Skipped while an inline rename
+    /// field is open so it doesn't clobber what the user is typing.
+    func setTitle(_ title: String) {
+        guard editField == nil else { return }
+        let t = title.isEmpty ? "Damson" : title
+        if titleLabel.stringValue != t { titleLabel.stringValue = t }
+    }
+
+    /// In-place selection update (button reuse path). Drives the title color;
+    /// the sliding pill (bar-level) shows the highlight itself. Re-applies the
+    /// reorder fill, which is selection-dependent, while that mode is active.
+    func setSelected(_ sel: Bool) {
+        guard isSelected != sel else { return }
+        isSelected = sel
+        titleLabel.textColor = sel ? .labelColor : .secondaryLabelColor
+        if (layer?.borderWidth ?? 0) > 0 { setReorderMode(true) }
+    }
+
+    // The tab bar sits in the titlebar region, whose background is window-
+    // draggable. A custom NSView with a clear background defaults to
+    // `mouseDownCanMoveWindow == true`, so the window server HOLDS each
+    // mouseDown for ~0.5s to disambiguate a window-move drag before delivering
+    // it — that delay was the whole "tab switch is slow" symptom. Returning
+    // false makes a click on a tab claim its mouseDown immediately. (Empty bar
+    // areas keep the default, so the window stays draggable by them.)
+    override var mouseDownCanMoveWindow: Bool { false }
 
     // Route all events to self except the close button, otherwise the title
     // label (an NSTextField) swallows mouseDown and clicks miss the tab.

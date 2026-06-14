@@ -3,6 +3,46 @@ import Combine
 import DamsonControl
 import DamsonTerminal
 
+/// NSWindow that delivers tab-bar clicks immediately. The tab bar lives in the
+/// titlebar region of a `fullSizeContentView` window; the theme frame holds
+/// every titlebar click for the system double-click interval (~0.5s) to detect
+/// the title-bar double-click action (zoom/minimize), which made clicking a tab
+/// feel laggy (~0.5s before anything happened — measured). When a left-mouse
+/// event hits a tab (an `ImmediateTitlebarClick` view) we forward it straight to
+/// that view and return, skipping the theme-frame delay. The whole down→drag→up
+/// sequence routes to the same target. Everything else (empty bar area, the +
+/// button, terminal content) goes through `super`, so window drag-to-move and
+/// double-click-to-zoom on the empty titlebar are unchanged.
+final class CompactWindow: NSWindow {
+    private weak var clickTarget: NSView?
+
+    override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown:
+            if let target = contentView?.hitTest(event.locationInWindow) as? ImmediateTitlebarClick {
+                clickTarget = target
+                target.mouseDown(with: event)
+                return
+            }
+            clickTarget = nil
+        case .leftMouseDragged:
+            if let target = clickTarget {
+                target.mouseDragged(with: event)
+                return
+            }
+        case .leftMouseUp:
+            if let target = clickTarget {
+                clickTarget = nil
+                target.mouseUp(with: event)
+                return
+            }
+        default:
+            break
+        }
+        super.sendEvent(event)
+    }
+}
+
 /// Window controller dedicated to compact mode. A single NSWindow multiplexes N
 /// DamsonSessions. NSWindow's native tabs are disabled (`tabbingMode = .disallowed`)
 /// and a custom CompactTabBarView sits at the top of contentView so the tabs share a
@@ -80,11 +120,15 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private var swipeNeighborIndex = -1
     private var swipeFromRight = false   // neighbor (next tab) enters from the right
 
-    // Shared tab-slide motion — the keyboard/click cross-slide and the trackpad
-    // swipe settle use the SAME duration + curve so they decelerate identically.
-    // CABasicAnimation runs on the display's refresh rate (120Hz on ProMotion) for
-    // free, so neither path needs a manual display link.
+    // Tab-slide motion. The trackpad swipe settle uses the longer duration: the
+    // finger has already dragged the content most of the way, so the 0.42s is
+    // just the release deceleration and reads as natural follow-through.
     static let tabSlideDuration: TimeInterval = 0.42
+    // A discrete click/keyboard switch has no finger tracking — the full-width
+    // slide starts from zero, so the 0.42s settle is perceived as pure latency
+    // ("the tab switches slowly"). A short slide keeps a sense of direction while
+    // feeling immediate.
+    static let tabClickSlideDuration: TimeInterval = 0.16
     static func tabSlideTiming() -> CAMediaTimingFunction {
         CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)   // strong ease-out
     }
@@ -93,7 +137,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     /// If `restoring` is present, restore that tab/pane layout + cwd; otherwise a single empty tab.
     init(restoring: RestorableWindow? = nil) {
-        let window = NSWindow(
+        let window = CompactWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
@@ -508,8 +552,14 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             fade = false
             incomingStart = goingRight ? width : -width
             outgoingEnd = goingRight ? -width : width
-            dur = Self.tabSlideDuration
-            timing = Self.tabSlideTiming()   // shared with the trackpad-swipe settle
+            // Discrete click/keyboard switch — snappy. NOT the trackpad-swipe
+            // settle curve (tabSlideTiming): that one is an extreme ease-out
+            // tuned for finger-release follow-through — it jumps ~90% in the
+            // first fifth then crawls the final stretch, which on a full-width
+            // click slide reads as "almost there… still sliding" = sluggish.
+            // A plain easeOut finishes cleanly with no slow tail.
+            dur = Self.tabClickSlideDuration
+            timing = CAMediaTimingFunction(name: .easeOut)
         case .crossfade, .none:
             fade = true
             let delta: CGFloat = 24
