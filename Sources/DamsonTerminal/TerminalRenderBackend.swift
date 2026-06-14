@@ -39,6 +39,9 @@ public struct RenderState: Equatable {
     /// Selection endpoints (unnormalized: anchor = mouseDown, head = drag end).
     public var selectionAnchor: GridPos?
     public var selectionHead: GridPos?
+    /// When true, the selection is rectangular (block): the same column span on
+    /// every covered row rather than a linear row-major run.
+    public var selectionRectangular: Bool
     /// Find matches keyed by unified row → list of column ranges.
     public var findMatchesByRow: [Int: [Range<Int>]]
     /// The single active (Cmd+G-selected) match, if any, and its row.
@@ -56,6 +59,7 @@ public struct RenderState: Equatable {
         markedText: String = "",
         selectionAnchor: GridPos? = nil,
         selectionHead: GridPos? = nil,
+        selectionRectangular: Bool = false,
         findMatchesByRow: [Int: [Range<Int>]] = [:],
         activeFindRow: Int? = nil,
         activeFindRange: Range<Int>? = nil,
@@ -66,6 +70,7 @@ public struct RenderState: Equatable {
         self.markedText = markedText
         self.selectionAnchor = selectionAnchor
         self.selectionHead = selectionHead
+        self.selectionRectangular = selectionRectangular
         self.findMatchesByRow = findMatchesByRow
         self.activeFindRow = activeFindRow
         self.activeFindRange = activeFindRange

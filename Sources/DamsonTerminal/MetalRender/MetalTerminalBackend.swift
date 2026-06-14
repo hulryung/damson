@@ -940,6 +940,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let start = (a.row < h.row || (a.row == h.row && a.col < h.col)) ? a : h
         let end = (start.row == a.row && start.col == a.col) ? h : a
         if row < start.row || row > end.row { return nil }
+        if state.selectionRectangular {
+            // Block selection: the same column span on every covered row.
+            return SelectionLogic.blockColumns(anchorCol: a.col, headCol: h.col, cols: cols)
+        }
         let lo = (row == start.row) ? start.col : 0
         let hi = (row == end.row) ? min(end.col, cols) : cols
         return lo < hi ? lo..<hi : nil
@@ -1151,6 +1155,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     private func fgRGBA(cell: Cell, col: Int, sel: Range<Int>?, finds: [Range<Int>],
                         activeFind: Range<Int>?, hover: Range<Int>?, isCursor: Bool) -> SIMD4<Float> {
         if isCursor { return rgba(config.theme.background) }
+        if sel?.contains(col) ?? false {
+            // Reverse-video selection (pairs with bgRGBA): text takes the cell's bg.
+            return rgba(cell.attrs.resolvedColors(theme: config.theme).bg ?? config.theme.background)
+        }
         if hover?.contains(col) ?? false { return rgba(.systemBlue) }
         if (activeFind?.contains(col) ?? false) || finds.contains(where: { $0.contains(col) }) {
             return rgba(.black)
@@ -1165,7 +1173,14 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     private func bgRGBA(cell: Cell, col: Int, sel: Range<Int>?, finds: [Range<Int>],
                         activeFind: Range<Int>?, isCursor: Bool) -> SIMD4<Float>? {
         if isCursor { return rgba(config.cursorColor) }
-        if sel?.contains(col) ?? false { return rgba(.selectedTextBackgroundColor) }
+        if sel?.contains(col) ?? false {
+            // Reverse-video selection: the highlight takes the cell's own text color
+            // (paired with fgRGBA handing the cell's bg to the text). Contrast is
+            // always the cell's own, so selected text stays readable on ANY theme —
+            // unlike the system selectedTextBackgroundColor, a light blue tuned for
+            // black-on-white documents that washed out on dark terminal themes.
+            return rgba(cell.attrs.resolvedColors(theme: config.theme).fg)
+        }
         if activeFind?.contains(col) ?? false { return rgba(NSColor.systemOrange.withAlphaComponent(0.85)) }
         if finds.contains(where: { $0.contains(col) }) { return rgba(NSColor.systemYellow.withAlphaComponent(0.6)) }
         let a = cell.attrs
