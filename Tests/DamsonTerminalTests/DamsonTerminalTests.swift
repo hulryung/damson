@@ -1,7 +1,18 @@
 import XCTest
+import Combine
 @testable import DamsonTerminal
 
 final class DamsonTerminalTests: XCTestCase {
+    func testClearSelectionFiresRequest() {
+        let session = DamsonSession(config: DamsonConfig())
+        defer { session.terminate() }
+        var fired = 0
+        let sub = session.clearSelectionRequested.sink { fired += 1 }
+        defer { sub.cancel() }
+        session.clearSelection()
+        XCTAssertEqual(fired, 1, "clearSelection() must fan out over clearSelectionRequested")
+    }
+
     func testSessionInitializes() {
         let session = DamsonSession(config: DamsonConfig())
         defer { session.terminate() }

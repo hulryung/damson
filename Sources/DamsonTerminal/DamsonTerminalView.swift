@@ -132,6 +132,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
     private var gridSubscription: AnyCancellable?
     private var configSubscription: AnyCancellable?
+    private var clearSelectionSubscription: AnyCancellable?
     private var lastReportedSize: (cols: Int, rows: Int)? = nil
     private var renderScheduled = false
     /// Whether the DEC 2026 sync output flush safety timer is already scheduled.
@@ -323,6 +324,12 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             .receive(on: RunLoop.main)
             .sink { [weak self] cfg in
                 self?.applyConfig(cfg)
+            }
+
+        clearSelectionSubscription = session.clearSelectionRequested
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in
+                self?.clearSelectionIfNeeded()
             }
 
         // BEL (\a) — visual flash + system beep. session.onBell may be called

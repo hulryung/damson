@@ -32,6 +32,12 @@ public final class DamsonSession: ObservableObject {
     /// PTY chunk, so the host should coalesce on a per-runloop basis.
     public let gridChanged = PassthroughSubject<Void, Never>()
 
+    /// Host request to drop any active text selection. Selection state lives in the
+    /// view layer (`DamsonTerminalView`), so the model fans the request out via this
+    /// subject and the view clears + re-renders. Lets a host (cmux/`Damson.app`) clear
+    /// the selection through the model API without reaching into the view.
+    public let clearSelectionRequested = PassthroughSubject<Void, Never>()
+
     // Callbacks the host subscribes to. Prefer weak captures.
     public var onTitleChanged: ((String) -> Void)?
     /// Current working directory reported by the shell via OSC 7. Updated only when
@@ -134,8 +140,11 @@ public final class DamsonSession: ObservableObject {
         gridChanged.send()
     }
 
+    /// Drop any active text selection. Selection state is owned by the view, so this
+    /// fans the request out over `clearSelectionRequested`; the subscribed view clears
+    /// its anchor/head and re-renders.
     public func clearSelection() {
-        // TODO(M8)
+        clearSelectionRequested.send()
     }
 
     /// Called on hot-reload, e.g. when the font/colors/palette change.
