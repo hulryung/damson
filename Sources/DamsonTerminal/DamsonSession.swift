@@ -398,6 +398,25 @@ public final class DamsonSession: ObservableObject {
                 // Secondary DA → ESC [ > 0 ; 0 ; 0 c (generic)
                 pty.write(Data([0x1B, 0x5B, 0x3E, 0x30, 0x3B, 0x30, 0x3B, 0x30, 0x63]))
             }
+        case 0x6E:                          // n — DSR (Device Status Report)
+            // Only the ANSI form (no private marker). Many CLIs — gh, shell
+            // prompt frameworks, vim — send `CSI 6 n` and BLOCK on a read until
+            // the cursor-position report comes back; without it they stall ~5s
+            // on a timeout (the "gh is slow inside damson" symptom).
+            if privateMarker == nil {
+                switch params.first ?? 0 {
+                case 5:
+                    // Operating-status report → terminal OK: ESC [ 0 n
+                    pty.write(Data([0x1B, 0x5B, 0x30, 0x6E]))
+                case 6:
+                    // Cursor Position Report → ESC [ row ; col R (1-based, screen-relative).
+                    let row = min(max(grid.cursorRow + 1, 1), grid.rows)
+                    let col = min(max(grid.cursorCol + 1, 1), grid.cols)
+                    pty.write(Data("\u{1B}[\(row);\(col)R".utf8))
+                default:
+                    break
+                }
+            }
         case 0x71:                          // q — DECSCUSR (intermediate=SP)
             if privateMarker == nil && intermediates == [0x20] {
                 let ps = params.first ?? 0
