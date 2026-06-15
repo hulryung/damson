@@ -486,10 +486,20 @@ private final class TabButton: NSView, ImmediateTitlebarClick {
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
 
+        // The title's trailing gap to the close button is NOT required: a freshly
+        // created TabButton is momentarily 0pt wide (its real width is set in the
+        // bar's layout()), and at 0pt the leading(10) + gap(4) + close button
+        // (14) + trailing(6) chain can't be satisfied — required-vs-required would
+        // log an Auto Layout conflict every launch. Dropping this one to 999 lets
+        // it yield only at that impossible transient width; at any real tab width
+        // it's fully satisfied, so the layout is unchanged.
+        let titleTrailing = titleLabel.trailingAnchor.constraint(
+            lessThanOrEqualTo: closeButton.leadingAnchor, constant: -4)
+        titleTrailing.priority = .init(999)
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -4),
+            titleTrailing,
 
             closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
