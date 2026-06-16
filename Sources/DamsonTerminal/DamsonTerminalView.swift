@@ -693,12 +693,12 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // Split — passed to the window controller via the responder chain (only handled in Compact mode).
         let splitH = NSMenuItem(
             title: String(localized: "menu.splitH", defaultValue: "Split Horizontally"),
-            action: Selector(("splitPaneHorizontally:")), keyEquivalent: ""
+            action: NSSelectorFromString("splitPaneHorizontally:"), keyEquivalent: ""
         )
         menu.addItem(splitH)
         let splitV = NSMenuItem(
             title: String(localized: "menu.splitV", defaultValue: "Split Vertically"),
-            action: Selector(("splitPaneVertically:")), keyEquivalent: ""
+            action: NSSelectorFromString("splitPaneVertically:"), keyEquivalent: ""
         )
         menu.addItem(splitV)
         return menu
@@ -1780,9 +1780,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         if mods == [.command, .shift] {
             switch event.charactersIgnoringModifiers {
             case "}", "]":
-                if NSApp.sendAction(Selector(("selectNextTab:")), to: nil, from: self) { return true }
+                if NSApp.sendAction(NSSelectorFromString("selectNextTab:"), to: nil, from: self) { return true }
             case "{", "[":
-                if NSApp.sendAction(Selector(("selectPreviousTab:")), to: nil, from: self) { return true }
+                if NSApp.sendAction(NSSelectorFromString("selectPreviousTab:"), to: nil, from: self) { return true }
             default: break
             }
             return super.performKeyEquivalent(with: event)
@@ -1795,9 +1795,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         if mods.contains(.command), mods.isDisjoint(with: [.shift, .control, .option]) {
             switch event.keyCode {
             case 123:
-                if NSApp.sendAction(Selector(("selectPreviousTab:")), to: nil, from: self) { return true }
+                if NSApp.sendAction(NSSelectorFromString("selectPreviousTab:"), to: nil, from: self) { return true }
             case 124:
-                if NSApp.sendAction(Selector(("selectNextTab:")), to: nil, from: self) { return true }
+                if NSApp.sendAction(NSSelectorFromString("selectNextTab:"), to: nil, from: self) { return true }
             case 126: // ⌘↑ — jump to the previous prompt (OSC 133 mark)
                 jumpToPreviousPrompt(self); return true
             case 125: // ⌘↓ — jump to the next prompt
@@ -1816,7 +1816,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         case "w":
             // Send a closeTab action through the responder chain first —
             // CompactWindowController may implement closing only the active tab. If no one takes it, close the window normally.
-            if NSApp.sendAction(Selector(("performCloseTab:")), to: nil, from: self) {
+            if NSApp.sendAction(NSSelectorFromString("performCloseTab:"), to: nil, from: self) {
                 return true
             }
             window?.performClose(nil)

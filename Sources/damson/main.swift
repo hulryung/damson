@@ -775,7 +775,7 @@ func installMainMenu() {
     editMenu.addItem(item("Copy Last Command Output",
                           #selector(DamsonSurfaceView.copyLastCommandOutput(_:)), .copyLastCommandOutput))
     editMenu.addItem(NSMenuItem.separator())
-    editMenu.addItem(item("Find…", Selector(("performFindPanelAction:")), .find))
+    editMenu.addItem(item("Find…", NSSelectorFromString("performFindPanelAction:"), .find))
     editMenu.addItem(item("Find Next", #selector(DamsonSurfaceView.findNextMatch), .findNext))
     editMenu.addItem(item("Find Previous", #selector(DamsonSurfaceView.findPreviousMatch), .findPrevious))
 
@@ -814,16 +814,16 @@ func installMainMenu() {
                            #selector(CompactWindowController.splitPaneVertically(_:)), .splitVertically))
     splitMenu.addItem(NSMenuItem.separator())
     // Pane focus navigation — default Cmd+Opt+arrows (rebindable via the store).
-    splitMenu.addItem(item("Focus Pane Left", Selector(("focusPaneLeft:")), .focusPaneLeft))
-    splitMenu.addItem(item("Focus Pane Right", Selector(("focusPaneRight:")), .focusPaneRight))
-    splitMenu.addItem(item("Focus Pane Down", Selector(("focusPaneDown:")), .focusPaneDown))
-    splitMenu.addItem(item("Focus Pane Up", Selector(("focusPaneUp:")), .focusPaneUp))
+    splitMenu.addItem(item("Focus Pane Left", NSSelectorFromString("focusPaneLeft:"), .focusPaneLeft))
+    splitMenu.addItem(item("Focus Pane Right", NSSelectorFromString("focusPaneRight:"), .focusPaneRight))
+    splitMenu.addItem(item("Focus Pane Down", NSSelectorFromString("focusPaneDown:"), .focusPaneDown))
+    splitMenu.addItem(item("Focus Pane Up", NSSelectorFromString("focusPaneUp:"), .focusPaneUp))
     splitMenu.addItem(NSMenuItem.separator())
     // Cmd+Shift+arrows — swap position with the adjacent pane (the same swap as ⌘⇧+click).
-    splitMenu.addItem(item("Swap Pane Left", Selector(("swapPaneLeft:")), .swapPaneLeft))
-    splitMenu.addItem(item("Swap Pane Right", Selector(("swapPaneRight:")), .swapPaneRight))
-    splitMenu.addItem(item("Swap Pane Down", Selector(("swapPaneDown:")), .swapPaneDown))
-    splitMenu.addItem(item("Swap Pane Up", Selector(("swapPaneUp:")), .swapPaneUp))
+    splitMenu.addItem(item("Swap Pane Left", NSSelectorFromString("swapPaneLeft:"), .swapPaneLeft))
+    splitMenu.addItem(item("Swap Pane Right", NSSelectorFromString("swapPaneRight:"), .swapPaneRight))
+    splitMenu.addItem(item("Swap Pane Down", NSSelectorFromString("swapPaneDown:"), .swapPaneDown))
+    splitMenu.addItem(item("Swap Pane Up", NSSelectorFromString("swapPaneUp:"), .swapPaneUp))
 
     // Window menu — tab navigation.
     let windowItem = NSMenuItem()
@@ -836,15 +836,15 @@ func installMainMenu() {
     // but punctuation doesn't). These items stay for menu DISPLAY + click; the
     // actual keystroke is dispatched by DamsonSurfaceView's key hook, the same
     // path ⌘W already uses. (store fills the displayed equivalent.)
-    windowMenu.addItem(item("Show Next Tab", Selector(("selectNextTab:")), .nextTab))
-    windowMenu.addItem(item("Show Previous Tab", Selector(("selectPreviousTab:")), .previousTab))
+    windowMenu.addItem(item("Show Next Tab", NSSelectorFromString("selectNextTab:"), .nextTab))
+    windowMenu.addItem(item("Show Previous Tab", NSSelectorFromString("selectPreviousTab:"), .previousTab))
     windowMenu.addItem(NSMenuItem.separator())
 
     // Cmd+1..9 — go to the nth tab. tag holds the 1-based number.
     for n in 1...9 {
         let item = NSMenuItem(
             title: "Tab \(n)",
-            action: Selector(("selectTabByNumber:")),
+            action: NSSelectorFromString("selectTabByNumber:"),
             keyEquivalent: "\(n)"
         )
         item.keyEquivalentModifierMask = [.command]

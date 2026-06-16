@@ -352,15 +352,15 @@ final class KeyBindingStore {
     private func perform(_ action: AppAction.ViewAction, on view: DamsonSurfaceView) -> Bool {
         switch action {
         case .nextTab:
-            return NSApp.sendAction(Selector(("selectNextTab:")), to: nil, from: view)
+            return NSApp.sendAction(NSSelectorFromString("selectNextTab:"), to: nil, from: view)
         case .previousTab:
-            return NSApp.sendAction(Selector(("selectPreviousTab:")), to: nil, from: view)
+            return NSApp.sendAction(NSSelectorFromString("selectPreviousTab:"), to: nil, from: view)
         case .jumpPreviousPrompt:
             view.jumpToPreviousPrompt(view); return true
         case .jumpNextPrompt:
             view.jumpToNextPrompt(view); return true
         case .closeTab:
-            if NSApp.sendAction(Selector(("performCloseTab:")), to: nil, from: view) { return true }
+            if NSApp.sendAction(NSSelectorFromString("performCloseTab:"), to: nil, from: view) { return true }
             view.window?.performClose(nil); return true
         case .quit:
             NSApp.terminate(nil); return true
