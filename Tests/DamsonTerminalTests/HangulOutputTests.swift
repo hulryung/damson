@@ -64,7 +64,7 @@ final class HangulOutputTests: XCTestCase {
         // Feed one Jamo (3 bytes) at a time.
         var chunks: [[UInt8]] = []
         var i = 0
-        while i < nfd.count { chunks.append(Array(nfd[i..<i+3])); i += 3 }
+        while i < nfd.count { chunks.append(Array(nfd[i..<i + 3])); i += 3 }
         XCTAssertEqual(render(chunks), "개선점")
     }
 

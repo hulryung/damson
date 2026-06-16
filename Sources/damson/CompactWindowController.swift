@@ -56,7 +56,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         let tree: PaneTreeView
         var titleSub: AnyCancellable
         /// User-assigned title set via double-click. If nil, follows the session (process/OSC) title.
-        var customTitle: String? = nil
+        var customTitle: String?
     }
 
     /// Animation intent threaded through `selectTab` / `addTab`. `.none` = instant
@@ -161,7 +161,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         if let restore = restoring, !restore.tabs.isEmpty {
             for (i, paneRestore) in restore.tabs.enumerated() {
                 let root = PaneNode.from(restorable: paneRestore)
-                let title = (restore.tabTitles.map { i < $0.count ? $0[i] : nil }) ?? nil
+                let title = restore.tabTitles.flatMap { i < $0.count ? $0[i] : nil }
                 addTab(tree: PaneTreeView(restoredRoot: root), customTitle: title)
             }
             let sel = restore.selectedTab

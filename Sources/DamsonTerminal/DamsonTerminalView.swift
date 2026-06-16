@@ -133,7 +133,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     private var gridSubscription: AnyCancellable?
     private var configSubscription: AnyCancellable?
     private var clearSelectionSubscription: AnyCancellable?
-    private var lastReportedSize: (cols: Int, rows: Int)? = nil
+    private var lastReportedSize: (cols: Int, rows: Int)?
     private var renderScheduled = false
     /// Whether the DEC 2026 sync output flush safety timer is already scheduled.
     private var syncFlushScheduled = false

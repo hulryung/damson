@@ -17,8 +17,7 @@ final class ResizeGapTests: XCTestCase {
         let g = Grid(cols: 110, rows: 45, pen: CellAttrs(fg: .default))
         func type(_ s: String) {
             for ch in s {
-                if ch == "\n" { g.lineFeed(); g.carriageReturn() }
-                else { g.putChar(ch) }
+                if ch == "\n" { g.lineFeed(); g.carriageReturn() } else { g.putChar(ch) }
             }
         }
         type("HELLO-A\nHELLO-B\nPROMPT> ")

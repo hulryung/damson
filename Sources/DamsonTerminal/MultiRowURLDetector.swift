@@ -27,11 +27,6 @@ enum MultiRowURLDetector {
         var chars: [Character]
         var cols: [Int]
         var wrapped: Bool
-        init(chars: [Character], cols: [Int], wrapped: Bool) {
-            self.chars = chars
-            self.cols = cols
-            self.wrapped = wrapped
-        }
     }
 
     /// A detected URL plus, per touched row, the column range it occupies (for hover).
@@ -93,7 +88,7 @@ enum MultiRowURLDetector {
 
         // 3. The probe position's character index (the char at or just before `col` on
         //    the probe row — covers clicking the trailing cell of a wide char).
-        var probeIndex: Int? = nil
+        var probeIndex: Int?
         for (i, p) in pos.enumerated() where p.row == row && p.col <= col {
             probeIndex = i
         }

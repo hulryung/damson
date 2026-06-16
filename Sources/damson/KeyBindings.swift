@@ -273,8 +273,7 @@ final class KeyBindingStore {
     // MARK: mutation
 
     func set(_ chord: KeyChord, for id: AppAction.ID) {
-        if chord == AppAction.find(id).defaultChord { overrides[id.rawValue] = nil }
-        else { overrides[id.rawValue] = .chord(chord) }
+        if chord == AppAction.find(id).defaultChord { overrides[id.rawValue] = nil } else { overrides[id.rawValue] = .chord(chord) }
         persistAndNotify()
     }
     func disable(_ id: AppAction.ID) { overrides[id.rawValue] = .disabled; persistAndNotify() }

@@ -1456,4 +1456,3 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     }
     #endif
 }
-

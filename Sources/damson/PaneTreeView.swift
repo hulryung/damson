@@ -54,8 +54,8 @@ final class PaneTreeView: NSView {
             let nudgeY = size.height * 0.06
             switch self {
             case .left:   return CGSize(width: -nudgeX, height: 0)
-            case .right:  return CGSize(width:  nudgeX, height: 0)
-            case .top:    return CGSize(width: 0, height:  nudgeY)
+            case .right:  return CGSize(width: nudgeX, height: 0)
+            case .top:    return CGSize(width: 0, height: nudgeY)
             case .bottom: return CGSize(width: 0, height: -nudgeY)
             }
         }
@@ -189,7 +189,7 @@ final class PaneTreeView: NSView {
             let edge: ClosingEdge
             switch dir {
             case .horizontal: edge = isFirst ? .left : .right   // first=left, second=right
-            case .vertical:   edge = isFirst ? .top  : .bottom  // first=top, second=bottom
+            case .vertical:   edge = isFirst ? .top : .bottom  // first=top, second=bottom
             }
             animation = .close(snapshot: snap, closingFrame: closingFrame, edge: edge)
         }

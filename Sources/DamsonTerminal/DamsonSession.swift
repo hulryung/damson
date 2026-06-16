@@ -8,9 +8,9 @@ public final class DamsonSession: ObservableObject {
     @Published public private(set) var config: DamsonConfig
 
     @Published public private(set) var title: String = ""
-    @Published public private(set) var workingDirectory: String? = nil
+    @Published public private(set) var workingDirectory: String?
     @Published public private(set) var processExited: Bool = false
-    public private(set) var exitCode: Int32? = nil
+    public private(set) var exitCode: Int32?
 
     /// Semantic events emitted by VTParser (for debug/test hooks).
     /// Screen rendering no longer goes through this; it observes `grid` + `gridChanged` instead.

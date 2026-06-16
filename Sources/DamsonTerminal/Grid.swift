@@ -33,7 +33,7 @@ public final class Grid {
 
     /// OSC 8 hyperlink — the currently active URI. nil means inactive.
     /// Attached to cells newly written by subsequent `putChar`s.
-    public private(set) var currentHyperlink: String? = nil
+    public private(set) var currentHyperlink: String?
 
     /// DECSTBM scroll region top (0-based, inclusive). Defaults to 0.
     public private(set) var scrollTop: Int = 0
@@ -44,7 +44,7 @@ public final class Grid {
     /// Each buffer (primary/alt) needs its own saved state — included in the alt screen snapshot.
     private var savedCursorRow: Int = 0
     private var savedCursorCol: Int = 0
-    private var savedPen: CellAttrs? = nil
+    private var savedPen: CellAttrs?
 
     /// Current pen attributes. Updated by SGR.
     public var pen: CellAttrs
@@ -120,7 +120,7 @@ public final class Grid {
         var savedCursorCol: Int
         var savedPen: CellAttrs?
     }
-    private var savedPrimary: PrimarySnapshot? = nil
+    private var savedPrimary: PrimarySnapshot?
 
     public init(cols: Int, rows: Int, pen: CellAttrs) {
         precondition(cols > 0 && rows > 0)
@@ -866,8 +866,7 @@ public final class Grid {
         let newCursorAbs = newPhys.count + (cursorAbs - preserveStart)
         let newCursorCol: Int
         let newPendingWrap: Bool
-        if cursorCol >= newCols { newCursorCol = newCols - 1; newPendingWrap = true }
-        else { newCursorCol = max(0, cursorCol); newPendingWrap = pendingWrap }
+        if cursorCol >= newCols { newCursorCol = newCols - 1; newPendingWrap = true } else { newCursorCol = max(0, cursorCol); newPendingWrap = pendingWrap }
         for row in kept[preserveStart...] {
             var line = paddedRow(row.cells, to: newCols, wrapped: row.wrapped)
             line.isPromptStart = row.isPromptStart

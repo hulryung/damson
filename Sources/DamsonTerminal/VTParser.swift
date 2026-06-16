@@ -58,7 +58,7 @@ public final class VTParser {
     /// `-1` = unspecified (the consumer applies the default appropriate for the op)
     private var currentParam: Int = -1
     private var intermediates: [UInt8] = []
-    private var privateMarker: UInt8? = nil
+    private var privateMarker: UInt8?
 
     // OSC accumulator (UTF-8 decoding happens at dispatch time)
     private var oscBytes: [UInt8] = []
