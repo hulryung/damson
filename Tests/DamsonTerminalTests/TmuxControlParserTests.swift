@@ -47,7 +47,7 @@ final class TmuxControlParserTests: XCTestCase {
             "%begin 1 2 0",
             "%end 1 2 0",
         ])
-        guard case .commandReply(let reply) = events.first else { return XCTFail() }
+        guard case .commandReply(let reply) = events.first else { return XCTFail("expected .commandReply") }
         XCTAssertEqual(reply.lines, [])
     }
 
@@ -60,7 +60,7 @@ final class TmuxControlParserTests: XCTestCase {
             "%end 1 3 0",
         ])
         XCTAssertEqual(events.count, 1)
-        guard case .commandReply(let reply) = events[0] else { return XCTFail() }
+        guard case .commandReply(let reply) = events[0] else { return XCTFail("expected .commandReply") }
         XCTAssertEqual(reply.lines, ["%output %1 not-a-real-notification"])
     }
 
@@ -80,17 +80,17 @@ final class TmuxControlParserTests: XCTestCase {
             "%window-add @2",
         ])
         XCTAssertEqual(events.count, 3)
-        guard case .windowAdd(let w1) = events[0], w1 == TmuxWindowID(1) else { return XCTFail() }
-        guard case .commandReply(let reply) = events[1] else { return XCTFail() }
+        guard case .windowAdd(let w1) = events[0], w1 == TmuxWindowID(1) else { return XCTFail("expected .windowAdd") }
+        guard case .commandReply(let reply) = events[1] else { return XCTFail("expected .commandReply") }
         XCTAssertEqual(reply.commandNumber, "42")
-        guard case .windowAdd(let w2) = events[2], w2 == TmuxWindowID(2) else { return XCTFail() }
+        guard case .windowAdd(let w2) = events[2], w2 == TmuxWindowID(2) else { return XCTFail("expected .windowAdd") }
     }
 
     // MARK: - %output octal decode
 
     func testOutputDecodesCRLFAndBackslash() {
         let events = run([#"%output %2 hello\015\012world\134end"#])
-        guard case .output(let pane, let data) = events.first else { return XCTFail() }
+        guard case .output(let pane, let data) = events.first else { return XCTFail("expected .output") }
         XCTAssertEqual(pane, TmuxPaneID(2))
         XCTAssertEqual(data, Data("hello\r\nworld\\end".utf8))
     }
@@ -98,14 +98,14 @@ final class TmuxControlParserTests: XCTestCase {
     func testOutputVerbatimBytesIncludingEscapeSequences() {
         // Escape sequences (ESC = 0x1b is < 32 → arrives as \033) plus verbatim CSI bytes.
         let events = run([#"%output %0 \033[31mRED\033[0m"#])
-        guard case .output(_, let data) = events.first else { return XCTFail() }
+        guard case .output(_, let data) = events.first else { return XCTFail("expected .output") }
         XCTAssertEqual(data, Data("\u{1B}[31mRED\u{1B}[0m".utf8))
     }
 
     func testOutputVerbatimMultibyteUTF8() {
         // Non-control multibyte UTF-8 (한글, emoji) is passed through verbatim.
         let events = run([#"%output %1 \011안녕🍇"#])  // \011 = TAB
-        guard case .output(_, let data) = events.first else { return XCTFail() }
+        guard case .output(_, let data) = events.first else { return XCTFail("expected .output") }
         var expected = Data([0x09])
         expected.append(Data("안녕🍇".utf8))
         XCTAssertEqual(data, expected)
@@ -113,7 +113,7 @@ final class TmuxControlParserTests: XCTestCase {
 
     func testOutputEmptyPayload() {
         let events = run(["%output %5"])
-        guard case .output(let pane, let data) = events.first else { return XCTFail() }
+        guard case .output(let pane, let data) = events.first else { return XCTFail("expected .output") }
         XCTAssertEqual(pane, TmuxPaneID(5))
         XCTAssertEqual(data, Data())
     }
@@ -124,7 +124,7 @@ final class TmuxControlParserTests: XCTestCase {
         // `%extended-output %<pane> <age-ms> : <data>` — the first " : " separates the header
         // (pane + age) from the octal-encoded payload, which decodes exactly like %output.
         let events = run([#"%extended-output %3 0 : hello\015\012world"#])
-        guard case .output(let pane, let data) = events.first else { return XCTFail() }
+        guard case .output(let pane, let data) = events.first else { return XCTFail("expected .output") }
         XCTAssertEqual(pane, TmuxPaneID(3))
         XCTAssertEqual(data, Data("hello\r\nworld".utf8))
     }
@@ -133,7 +133,7 @@ final class TmuxControlParserTests: XCTestCase {
         // The separator is the FIRST " : " (right after the age); a literal " : " inside the
         // payload (e.g. text) must be preserved.
         let events = run(["%extended-output %0 12 : key : value"])
-        guard case .output(let pane, let data) = events.first else { return XCTFail() }
+        guard case .output(let pane, let data) = events.first else { return XCTFail("expected .output") }
         XCTAssertEqual(pane, TmuxPaneID(0))
         XCTAssertEqual(data, Data("key : value".utf8))
     }
@@ -150,7 +150,7 @@ final class TmuxControlParserTests: XCTestCase {
     func testTrailingBackslashIsVerbatim() {
         // A backslash not followed by three octal digits is emitted as-is.
         let events = run([#"%output %1 a\b\01"#])
-        guard case .output(_, let data) = events.first else { return XCTFail() }
+        guard case .output(_, let data) = events.first else { return XCTFail("expected .output") }
         // \b: backslash then 'b' (not octal) → verbatim "\b" two bytes.
         // \01: backslash then only two digits at end → verbatim "\01" three bytes.
         XCTAssertEqual(data, Data(#"a\b\01"#.utf8))
@@ -168,32 +168,32 @@ final class TmuxControlParserTests: XCTestCase {
     // MARK: - window notifications
 
     func testWindowAdd() {
-        guard case .windowAdd(let w) = run(["%window-add @7"]).first else { return XCTFail() }
+        guard case .windowAdd(let w) = run(["%window-add @7"]).first else { return XCTFail("expected .windowAdd") }
         XCTAssertEqual(w, TmuxWindowID(7))
     }
 
     func testWindowClose() {
-        guard case .windowClose(let w) = run(["%window-close @3"]).first else { return XCTFail() }
+        guard case .windowClose(let w) = run(["%window-close @3"]).first else { return XCTFail("expected .windowClose") }
         XCTAssertEqual(w, TmuxWindowID(3))
     }
 
     func testWindowRenamedWithSpacesInName() {
         guard case .windowRenamed(let w, let name) = run(["%window-renamed @2 my shell window"]).first
-        else { return XCTFail() }
+        else { return XCTFail("expected .windowRenamed") }
         XCTAssertEqual(w, TmuxWindowID(2))
         XCTAssertEqual(name, "my shell window")
     }
 
     func testWindowPaneChanged() {
         guard case .windowPaneChanged(let w, let p) = run(["%window-pane-changed @1 %4"]).first
-        else { return XCTFail() }
+        else { return XCTFail("expected .windowPaneChanged") }
         XCTAssertEqual(w, TmuxWindowID(1))
         XCTAssertEqual(p, TmuxPaneID(4))
     }
 
     func testLayoutChangeKeepsRawLayoutAndExtras() {
         let line = "%layout-change @1 e7b2,80x24,0,0{40x24,0,0,1,39x24,41,0,2} bf3a,80x24,0,0 *"
-        guard case .layoutChange(let layout) = run([line]).first else { return XCTFail() }
+        guard case .layoutChange(let layout) = run([line]).first else { return XCTFail("expected .layoutChange") }
         XCTAssertEqual(layout.window, TmuxWindowID(1))
         XCTAssertEqual(layout.layout, "e7b2,80x24,0,0{40x24,0,0,1,39x24,41,0,2}")
         XCTAssertEqual(layout.extra, ["bf3a,80x24,0,0", "*"])
@@ -203,50 +203,50 @@ final class TmuxControlParserTests: XCTestCase {
 
     func testSessionChanged() {
         guard case .sessionChanged(let s, let name) = run(["%session-changed $0 main"]).first
-        else { return XCTFail() }
+        else { return XCTFail("expected .sessionChanged") }
         XCTAssertEqual(s, TmuxSessionID(0))
         XCTAssertEqual(name, "main")
     }
 
     func testSessionWindowChanged() {
         guard case .sessionWindowChanged(let s, let w) = run(["%session-window-changed $1 @5"]).first
-        else { return XCTFail() }
+        else { return XCTFail("expected .sessionWindowChanged") }
         XCTAssertEqual(s, TmuxSessionID(1))
         XCTAssertEqual(w, TmuxWindowID(5))
     }
 
     func testSessionsChanged() {
-        guard case .sessionsChanged = run(["%sessions-changed"]).first else { return XCTFail() }
+        guard case .sessionsChanged = run(["%sessions-changed"]).first else { return XCTFail("expected .sessionsChanged") }
     }
 
     func testExitWithReason() {
-        guard case .exit(let reason) = run(["%exit detached"]).first else { return XCTFail() }
+        guard case .exit(let reason) = run(["%exit detached"]).first else { return XCTFail("expected .exit") }
         XCTAssertEqual(reason, "detached")
     }
 
     func testExitWithoutReason() {
-        guard case .exit(let reason) = run(["%exit"]).first else { return XCTFail() }
+        guard case .exit(let reason) = run(["%exit"]).first else { return XCTFail("expected .exit") }
         XCTAssertNil(reason)
     }
 
     // MARK: - resilience
 
     func testUnknownNotificationIsUnhandledNotCrash() {
-        guard case .unhandled(let line) = run(["%pane-mode-changed %2"]).first else { return XCTFail() }
+        guard case .unhandled(let line) = run(["%pane-mode-changed %2"]).first else { return XCTFail("expected .unhandled") }
         XCTAssertEqual(line, "%pane-mode-changed %2")
     }
 
     func testBareNonPercentLineIsUnhandled() {
-        guard case .unhandled = run(["garbage line without percent"]).first else { return XCTFail() }
+        guard case .unhandled = run(["garbage line without percent"]).first else { return XCTFail("expected .unhandled") }
     }
 
     func testMalformedWindowIDIsUnhandled() {
         // `@notanumber` doesn't parse → unhandled rather than a crash or bad ID.
-        guard case .unhandled = run(["%window-add @notanumber"]).first else { return XCTFail() }
+        guard case .unhandled = run(["%window-add @notanumber"]).first else { return XCTFail("expected .unhandled") }
     }
 
     func testMalformedSessionChangedMissingTokenIsUnhandled() {
-        guard case .unhandled = run(["%session-changed"]).first else { return XCTFail() }
+        guard case .unhandled = run(["%session-changed"]).first else { return XCTFail("expected .unhandled") }
     }
 
     // MARK: - DCS control-mode wrapper (tmux -CC) defensive stripping
@@ -333,12 +333,12 @@ final class TmuxControlParserTests: XCTestCase {
             "%exit",
         ])
         XCTAssertEqual(events.count, 7)
-        guard case .sessionChanged = events[0] else { return XCTFail() }
-        guard case .windowAdd = events[1] else { return XCTFail() }
-        guard case .layoutChange = events[2] else { return XCTFail() }
-        guard case .output(let pane, _) = events[3], pane == TmuxPaneID(1) else { return XCTFail() }
-        guard case .windowRenamed = events[4] else { return XCTFail() }
-        guard case .windowClose = events[5] else { return XCTFail() }
-        guard case .exit = events[6] else { return XCTFail() }
+        guard case .sessionChanged = events[0] else { return XCTFail("expected .sessionChanged") }
+        guard case .windowAdd = events[1] else { return XCTFail("expected .windowAdd") }
+        guard case .layoutChange = events[2] else { return XCTFail("expected .layoutChange") }
+        guard case .output(let pane, _) = events[3], pane == TmuxPaneID(1) else { return XCTFail("expected .output") }
+        guard case .windowRenamed = events[4] else { return XCTFail("expected .windowRenamed") }
+        guard case .windowClose = events[5] else { return XCTFail("expected .windowClose") }
+        guard case .exit = events[6] else { return XCTFail("expected .exit") }
     }
 }
