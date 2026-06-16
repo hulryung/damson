@@ -83,7 +83,9 @@ struct LineShaper {
             // don't belong to our base/bold face, so the per-char path draws them.
             if let attrs = CTRunGetAttributes(run) as? [CFString: Any],
                let runFont = attrs[kCTFontAttributeName] {
-                let ps = CTFontCopyPostScriptName(runFont as! CTFont) as String
+                // kCTFontAttributeName is contractually a CTFont; the CF downcast
+                // always succeeds (so `as?` draws a compiler warning) — force it.
+                let ps = CTFontCopyPostScriptName(runFont as! CTFont) as String  // swiftlint:disable:this force_cast
                 if ps != expectedPS { continue }
             }
             let n = CTRunGetGlyphCount(run)

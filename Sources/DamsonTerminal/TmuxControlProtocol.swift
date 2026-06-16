@@ -199,7 +199,7 @@ public final class TmuxControlParser {
     private func beginBlock(_ rest: String) {
         let f = rest.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         pending = PendingBlock(
-            timestamp: f.count > 0 ? f[0] : "",
+            timestamp: f.first ?? "",
             commandNumber: f.count > 1 ? f[1] : "",
             flags: f.count > 2 ? f[2] : ""
         )
@@ -213,7 +213,7 @@ public final class TmuxControlParser {
         // Match %end/%error's ts/cmdnum/flags against the %begin we recorded; we trust
         // the begin's fields for identity (tmux guarantees they match) but verify shape.
         let f = rest.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        let ts = block?.timestamp ?? (f.count > 0 ? f[0] : "")
+        let ts = block?.timestamp ?? (f.first ?? "")
         let num = block?.commandNumber ?? (f.count > 1 ? f[1] : "")
         let flags = block?.flags ?? (f.count > 2 ? f[2] : "")
         return .commandReply(TmuxCommandReply(

@@ -351,7 +351,7 @@ public final class DamsonSession: ObservableObject {
             grid.cursorUp(p1)
             grid.setCursorColumn(1)
         case 0x48, 0x66:                    // H / f — CUP / HVP
-            let r = (params.count > 0 && params[0] > 0) ? params[0] : 1
+            let r = (!params.isEmpty && params[0] > 0) ? params[0] : 1
             let c = (params.count > 1 && params[1] > 0) ? params[1] : 1
             grid.setCursor(row: r, col: c)
         case 0x4A:                          // J — ED
@@ -386,7 +386,7 @@ public final class DamsonSession: ObservableObject {
         case 0x54: grid.scrollDown(count: p1) // T — SD
         case 0x72:                          // r — DECSTBM (must have no private marker)
             if privateMarker == nil {
-                let top = (params.count > 0 && params[0] > 0) ? params[0] : 1
+                let top = (!params.isEmpty && params[0] > 0) ? params[0] : 1
                 let bot = (params.count > 1 && params[1] > 0) ? params[1] : grid.rows
                 grid.setScrollRegion(top: top - 1, bottom: bot - 1)
             }
