@@ -355,8 +355,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             scheduleRender()
             return
         }
-        cursorBlinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) {
-            [weak self] _ in
+        cursorBlinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.cursorBlinkVisible.toggle()
             self.scheduleRender()
@@ -368,8 +367,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         guard session.config.cursorBlink, isActive else { return }
         cursorBlinkVisible = true
         cursorBlinkTimer?.invalidate()
-        cursorBlinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) {
-            [weak self] _ in
+        cursorBlinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.cursorBlinkVisible.toggle()
             self.scheduleRender()
@@ -956,8 +954,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
 
     private func startAutoScroll() {
-        autoScrollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) {
-            [weak self] _ in self?.autoScrollTick()
+        autoScrollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.autoScrollTick()
         }
     }
 
@@ -1689,8 +1686,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // iTerm2-style; rejected — zoom shouldn't move the window frame.)
         inZoomBurst = true
         zoomBurstTimer?.invalidate()
-        zoomBurstTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) {
-            [weak self] _ in
+        zoomBurstTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.inZoomBurst = false
             self.reportSizeIfChanged()   // settled size → single SIGWINCH

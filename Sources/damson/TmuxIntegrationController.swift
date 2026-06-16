@@ -182,8 +182,7 @@ final class TmuxIntegrationController {
     /// content/history shows instead of a blank pane. Reply lines are
     /// `@<id> <layout> <name…>` per the format string.
     private func enumerateExistingWindows() {
-        client.sendCommand("list-windows -F \"#{window_id} #{window_layout} #{window_name}\"") {
-            [weak self] reply in
+        client.sendCommand("list-windows -F \"#{window_id} #{window_layout} #{window_name}\"") { [weak self] reply in
             guard let self, !reply.isError else { return }
             for line in reply.lines {
                 let f = line.split(separator: " ", maxSplits: 2,

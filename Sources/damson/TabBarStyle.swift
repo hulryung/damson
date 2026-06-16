@@ -151,8 +151,7 @@ final class TabBarStyleApplier {
 
     private func startObservingTabCount() {
         tabsObserver?.invalidate()
-        tabsObserver = window.observe(\.tabbedWindows, options: [.new]) {
-            [weak self] _, _ in
+        tabsObserver = window.observe(\.tabbedWindows, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async { self?.refreshAccessoryVisibility() }
         }
     }

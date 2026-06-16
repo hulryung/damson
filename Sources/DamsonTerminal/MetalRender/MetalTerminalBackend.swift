@@ -479,8 +479,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             if since < minRenderInterval {
                 if !coalesceScheduled {
                     coalesceScheduled = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + (minRenderInterval - since)) {
-                        [weak self] in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + (minRenderInterval - since)) { [weak self] in
                         guard let self else { return }
                         self.coalesceScheduled = false
                         self.redrawLast()
