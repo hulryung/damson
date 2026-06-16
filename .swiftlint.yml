@@ -36,6 +36,12 @@ disabled_rules:
   - trailing_comma
   - identifier_name    # graphics code uses terse math names (x0, uv, fx, dr…) on purpose
   - nesting
+  # A terminal emulator decodes ARBITRARY byte streams (PTY / tmux %output
+  # payloads can contain invalid UTF-8). `String(decoding:as:)` is the
+  # deliberate, robust choice — it substitutes U+FFFD rather than failing, so a
+  # single bad byte never drops a whole line. The rule's preferred failable
+  # `String(bytes:encoding:)` would regress that, so it doesn't fit this domain.
+  - optional_data_string_conversion
 
 # Structural thresholds — tuned to flag genuine hotspots without burying the
 # signal. The biggest current files/functions become the refactor backlog.
