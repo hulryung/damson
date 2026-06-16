@@ -1,6 +1,12 @@
 import AppKit
 import DamsonTerminal
 
+// The Special enum's keyCode / escape-sequence / glyph maps pack several `case`s
+// per line on purpose — they read better as a dense lookup table than as one
+// case per line (which would triple their length). Disable case-alignment for
+// this file; normal switches elsewhere in the codebase still get the rule.
+// swiftlint:disable switch_case_alignment
+
 // MARK: - KeyChord — a single modifier+key combination
 
 /// A keyboard shortcut: a set of modifier flags plus one key (a printable
