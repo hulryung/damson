@@ -1,0 +1,65 @@
+# Damson code-quality lint config.
+#   swiftlint            — report violations
+#   swiftlint --fix      — autocorrect the safe (cosmetic) rules
+#   swiftlint --strict   — treat warnings as errors (used by CI)
+#
+# Philosophy: surface real structural hotspots (complexity, oversized
+# files/functions) and correctness smells; suppress noise this codebase makes
+# on purpose (long descriptive comments, TODO markers, terse math variable
+# names in the Metal/shader code).
+
+included:
+  - Sources
+  - Tests
+excluded:
+  - .build
+
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - first_where
+  - last_where
+  - contains_over_first_not_nil
+  - sorted_first_last
+  - redundant_nil_coalescing
+  - operator_usage_whitespace
+  - closure_spacing
+  - overridden_super_call
+  - prohibited_super_call
+  - fatal_error_message
+  - empty_collection_literal
+  - flatmap_over_map_reduce
+
+disabled_rules:
+  - todo               # intentional TODO/FIXME backlog markers
+  - line_length        # many deliberate, long descriptive comments
+  - trailing_comma
+  - identifier_name    # graphics code uses terse math names (x0, uv, fx, dr…) on purpose
+  - nesting
+
+# Structural thresholds — tuned to flag genuine hotspots without burying the
+# signal. The biggest current files/functions become the refactor backlog.
+file_length:
+  warning: 800
+  error: 1800
+  ignore_comment_only_lines: true
+# A few big switch-based dispatchers (handleCSI ~43, main.swift menu ~44) and
+# DamsonTerminalView's type body exceed the warning thresholds. They're known
+# refactor backlog — kept at WARNING (visible, tracked) rather than ERROR, so CI
+# can gate cleanly on errors=0 while the warning count is driven down over time.
+type_body_length:
+  warning: 500
+  error: 2500
+function_body_length:
+  warning: 80
+  error: 160
+cyclomatic_complexity:
+  warning: 15
+  error: 50
+type_name:
+  max_length:
+    warning: 50
+    error: 60
+large_tuple:
+  warning: 3
+  error: 4

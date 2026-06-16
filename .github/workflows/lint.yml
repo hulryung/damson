@@ -1,0 +1,22 @@
+name: lint
+
+# Code-quality gate. SwiftLint runs on every push/PR and FAILS only on
+# error-severity violations (so the baseline of ~160 warnings is reported and
+# tracked, but doesn't block — drive it down over time, then tighten via
+# `swiftlint lint --strict` here). Runs on a macOS runner so SourceKit is
+# available without the Command Line Tools workaround in scripts/lint.sh.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  swiftlint:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SwiftLint
+        run: brew install swiftlint
+      - name: SwiftLint
+        run: swiftlint lint --reporter github-actions-logging
