@@ -1,12 +1,6 @@
 import AppKit
 import DamsonTerminal
 
-// The Special enum's keyCode / escape-sequence / glyph maps pack several `case`s
-// per line on purpose — they read better as a dense lookup table than as one
-// case per line (which would triple their length). Disable case-alignment for
-// this file; normal switches elsewhere in the codebase still get the rule.
-// swiftlint:disable switch_case_alignment
-
 // MARK: - KeyChord — a single modifier+key combination
 
 /// A keyboard shortcut: a set of modifier flags plus one key (a printable
@@ -22,6 +16,10 @@ struct KeyChord: Codable, Equatable {
         case special(Special)    // arrows / function row / etc. — matched by keyCode
     }
 
+    // The maps below pack several `case`s per line on purpose — they read better
+    // as a dense lookup table than as one case per line (which would triple their
+    // length). Scope the case-alignment rule off just for this enum.
+    // swiftlint:disable switch_case_alignment
     enum Special: String, Codable, CaseIterable {
         case left, right, up, down, home, end, pageUp, pageDown
         case f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12
@@ -84,6 +82,7 @@ struct KeyChord: Codable, Equatable {
             }
         }
     }
+    // swiftlint:enable switch_case_alignment
 
     var modifierFlags: NSEvent.ModifierFlags { NSEvent.ModifierFlags(rawValue: mods) }
 
