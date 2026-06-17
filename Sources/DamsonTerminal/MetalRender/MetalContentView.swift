@@ -20,7 +20,7 @@ final class MetalContentView: NSView {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func makeBackingLayer() -> CALayer {
         metalLayer.device = MetalDevice.shared?.device

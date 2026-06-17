@@ -17,7 +17,7 @@ final class PerfHUDView: NSView {
         wantsLayer = true
     }
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var isOpaque: Bool { false }
 

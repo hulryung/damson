@@ -50,7 +50,7 @@ final class FindOverlayView: NSView, NSTextFieldDelegate {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func updateCount(matched: Int, current: Int? = nil) {
         if matched == 0 {

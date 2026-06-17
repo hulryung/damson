@@ -109,7 +109,7 @@ final class CompactTabBarView: NSView {
     private var devLabel: NSTextField?
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func update(titles: [String], selectedIndex: Int) {
         self.selectedIndex = selectedIndex
@@ -516,7 +516,7 @@ private final class TabButton: NSView, ImmediateTitlebarClick {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// In-place title update (button reuse path). Skipped while an inline rename
     /// field is open so it doesn't clobber what the user is typing.

@@ -87,7 +87,7 @@ final class PaneTreeView: NSView {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
         root.terminateAll()
@@ -725,7 +725,7 @@ private final class PaneLeafWrapper: NSView {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// When the cursor enters this pane (setting on + key window), make it the active
     /// pane — same path as a click. While the mouse button is held and dragged into
@@ -825,7 +825,7 @@ private final class SplitContainer: NSView {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func layout() {
         super.layout()
@@ -886,7 +886,7 @@ private final class DividerView: NSView {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// Draw only a thin 1px separator line in the center of the wide hit zone (thin and subtle).
     override func draw(_ dirtyRect: NSRect) {

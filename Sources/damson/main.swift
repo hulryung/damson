@@ -163,7 +163,7 @@ final class DamsonWindowController: NSWindowController, NSWindowDelegate {
     @objc func swapPaneUp(_ sender: Any?) { tree.swapDirectional(.up) }
     @objc func swapPaneDown(_ sender: Any?) { tree.swapDirectional(.down) }
 
-    required init?(coder: NSCoder) { fatalError() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func windowWillClose(_ notification: Notification) {
         // Terminate all of this window's pane sessions. (PaneTreeView.deinit also
