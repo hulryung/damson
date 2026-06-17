@@ -336,6 +336,37 @@ public final class DamsonSession: ObservableObject {
         // Common default handling: when the first param is unspecified (-1) or 0, treat it as 1.
         let p1 = (params.first ?? -1) <= 0 ? 1 : params[0]
 
+        // Dispatch by category. Each CSI final byte belongs to exactly one group,
+        // so the order between handlers doesn't matter; each returns whether it
+        // consumed the byte.
+        if applyCursorCSI(finalByte, p1: p1, params: params) { return }
+        if applyEditCSI(finalByte, p1: p1, params: params) { return }
+        if applyStateCSI(finalByte, params: params, intermediates: intermediates, privateMarker: privateMarker) { return }
+        if applyReportCSI(finalByte, params: params, intermediates: intermediates, privateMarker: privateMarker) { return }
+
+        switch finalByte {
+        case 0x6D:                          // m — SGR
+            // SGR applies to `CSI ... m` only when there's **neither** a private marker
+            // nor an intermediate. `CSI > 4 ; 2 m` (xterm modifyOtherKeys / Kitty keyboard
+            // protocol) and `CSI ? Pn m` (DEC private SGR) etc. are not SGR.
+            // Claude Code sends `\x1b[>4;2m` at startup; treating it as SGR would set
+            // param 4 → underline ON, and with no following reset the underline leaks
+            // across the whole session.
+            // Mirrors: anthropics/claude-code#23698, halite Rust 40bd82f.
+            if privateMarker == nil && intermediates.isEmpty {
+                grid.applySGR(params)
+            }
+        case 0x68:                          // h — SET MODE
+            applyModeChange(params: params, privateMarker: privateMarker, set: true)
+        case 0x6C:                          // l — RESET MODE
+            applyModeChange(params: params, privateMarker: privateMarker, set: false)
+        default:
+            break // Ignore unsupported CSI (alt screen / scroll region, etc. land in a later milestone)
+        }
+    }
+
+    /// Cursor positioning CSIs (CUU/CUD/CUF/CUB/CNL/CPL/CUP/CHA/HPA/VPA).
+    private func applyCursorCSI(_ finalByte: UInt8, p1: Int, params: [Int]) -> Bool {
         switch finalByte {
         case 0x41: grid.cursorUp(p1)        // A — CUU
         case 0x42: grid.cursorDown(p1)      // B — CUD
@@ -354,42 +385,72 @@ public final class DamsonSession: ObservableObject {
             let r = (!params.isEmpty && params[0] > 0) ? params[0] : 1
             let c = (params.count > 1 && params[1] > 0) ? params[1] : 1
             grid.setCursor(row: r, col: c)
+        case 0x47, 0x60:                    // G / ` — CHA / HPA: move to absolute column
+            grid.setCursorColumn(p1)
+        case 0x64:                          // d — VPA: move to absolute row
+            grid.setCursorRow(p1)
+        default: return false
+        }
+        return true
+    }
+
+    /// Erase / insert / delete / scroll CSIs (ED/EL/ECH/IL/DL/ICH/DCH/SU/SD).
+    private func applyEditCSI(_ finalByte: UInt8, p1: Int, params: [Int]) -> Bool {
+        switch finalByte {
         case 0x4A:                          // J — ED
             let mode = (params.first ?? -1) < 0 ? 0 : params[0]
             grid.eraseInDisplay(mode: mode)
         case 0x4B:                          // K — EL
             let mode = (params.first ?? -1) < 0 ? 0 : params[0]
             grid.eraseInLine(mode: mode)
-        case 0x47, 0x60:                    // G / ` — CHA / HPA: move to absolute column
-            grid.setCursorColumn(p1)
-        case 0x64:                          // d — VPA: move to absolute row
-            grid.setCursorRow(p1)
-        case 0x58:                          // X — ECH: erase n cells from the cursor
-            grid.eraseChars(p1)
-        case 0x4C:                          // L — IL: insert n blank lines
-            grid.insertLines(p1)
-        case 0x4D:                          // M — DL: delete n lines
-            grid.deleteLines(p1)
-        case 0x40:                          // @ — ICH: insert n blank cells
-            grid.insertChars(p1)
-        case 0x50:                          // P — DCH: delete n cells
-            grid.deleteChars(p1)
-        case 0x73:                          // s — SC (DECSC ANSI variant)
-            if privateMarker == nil {
-                grid.saveCursor()
-            }
-        case 0x75:                          // u — RC (DECRC ANSI variant)
-            if privateMarker == nil {
-                grid.restoreCursor()
-            }
+        case 0x58: grid.eraseChars(p1)        // X — ECH: erase n cells from the cursor
+        case 0x4C: grid.insertLines(p1)       // L — IL: insert n blank lines
+        case 0x4D: grid.deleteLines(p1)       // M — DL: delete n lines
+        case 0x40: grid.insertChars(p1)       // @ — ICH: insert n blank cells
+        case 0x50: grid.deleteChars(p1)       // P — DCH: delete n cells
         case 0x53: grid.scrollUp(count: p1)   // S — SU
         case 0x54: grid.scrollDown(count: p1) // T — SD
+        default: return false
+        }
+        return true
+    }
+
+    /// State-setting CSIs that have no program response: save/restore cursor (SC/RC),
+    /// scroll region (DECSTBM), cursor shape (DECSCUSR).
+    private func applyStateCSI(_ finalByte: UInt8, params: [Int], intermediates: [UInt8],
+                               privateMarker: UInt8?) -> Bool {
+        switch finalByte {
+        case 0x73:                          // s — SC (DECSC ANSI variant)
+            if privateMarker == nil { grid.saveCursor() }
+        case 0x75:                          // u — RC (DECRC ANSI variant)
+            if privateMarker == nil { grid.restoreCursor() }
         case 0x72:                          // r — DECSTBM (must have no private marker)
             if privateMarker == nil {
                 let top = (!params.isEmpty && params[0] > 0) ? params[0] : 1
                 let bot = (params.count > 1 && params[1] > 0) ? params[1] : grid.rows
                 grid.setScrollRegion(top: top - 1, bottom: bot - 1)
             }
+        case 0x71:                          // q — DECSCUSR (intermediate=SP)
+            if privateMarker == nil && intermediates == [0x20] {
+                let shape: Grid.CursorShape
+                switch params.first ?? 0 {
+                case 1, 2: shape = .block
+                case 3, 4: shape = .underline
+                case 5, 6: shape = .bar
+                default: shape = config.cursorShape  // 0/unspecified = reset → user default
+                }
+                grid.setCursorShape(shape)
+            }
+        default: return false
+        }
+        return true
+    }
+
+    /// CSIs that write a reply back to the program: device attributes (DA1/DA2)
+    /// and device status report (DSR — operating status / cursor position).
+    private func applyReportCSI(_ finalByte: UInt8, params: [Int], intermediates: [UInt8],
+                                privateMarker: UInt8?) -> Bool {
+        switch finalByte {
         case 0x63:                          // c — DA1 / DA2
             if privateMarker == nil && intermediates.isEmpty {
                 // Primary DA → VT102 identification: ESC [ ? 6 c
@@ -417,36 +478,9 @@ public final class DamsonSession: ObservableObject {
                     break
                 }
             }
-        case 0x71:                          // q — DECSCUSR (intermediate=SP)
-            if privateMarker == nil && intermediates == [0x20] {
-                let ps = params.first ?? 0
-                let shape: Grid.CursorShape
-                switch ps {
-                case 1, 2: shape = .block
-                case 3, 4: shape = .underline
-                case 5, 6: shape = .bar
-                default: shape = config.cursorShape  // 0/unspecified = reset → user default
-                }
-                grid.setCursorShape(shape)
-            }
-        case 0x6D:                          // m — SGR
-            // SGR applies to `CSI ... m` only when there's **neither** a private marker
-            // nor an intermediate. `CSI > 4 ; 2 m` (xterm modifyOtherKeys / Kitty keyboard
-            // protocol) and `CSI ? Pn m` (DEC private SGR) etc. are not SGR.
-            // Claude Code sends `\x1b[>4;2m` at startup; treating it as SGR would set
-            // param 4 → underline ON, and with no following reset the underline leaks
-            // across the whole session.
-            // Mirrors: anthropics/claude-code#23698, halite Rust 40bd82f.
-            if privateMarker == nil && intermediates.isEmpty {
-                grid.applySGR(params)
-            }
-        case 0x68:                          // h — SET MODE
-            applyModeChange(params: params, privateMarker: privateMarker, set: true)
-        case 0x6C:                          // l — RESET MODE
-            applyModeChange(params: params, privateMarker: privateMarker, set: false)
-        default:
-            break // Ignore unsupported CSI (alt screen / scroll region, etc. land in a later milestone)
+        default: return false
         }
+        return true
     }
 
     private func applyModeChange(params: [Int], privateMarker: UInt8?, set: Bool) {
