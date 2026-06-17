@@ -277,163 +277,211 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// `dispatch` — called on the main actor. Every branch is handled synchronously.
+    /// `dispatch` — called on the main actor. Routes each control command to a
+    /// small per-command handler; every branch is handled synchronously. The
+    /// switch stays exhaustive over `ControlCommand.Kind` (no `default`), so a
+    /// new command kind is a compile error until it's wired up here.
     @MainActor
     private func dispatch(controlCommand cmd: ControlCommand) -> ControlResponse {
         switch cmd.kind {
-        case .newTab:
-            newTabOrWindow()
-            return .ok()
-        case .split(let dir):
-            let direction: SplitDirection = (dir == .vertical) ? .vertical : .horizontal
-            if let active = activeCompact() {
-                active.splitActive(direction: direction)
-                return .ok()
-            }
-            if let single = activeSingleController() {
-                single.splitActive(direction: direction)
-                return .ok()
-            }
-            return .err("no active window to split")
-        case .closeTab:
-            // If a Compact controller owns the key window, close the active tab. Otherwise close the window.
-            if let active = activeCompact() {
-                active.closeCurrentTab()
-                return .ok()
-            }
-            if let win = NSApp.keyWindow ?? controllers.last?.window {
-                win.performClose(nil)
-                return .ok()
-            }
-            return .err("no active window to close")
-        case .switchTab(let index):
-            if let active = activeCompact() {
-                guard index >= 0, index < active.sessions.count else {
-                    return .err("tab index \(index) out of range (have \(active.sessions.count) tabs)")
-                }
-                active.selectTab(index)
-                return .ok()
-            }
-            let tabs = currentNativeTabs()
-            guard index >= 0, index < tabs.count else {
-                return .err("tab index \(index) out of range (have \(tabs.count) tabs)")
-            }
-            tabs[index].makeKeyAndOrderFront(nil)
-            return .ok()
-        case .listTabs:
-            if let active = activeCompact() {
-                // Report the actual pane (leaf) count for each tab.
-                let list = active.tabPaneCounts.enumerated().map { (i, count) in
-                    TabInfo(index: i, pane_count: count)
-                }
-                return .tabs(list)
-            }
-            // Standard/Auto: per native tab, the pane count of that window.
-            let single = controllers.filter { $0.window?.isVisible == true }
-            if !single.isEmpty {
-                let tabs = currentNativeTabs()
-                let list = tabs.enumerated().map { (i, win) -> TabInfo in
-                    let count = controllers.first { $0.window === win }?.sessions.count ?? 1
-                    return TabInfo(index: i, pane_count: count)
-                }
-                return .tabs(list)
-            }
-            let tabs = currentNativeTabs()
-            return .tabs(tabs.enumerated().map { (i, _) in TabInfo(index: i, pane_count: 1) })
+        case .newTab:                           newTabOrWindow(); return .ok()
+        case .split(let dir):                   return controlSplit(dir)
+        case .closeTab:                         return controlCloseTab()
+        case .switchTab(let index):             return controlSwitchTab(index)
+        case .listTabs:                         return controlListTabs()
+        case .sendText(let text):               return controlSendText(text)
+        case .sendKeys(let names):              return controlSendKeys(names)
+        case .resizeWindow(let cols, let rows): return controlResizeWindow(cols: cols, rows: rows)
+        case .resizePane(let dir, let amount):  return controlResizePane(dir, amount)
+        case .focusPane(let dir):               return controlFocusPane(dir)
+        case .closePane:                        return controlClosePane()
+        case .listPanes:                        return controlListPanes()
+        case .dumpGrid:                         return controlDumpGrid()
+        case .zoom(let action):                 return controlZoom(action)
+        }
+    }
 
-        // MARK: Remote input & pane control
+    // MARK: Tab / window control
 
-        case .sendText(let text):
-            guard let session = activeControlSession() else { return .err("no active pane") }
-            guard let data = text.data(using: .utf8) else { return .err("invalid UTF-8 text") }
-            session.write(data)
-            return .ok()
-
-        case .sendKeys(let names):
-            guard let session = activeControlSession() else { return .err("no active pane") }
-            // Validate every name first so a partial chord isn't half-sent on a typo.
-            var sequence = Data()
-            for name in names {
-                guard let bytes = keyNameToBytes(name) else {
-                    return .err("unknown key name: \(name)")
-                }
-                sequence.append(contentsOf: bytes)
-            }
-            session.write(sequence)
-            return .ok()
-
-        case .resizeWindow(let cols, let rows):
-            if let active = activeCompact() {
-                return active.resizeWindowToGrid(cols: cols, rows: rows)
-                    ? .ok() : .err("no active pane to size")
-            }
-            if let single = activeSingleController() {
-                return single.resizeWindowToGrid(cols: cols, rows: rows)
-                    ? .ok() : .err("no active pane to size")
-            }
-            return .err("no active window to resize")
-
-        case .resizePane(let dir, let amount):
-            let focusDir = paneFocusDirection(dir)
-            if let active = activeCompact() {
-                return active.resizeActivePane(focusDir, cells: amount)
-                    ? .ok() : .err("active pane has no split to resize toward \(dir.rawValue)")
-            }
-            if let single = activeSingleController() {
-                return single.resizeActivePane(focusDir, cells: amount)
-                    ? .ok() : .err("active pane has no split to resize toward \(dir.rawValue)")
-            }
-            return .err("no active window")
-
-        case .focusPane(let dir):
-            let focusDir = paneFocusDirection(dir)
-            if let active = activeCompact() {
-                active.focusActivePane(focusDir)
-                return .ok()
-            }
-            if let single = activeSingleController() {
-                single.focusActivePane(focusDir)
-                return .ok()
-            }
-            return .err("no active window")
-
-        case .closePane:
-            if let active = activeCompact() {
-                active.closeActivePane()
-                return .ok()
-            }
-            if let single = activeSingleController() {
-                single.closeActivePane()
-                return .ok()
-            }
-            return .err("no active window")
-
-        case .listPanes:
-            if let active = activeCompact() {
-                return .panes(active.paneList())
-            }
-            if let single = activeSingleController() {
-                return .panes(single.paneList())
-            }
-            return .err("no active window")
-
-        case .dumpGrid:
-            guard let session = activeControlSession() else { return .err("no active pane") }
-            return .grid(Self.gridText(of: session))
-
-        case .zoom(let action):
-            guard let surface = activeCompact()?.activeSurfaceView
-                    ?? activeSingleController()?.activeSurfaceView else {
-                return .err("no active pane")
-            }
-            switch action {
-            case "in": surface.zoomIn(nil)
-            case "out": surface.zoomOut(nil)
-            case "reset": surface.resetZoom(nil)
-            default: return .err("zoom requires in|out|reset")
-            }
+    @MainActor
+    private func controlSplit(_ dir: SplitDir) -> ControlResponse {
+        let direction: SplitDirection = (dir == .vertical) ? .vertical : .horizontal
+        if let active = activeCompact() {
+            active.splitActive(direction: direction)
             return .ok()
         }
+        if let single = activeSingleController() {
+            single.splitActive(direction: direction)
+            return .ok()
+        }
+        return .err("no active window to split")
+    }
+
+    @MainActor
+    private func controlCloseTab() -> ControlResponse {
+        // If a Compact controller owns the key window, close the active tab. Otherwise close the window.
+        if let active = activeCompact() {
+            active.closeCurrentTab()
+            return .ok()
+        }
+        if let win = NSApp.keyWindow ?? controllers.last?.window {
+            win.performClose(nil)
+            return .ok()
+        }
+        return .err("no active window to close")
+    }
+
+    @MainActor
+    private func controlSwitchTab(_ index: Int) -> ControlResponse {
+        if let active = activeCompact() {
+            guard index >= 0, index < active.sessions.count else {
+                return .err("tab index \(index) out of range (have \(active.sessions.count) tabs)")
+            }
+            active.selectTab(index)
+            return .ok()
+        }
+        let tabs = currentNativeTabs()
+        guard index >= 0, index < tabs.count else {
+            return .err("tab index \(index) out of range (have \(tabs.count) tabs)")
+        }
+        tabs[index].makeKeyAndOrderFront(nil)
+        return .ok()
+    }
+
+    @MainActor
+    private func controlListTabs() -> ControlResponse {
+        if let active = activeCompact() {
+            // Report the actual pane (leaf) count for each tab.
+            let list = active.tabPaneCounts.enumerated().map { (i, count) in
+                TabInfo(index: i, pane_count: count)
+            }
+            return .tabs(list)
+        }
+        // Standard/Auto: per native tab, the pane count of that window.
+        let single = controllers.filter { $0.window?.isVisible == true }
+        if !single.isEmpty {
+            let tabs = currentNativeTabs()
+            let list = tabs.enumerated().map { (i, win) -> TabInfo in
+                let count = controllers.first { $0.window === win }?.sessions.count ?? 1
+                return TabInfo(index: i, pane_count: count)
+            }
+            return .tabs(list)
+        }
+        let tabs = currentNativeTabs()
+        return .tabs(tabs.enumerated().map { (i, _) in TabInfo(index: i, pane_count: 1) })
+    }
+
+    // MARK: Remote input
+
+    @MainActor
+    private func controlSendText(_ text: String) -> ControlResponse {
+        guard let session = activeControlSession() else { return .err("no active pane") }
+        guard let data = text.data(using: .utf8) else { return .err("invalid UTF-8 text") }
+        session.write(data)
+        return .ok()
+    }
+
+    @MainActor
+    private func controlSendKeys(_ names: [String]) -> ControlResponse {
+        guard let session = activeControlSession() else { return .err("no active pane") }
+        // Validate every name first so a partial chord isn't half-sent on a typo.
+        var sequence = Data()
+        for name in names {
+            guard let bytes = keyNameToBytes(name) else {
+                return .err("unknown key name: \(name)")
+            }
+            sequence.append(contentsOf: bytes)
+        }
+        session.write(sequence)
+        return .ok()
+    }
+
+    // MARK: Pane / window sizing, focus & inspection
+
+    @MainActor
+    private func controlResizeWindow(cols: Int, rows: Int) -> ControlResponse {
+        if let active = activeCompact() {
+            return active.resizeWindowToGrid(cols: cols, rows: rows)
+                ? .ok() : .err("no active pane to size")
+        }
+        if let single = activeSingleController() {
+            return single.resizeWindowToGrid(cols: cols, rows: rows)
+                ? .ok() : .err("no active pane to size")
+        }
+        return .err("no active window to resize")
+    }
+
+    @MainActor
+    private func controlResizePane(_ dir: PaneDir, _ amount: Int) -> ControlResponse {
+        let focusDir = paneFocusDirection(dir)
+        if let active = activeCompact() {
+            return active.resizeActivePane(focusDir, cells: amount)
+                ? .ok() : .err("active pane has no split to resize toward \(dir.rawValue)")
+        }
+        if let single = activeSingleController() {
+            return single.resizeActivePane(focusDir, cells: amount)
+                ? .ok() : .err("active pane has no split to resize toward \(dir.rawValue)")
+        }
+        return .err("no active window")
+    }
+
+    @MainActor
+    private func controlFocusPane(_ dir: PaneDir) -> ControlResponse {
+        let focusDir = paneFocusDirection(dir)
+        if let active = activeCompact() {
+            active.focusActivePane(focusDir)
+            return .ok()
+        }
+        if let single = activeSingleController() {
+            single.focusActivePane(focusDir)
+            return .ok()
+        }
+        return .err("no active window")
+    }
+
+    @MainActor
+    private func controlClosePane() -> ControlResponse {
+        if let active = activeCompact() {
+            active.closeActivePane()
+            return .ok()
+        }
+        if let single = activeSingleController() {
+            single.closeActivePane()
+            return .ok()
+        }
+        return .err("no active window")
+    }
+
+    @MainActor
+    private func controlListPanes() -> ControlResponse {
+        if let active = activeCompact() {
+            return .panes(active.paneList())
+        }
+        if let single = activeSingleController() {
+            return .panes(single.paneList())
+        }
+        return .err("no active window")
+    }
+
+    @MainActor
+    private func controlDumpGrid() -> ControlResponse {
+        guard let session = activeControlSession() else { return .err("no active pane") }
+        return .grid(Self.gridText(of: session))
+    }
+
+    @MainActor
+    private func controlZoom(_ action: String) -> ControlResponse {
+        guard let surface = activeCompact()?.activeSurfaceView
+                ?? activeSingleController()?.activeSurfaceView else {
+            return .err("no active pane")
+        }
+        switch action {
+        case "in": surface.zoomIn(nil)
+        case "out": surface.zoomOut(nil)
+        case "reset": surface.resetZoom(nil)
+        default: return .err("zoom requires in|out|reset")
+        }
+        return .ok()
     }
 
     /// Plain-text snapshot of the session grid's visible rows (continuation/wide-spacer
