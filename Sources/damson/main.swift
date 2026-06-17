@@ -830,6 +830,14 @@ private func addSubmenu(_ title: String, to mainMenu: NSMenu) -> NSMenu {
 
 private func buildAppMenu(into mainMenu: NSMenu) {
     let appMenu = addSubmenu("", to: mainMenu)
+    // About — the standard macOS panel (app icon + name + version + copyright, read from the
+    // bundle's Info.plist). No target → routes up the responder chain to NSApplication.
+    appMenu.addItem(NSMenuItem(
+        title: "About Damson",
+        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+        keyEquivalent: ""
+    ))
+    appMenu.addItem(NSMenuItem.separator())
     appMenu.addItem(menuItem("Settings…", #selector(DamsonAppDelegate.showSettings(_:)), .settings))
     appMenu.addItem(NSMenuItem.separator())
     // Sparkle auto-update — the target is the SPUStandardUpdaterController itself.
