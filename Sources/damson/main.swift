@@ -670,9 +670,13 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
-    /// The Window menu's tab-navigation items (Show Next/Previous Tab, the separator, and
-    /// Tab 1…9). Populated by `buildWindowMenu`; shown only when the active window has 2+ tabs.
+    /// The Window menu's tab-navigation chrome (Show Next/Previous Tab + dividers). Populated
+    /// by `buildWindowMenu`; shown only when the active window has 2+ tabs.
     var windowTabItems: [NSMenuItem] = []
+
+    /// The numbered "Tab 1…9" items (tag = 1-based number). Each is shown only when that many
+    /// tabs actually exist — 2 tabs show Tab 1–2, 3 show Tab 1–3, etc.
+    var windowTabNumberItems: [NSMenuItem] = []
 
     /// The Window menu's pane focus/swap items (and their dividers). Populated by
     /// `buildWindowMenu`; shown only when the active tab has 2+ panes. Split stays visible —
@@ -700,8 +704,11 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// until a second tab/pane exists.
     @MainActor
     func menuNeedsUpdate(_ menu: NSMenu) {
-        let multipleTabs = currentTabCount() >= 2
+        let tabCount = currentTabCount()
+        let multipleTabs = tabCount >= 2
         for item in windowTabItems { item.isHidden = !multipleTabs }
+        // Show only as many numbered items as there are tabs (tag is the 1-based number).
+        for item in windowTabNumberItems { item.isHidden = !multipleTabs || item.tag > tabCount }
         let multiplePanes = currentPaneCount() >= 2
         for item in windowPaneItems { item.isHidden = !multiplePanes }
     }
@@ -903,9 +910,10 @@ private func buildWindowMenu(into mainMenu: NSMenu, delegate: DamsonAppDelegate)
     windowMenu.addItem(nextTab)
     windowMenu.addItem(prevTab)
     windowMenu.addItem(tabInnerSeparator)
-    var tabItems = [nextTab, prevTab, tabInnerSeparator]
 
-    // Cmd+1..9 — go to the nth tab. tag holds the 1-based number.
+    // Cmd+1..9 — go to the nth tab. tag holds the 1-based number; menuNeedsUpdate shows only
+    // as many of these as there are tabs.
+    var tabNumberItems: [NSMenuItem] = []
     for n in 1...9 {
         let item = NSMenuItem(
             title: "Tab \(n)",
@@ -915,16 +923,18 @@ private func buildWindowMenu(into mainMenu: NSMenu, delegate: DamsonAppDelegate)
         item.keyEquivalentModifierMask = [.command]
         item.tag = n
         windowMenu.addItem(item)
-        tabItems.append(item)
+        tabNumberItems.append(item)
     }
     // The divider between tabs and panes belongs to the tab group, so hiding the tabs (single
     // tab) leaves the pane section below without a dangling leading separator.
     let tabSectionEnd = NSMenuItem.separator()
     windowMenu.addItem(tabSectionEnd)
-    tabItems.append(tabSectionEnd)
-    // Hidden until a second tab exists; `menuNeedsUpdate` re-evaluates before each open.
-    tabItems.forEach { $0.isHidden = true }
-    delegate.windowTabItems = tabItems
+
+    // All hidden until a second tab exists; `menuNeedsUpdate` re-evaluates before each open.
+    let tabChrome = [nextTab, prevTab, tabInnerSeparator, tabSectionEnd]
+    (tabChrome + tabNumberItems).forEach { $0.isHidden = true }
+    delegate.windowTabItems = tabChrome
+    delegate.windowTabNumberItems = tabNumberItems
 
     // --- Pane layout (formerly the standalone "Split" menu) ---
     // Panes are window subdivisions, so they belong next to tabs rather than in their own
