@@ -181,6 +181,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Live multi-session controllers (Compact mode).
     fileprivate var compactControllers: [CompactWindowController] = []
     private var settingsWindow: NSWindow?
+    private var aboutWindow: NSWindow?
     /// IPC with damson-cli. Bound after the first window is created.
     private var controlSocket: ControlSocketServer?
     /// Active tmux -CC integrations (one per attach). Kept alive here so the client + host
@@ -549,6 +550,15 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return []
     }
 
+    /// "About Damson" — a custom branded panel (icon, version, links) instead of the standard
+    /// AppKit about box. Single reused window.
+    @objc func showAbout(_ sender: Any?) {
+        let win = aboutWindow ?? makeAboutWindow()
+        aboutWindow = win
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc func showSettings(_ sender: Any?) {
         if let win = settingsWindow {
             win.makeKeyAndOrderFront(nil)
@@ -830,11 +840,11 @@ private func addSubmenu(_ title: String, to mainMenu: NSMenu) -> NSMenu {
 
 private func buildAppMenu(into mainMenu: NSMenu) {
     let appMenu = addSubmenu("", to: mainMenu)
-    // About — the standard macOS panel (app icon + name + version + copyright, read from the
-    // bundle's Info.plist). No target → routes up the responder chain to NSApplication.
+    // About — custom branded window (DamsonAboutView). No target → routes up the responder
+    // chain to the app delegate's showAbout(_:).
     appMenu.addItem(NSMenuItem(
         title: "About Damson",
-        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+        action: #selector(DamsonAppDelegate.showAbout(_:)),
         keyEquivalent: ""
     ))
     appMenu.addItem(NSMenuItem.separator())
