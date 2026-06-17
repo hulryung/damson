@@ -175,7 +175,7 @@ final class DamsonWindowController: NSWindowController, NSWindowDelegate {
     }
 }
 
-final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
+final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Live single-session controllers (Standard/Auto mode).
     fileprivate var controllers: [DamsonWindowController] = []
     /// Live multi-session controllers (Compact mode).
@@ -670,6 +670,26 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// The Window menu's tab-navigation items (Show Next/Previous Tab, the separator, and
+    /// Tab 1…9). Populated by `buildWindowMenu`; shown only when the active window has 2+ tabs.
+    var windowTabItems: [NSMenuItem] = []
+
+    /// Number of tabs in the active window, across Compact (tab list) and Standard/Auto
+    /// (native tab group) modes.
+    @MainActor
+    func currentTabCount() -> Int {
+        if let active = activeCompact() { return active.tabPaneCounts.count }
+        return currentNativeTabs().count
+    }
+
+    /// Just before the Window menu opens, hide the per-tab items when there's a single tab —
+    /// switching/numbering tabs is meaningless until a second one exists.
+    @MainActor
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let multipleTabs = currentTabCount() >= 2
+        for item in windowTabItems { item.isHidden = !multipleTabs }
+    }
+
     @MainActor
     private func tmuxController(for window: NSWindow?) -> TmuxIntegrationController? {
         guard let window else { return nil }
@@ -766,26 +786,28 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate {
 /// Rebuilt whenever keybindings change (`.damsonKeybindingsChanged`). All shortcut
 /// equivalents come from `KeyBindingStore` rather than being hardcoded, so a remap
 /// in Settings takes effect by just calling this again.
-func installMainMenu() {
-    let store = KeyBindingStore.shared
-    let mainMenu = NSMenu()
+/// A rebindable menu item: title + selector come from us, the shortcut from the keybinding store.
+private func menuItem(_ title: String, _ selector: Selector?, _ id: AppAction.ID,
+                      target: AnyObject? = nil, tag: Int = 0) -> NSMenuItem {
+    let it = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+    KeyBindingStore.shared.apply(id, to: it)
+    if let target = target { it.target = target }
+    if tag != 0 { it.tag = tag }
+    return it
+}
 
-    // A rebindable menu item: title + selector come from us, the shortcut from the store.
-    func item(_ title: String, _ selector: Selector?, _ id: AppAction.ID,
-              target: AnyObject? = nil, tag: Int = 0) -> NSMenuItem {
-        let it = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-        store.apply(id, to: it)
-        if let target = target { it.target = target }
-        if tag != 0 { it.tag = tag }
-        return it
-    }
+/// Attach a titled submenu to `mainMenu` and return it for population.
+private func addSubmenu(_ title: String, to mainMenu: NSMenu) -> NSMenu {
+    let item = NSMenuItem()
+    mainMenu.addItem(item)
+    let submenu = NSMenu(title: title)
+    item.submenu = submenu
+    return submenu
+}
 
-    // App menu
-    let appItem = NSMenuItem()
-    mainMenu.addItem(appItem)
-    let appMenu = NSMenu()
-    appItem.submenu = appMenu
-    appMenu.addItem(item("Settings…", #selector(DamsonAppDelegate.showSettings(_:)), .settings))
+private func buildAppMenu(into mainMenu: NSMenu) {
+    let appMenu = addSubmenu("", to: mainMenu)
+    appMenu.addItem(menuItem("Settings…", #selector(DamsonAppDelegate.showSettings(_:)), .settings))
     appMenu.addItem(NSMenuItem.separator())
     // Sparkle auto-update — the target is the SPUStandardUpdaterController itself.
     let updateItem = NSMenuItem(
@@ -796,97 +818,96 @@ func installMainMenu() {
     updateItem.target = DamsonUpdater.shared.target
     appMenu.addItem(updateItem)
     appMenu.addItem(NSMenuItem.separator())
-    appMenu.addItem(item("Quit Damson", #selector(NSApplication.terminate(_:)), .quit))
+    appMenu.addItem(menuItem("Quit Damson", #selector(NSApplication.terminate(_:)), .quit))
+}
 
-    // File menu — New Window, Close Window
-    let fileItem = NSMenuItem()
-    mainMenu.addItem(fileItem)
-    let fileMenu = NSMenu(title: "File")
-    fileItem.submenu = fileMenu
-    fileMenu.addItem(item("New Window", #selector(DamsonAppDelegate.newWindow(_:)), .newWindow))
+private func buildFileMenu(into mainMenu: NSMenu) {
+    let fileMenu = addSubmenu("File", to: mainMenu)
+    fileMenu.addItem(menuItem("New Window", #selector(DamsonAppDelegate.newWindow(_:)), .newWindow))
     // Cmd+T — in Compact mode add a tab to the active window, otherwise a new window (native tab group join).
-    fileMenu.addItem(item("New Tab", #selector(DamsonAppDelegate.newTab(_:)), .newTab))
+    fileMenu.addItem(menuItem("New Tab", #selector(DamsonAppDelegate.newTab(_:)), .newTab))
     // Cmd+W — close the tab/pane (not the whole window). For a terminal window, close the active
     // pane and cascade tab→window when it's the last. For a non-terminal window (Settings, etc.) close the window.
-    fileMenu.addItem(item("Close Tab", #selector(DamsonAppDelegate.closeTabOrWindow(_:)), .closeTab))
+    fileMenu.addItem(menuItem("Close Tab", #selector(DamsonAppDelegate.closeTabOrWindow(_:)), .closeTab))
     // Cmd+Shift+W — explicitly close the whole window.
-    fileMenu.addItem(item("Close Window", #selector(NSWindow.performClose(_:)), .closeWindow))
+    fileMenu.addItem(menuItem("Close Window", #selector(NSWindow.performClose(_:)), .closeWindow))
+}
 
-    // Edit menu — Copy/Paste (our view's copy:/paste: are caught via the responder chain)
-    let editItem = NSMenuItem()
-    mainMenu.addItem(editItem)
-    let editMenu = NSMenu(title: "Edit")
-    editItem.submenu = editMenu
-    editMenu.addItem(item("Copy", #selector(NSText.copy(_:)), .copy))
-    editMenu.addItem(item("Paste", #selector(NSText.paste(_:)), .paste))
-    editMenu.addItem(item("Select All", #selector(NSResponder.selectAll(_:)), .selectAll))
-    editMenu.addItem(item("Copy Last Command Output",
-                          #selector(DamsonSurfaceView.copyLastCommandOutput(_:)), .copyLastCommandOutput))
+private func buildEditMenu(into mainMenu: NSMenu) {
+    // Copy/Paste — our view's copy:/paste: are caught via the responder chain.
+    let editMenu = addSubmenu("Edit", to: mainMenu)
+    editMenu.addItem(menuItem("Copy", #selector(NSText.copy(_:)), .copy))
+    editMenu.addItem(menuItem("Paste", #selector(NSText.paste(_:)), .paste))
+    editMenu.addItem(menuItem("Select All", #selector(NSResponder.selectAll(_:)), .selectAll))
+    editMenu.addItem(menuItem("Copy Last Command Output",
+                              #selector(DamsonSurfaceView.copyLastCommandOutput(_:)), .copyLastCommandOutput))
     editMenu.addItem(NSMenuItem.separator())
-    editMenu.addItem(item("Find…", NSSelectorFromString("performFindPanelAction:"), .find))
-    editMenu.addItem(item("Find Next", #selector(DamsonSurfaceView.findNextMatch), .findNext))
-    editMenu.addItem(item("Find Previous", #selector(DamsonSurfaceView.findPreviousMatch), .findPrevious))
+    editMenu.addItem(menuItem("Find…", NSSelectorFromString("performFindPanelAction:"), .find))
+    editMenu.addItem(menuItem("Find Next", #selector(DamsonSurfaceView.findNextMatch), .findNext))
+    editMenu.addItem(menuItem("Find Previous", #selector(DamsonSurfaceView.findPreviousMatch), .findPrevious))
+}
 
-    // View menu — font zoom
-    let viewItem = NSMenuItem()
-    mainMenu.addItem(viewItem)
-    let viewMenu = NSMenu(title: "View")
-    viewItem.submenu = viewMenu
-    viewMenu.addItem(item("Zoom In", #selector(DamsonSurfaceView.zoomIn(_:)), .zoomIn))
-    viewMenu.addItem(item("Zoom Out", #selector(DamsonSurfaceView.zoomOut(_:)), .zoomOut))
-    viewMenu.addItem(item("Actual Size", #selector(DamsonSurfaceView.resetZoom(_:)), .resetZoom))
+private func buildViewMenu(into mainMenu: NSMenu) {
+    let viewMenu = addSubmenu("View", to: mainMenu)
+    viewMenu.addItem(menuItem("Zoom In", #selector(DamsonSurfaceView.zoomIn(_:)), .zoomIn))
+    viewMenu.addItem(menuItem("Zoom Out", #selector(DamsonSurfaceView.zoomOut(_:)), .zoomOut))
+    viewMenu.addItem(menuItem("Actual Size", #selector(DamsonSurfaceView.resetZoom(_:)), .resetZoom))
     viewMenu.addItem(NSMenuItem.separator())
     // ⌘↑ / ⌘↓ — prompt jump. The actual dispatch is handled by DamsonSurfaceView's key hook
     // (matching arrow+⌘); these items are for menu display + click. The store fills in keyEquivalent.
-    viewMenu.addItem(item("Jump to Previous Prompt",
-                          #selector(DamsonSurfaceView.jumpToPreviousPrompt(_:)), .jumpPreviousPrompt))
-    viewMenu.addItem(item("Jump to Next Prompt",
-                          #selector(DamsonSurfaceView.jumpToNextPrompt(_:)), .jumpNextPrompt))
+    viewMenu.addItem(menuItem("Jump to Previous Prompt",
+                              #selector(DamsonSurfaceView.jumpToPreviousPrompt(_:)), .jumpPreviousPrompt))
+    viewMenu.addItem(menuItem("Jump to Next Prompt",
+                              #selector(DamsonSurfaceView.jumpToNextPrompt(_:)), .jumpNextPrompt))
     viewMenu.addItem(NSMenuItem.separator())
     // Full-screen toggle — the macOS-standard ⌃⌘F. toggleFullScreen: is implemented by NSWindow → responder chain.
-    viewMenu.addItem(item("Toggle Full Screen", #selector(NSWindow.toggleFullScreen(_:)), .toggleFullScreen))
+    viewMenu.addItem(menuItem("Toggle Full Screen", #selector(NSWindow.toggleFullScreen(_:)), .toggleFullScreen))
     // Performance HUD toggle (⌃⌘H = our custom graph, ⌃⌘J = Apple Metal HUD).
-    viewMenu.addItem(item("Toggle Performance HUD",
-                          #selector(DamsonSurfaceView.togglePerformanceHUD(_:)), .togglePerfHUD))
-    viewMenu.addItem(item("Toggle Apple Metal HUD",
-                          #selector(DamsonSurfaceView.toggleAppleMetalHUD(_:)), .toggleAppleHUD))
+    viewMenu.addItem(menuItem("Toggle Performance HUD",
+                              #selector(DamsonSurfaceView.togglePerformanceHUD(_:)), .togglePerfHUD))
+    viewMenu.addItem(menuItem("Toggle Apple Metal HUD",
+                              #selector(DamsonSurfaceView.toggleAppleMetalHUD(_:)), .toggleAppleHUD))
+}
 
-    // Split menu — pane splitting. Reaches the active window controller via the responder chain.
-    let splitItem = NSMenuItem()
-    mainMenu.addItem(splitItem)
-    let splitMenu = NSMenu(title: "Split")
-    splitItem.submenu = splitMenu
-    splitMenu.addItem(item("Split Horizontally",
-                           #selector(CompactWindowController.splitPaneHorizontally(_:)), .splitHorizontally))
-    splitMenu.addItem(item("Split Vertically",
-                           #selector(CompactWindowController.splitPaneVertically(_:)), .splitVertically))
+private func buildSplitMenu(into mainMenu: NSMenu) {
+    // Pane splitting. Reaches the active window controller via the responder chain.
+    let splitMenu = addSubmenu("Split", to: mainMenu)
+    splitMenu.addItem(menuItem("Split Horizontally",
+                               #selector(CompactWindowController.splitPaneHorizontally(_:)), .splitHorizontally))
+    splitMenu.addItem(menuItem("Split Vertically",
+                               #selector(CompactWindowController.splitPaneVertically(_:)), .splitVertically))
     splitMenu.addItem(NSMenuItem.separator())
     // Pane focus navigation — default Cmd+Opt+arrows (rebindable via the store).
-    splitMenu.addItem(item("Focus Pane Left", NSSelectorFromString("focusPaneLeft:"), .focusPaneLeft))
-    splitMenu.addItem(item("Focus Pane Right", NSSelectorFromString("focusPaneRight:"), .focusPaneRight))
-    splitMenu.addItem(item("Focus Pane Down", NSSelectorFromString("focusPaneDown:"), .focusPaneDown))
-    splitMenu.addItem(item("Focus Pane Up", NSSelectorFromString("focusPaneUp:"), .focusPaneUp))
+    splitMenu.addItem(menuItem("Focus Pane Left", NSSelectorFromString("focusPaneLeft:"), .focusPaneLeft))
+    splitMenu.addItem(menuItem("Focus Pane Right", NSSelectorFromString("focusPaneRight:"), .focusPaneRight))
+    splitMenu.addItem(menuItem("Focus Pane Down", NSSelectorFromString("focusPaneDown:"), .focusPaneDown))
+    splitMenu.addItem(menuItem("Focus Pane Up", NSSelectorFromString("focusPaneUp:"), .focusPaneUp))
     splitMenu.addItem(NSMenuItem.separator())
     // Cmd+Shift+arrows — swap position with the adjacent pane (the same swap as ⌘⇧+click).
-    splitMenu.addItem(item("Swap Pane Left", NSSelectorFromString("swapPaneLeft:"), .swapPaneLeft))
-    splitMenu.addItem(item("Swap Pane Right", NSSelectorFromString("swapPaneRight:"), .swapPaneRight))
-    splitMenu.addItem(item("Swap Pane Down", NSSelectorFromString("swapPaneDown:"), .swapPaneDown))
-    splitMenu.addItem(item("Swap Pane Up", NSSelectorFromString("swapPaneUp:"), .swapPaneUp))
+    splitMenu.addItem(menuItem("Swap Pane Left", NSSelectorFromString("swapPaneLeft:"), .swapPaneLeft))
+    splitMenu.addItem(menuItem("Swap Pane Right", NSSelectorFromString("swapPaneRight:"), .swapPaneRight))
+    splitMenu.addItem(menuItem("Swap Pane Down", NSSelectorFromString("swapPaneDown:"), .swapPaneDown))
+    splitMenu.addItem(menuItem("Swap Pane Up", NSSelectorFromString("swapPaneUp:"), .swapPaneUp))
+}
 
-    // Window menu — tab navigation.
-    let windowItem = NSMenuItem()
-    mainMenu.addItem(windowItem)
-    let windowMenu = NSMenu(title: "Window")
-    windowItem.submenu = windowMenu
+private func buildWindowMenu(into mainMenu: NSMenu, delegate: DamsonAppDelegate) {
+    let windowMenu = addSubmenu("Window", to: mainMenu)
+    // Switching/numbering tabs only makes sense with 2+ tabs — `menuNeedsUpdate` hides the
+    // items collected here whenever the active window has a single tab.
+    windowMenu.delegate = delegate
 
     // NSMenu's punctuation key-equivalent matching for ⌘⇧] / ⌘⇧[ is unreliable
     // (charactersIgnoringModifiers applies Shift → "}"/"{", and letters case-fold
     // but punctuation doesn't). These items stay for menu DISPLAY + click; the
     // actual keystroke is dispatched by DamsonSurfaceView's key hook, the same
     // path ⌘W already uses. (store fills the displayed equivalent.)
-    windowMenu.addItem(item("Show Next Tab", NSSelectorFromString("selectNextTab:"), .nextTab))
-    windowMenu.addItem(item("Show Previous Tab", NSSelectorFromString("selectPreviousTab:"), .previousTab))
-    windowMenu.addItem(NSMenuItem.separator())
+    let nextTab = menuItem("Show Next Tab", NSSelectorFromString("selectNextTab:"), .nextTab)
+    let prevTab = menuItem("Show Previous Tab", NSSelectorFromString("selectPreviousTab:"), .previousTab)
+    let separator = NSMenuItem.separator()
+    windowMenu.addItem(nextTab)
+    windowMenu.addItem(prevTab)
+    windowMenu.addItem(separator)
+    var tabItems = [nextTab, prevTab, separator]
 
     // Cmd+1..9 — go to the nth tab. tag holds the 1-based number.
     for n in 1...9 {
@@ -898,29 +919,43 @@ func installMainMenu() {
         item.keyEquivalentModifierMask = [.command]
         item.tag = n
         windowMenu.addItem(item)
+        tabItems.append(item)
     }
 
-    // tmux menu — control-mode (-CC) integration entry point (docs/TMUX-INTEGRATION.md).
-    // No default shortcut; added directly rather than through the keybinding store.
-    let tmuxItem = NSMenuItem()
-    mainMenu.addItem(tmuxItem)
-    let tmuxMenu = NSMenu(title: "tmux")
-    tmuxItem.submenu = tmuxMenu
+    // Hidden until a second tab exists; `menuNeedsUpdate` re-evaluates before each open.
+    tabItems.forEach { $0.isHidden = true }
+    delegate.windowTabItems = tabItems
+}
+
+private func buildToolsMenu(into mainMenu: NSMenu) {
+    // Tools — integrations and utilities. Currently the tmux control-mode (-CC) entry points
+    // (docs/TMUX-INTEGRATION.md); no default shortcuts, added directly rather than via the store.
+    let toolsMenu = addSubmenu("Tools", to: mainMenu)
     let attachItem = NSMenuItem(
         title: "Attach tmux (-CC)…",
         action: #selector(DamsonAppDelegate.attachTmux(_:)),
         keyEquivalent: ""
     )
-    tmuxMenu.addItem(attachItem)
+    toolsMenu.addItem(attachItem)
     // Enabled (via validateMenuItem) only while the key window is a tmux host. Leaves the
     // session running server-side; closing the window does the same (detach, never kill).
     let detachItem = NSMenuItem(
-        title: "Detach",
+        title: "Detach tmux",
         action: #selector(DamsonAppDelegate.detachTmux(_:)),
         keyEquivalent: ""
     )
-    tmuxMenu.addItem(detachItem)
+    toolsMenu.addItem(detachItem)
+}
 
+func installMainMenu() {
+    let mainMenu = NSMenu()
+    buildAppMenu(into: mainMenu)
+    buildFileMenu(into: mainMenu)
+    buildEditMenu(into: mainMenu)
+    buildViewMenu(into: mainMenu)
+    buildSplitMenu(into: mainMenu)
+    buildWindowMenu(into: mainMenu, delegate: appDelegate)
+    buildToolsMenu(into: mainMenu)
     NSApp.mainMenu = mainMenu
 }
 
