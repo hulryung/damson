@@ -14,7 +14,7 @@ public final class PTYHost: SessionIOBackend {
     public var onData: ((Data) -> Void)?
     public var onExit: ((Int32) -> Void)?
 
-    private var masterFD: Int32 = -1
+    private var primaryFD: Int32 = -1
     private var childPID: pid_t = -1
     private var isReading = false
 
@@ -63,8 +63,8 @@ public final class PTYHost: SessionIOBackend {
     /// foreground rather than waiting at a prompt. Used so the exit-confirmation dialog
     /// doesn't prompt when "only the shell is up".
     public var isRunningForegroundJob: Bool {
-        guard childPID > 0, masterFD >= 0 else { return false }
-        let fg = tcgetpgrp(masterFD)
+        guard childPID > 0, primaryFD >= 0 else { return false }
+        let fg = tcgetpgrp(primaryFD)
         return fg > 0 && fg != childPID
     }
 
@@ -88,8 +88,8 @@ public final class PTYHost: SessionIOBackend {
             ws_ypixel: 0
         )
 
-        var master: Int32 = 0
-        let pid = forkpty(&master, nil, nil, &ws)
+        var primary: Int32 = 0
+        let pid = forkpty(&primary, nil, nil, &ws)
 
         if pid < 0 {
             throw SpawnError.forkptyFailed(errno: errno)
@@ -124,7 +124,7 @@ public final class PTYHost: SessionIOBackend {
         }
 
         // === parent process ===
-        masterFD = master
+        primaryFD = primary
         childPID = pid
 
         startReading()
@@ -132,13 +132,13 @@ public final class PTYHost: SessionIOBackend {
     }
 
     public func write(_ data: Data) {
-        guard masterFD >= 0 else { return }
+        guard primaryFD >= 0 else { return }
         data.withUnsafeBytes { buf in
             guard let base = buf.baseAddress else { return }
             var remaining = buf.count
             var ptr = base
             while remaining > 0 {
-                let n = Darwin.write(masterFD, ptr, remaining)
+                let n = Darwin.write(primaryFD, ptr, remaining)
                 if n < 0 {
                     if errno == EINTR { continue }
                     return
@@ -151,27 +151,27 @@ public final class PTYHost: SessionIOBackend {
     }
 
     public func resize(cols: Int, rows: Int) {
-        guard masterFD >= 0 else { return }
+        guard primaryFD >= 0 else { return }
         var ws = winsize(
             ws_row: UInt16(rows),
             ws_col: UInt16(cols),
             ws_xpixel: 0,
             ws_ypixel: 0
         )
-        _ = ioctl(masterFD, TIOCSWINSZ, &ws)
+        _ = ioctl(primaryFD, TIOCSWINSZ, &ws)
     }
 
     public func terminate() {
-        // ⚠️ macOS PTY: while the read thread is blocked in read() on the master fd,
+        // ⚠️ macOS PTY: while the read thread is blocked in read() on the primary fd,
         // calling close(fd) from another thread **blocks** until that read returns.
         // If this happens on the windowWillClose path (invoked on the main thread),
         // the entire UI freezes (e.g. on the user's Cmd+W).
         // → move kill + close onto a background queue and return immediately on main.
         let pidToKill = childPID
-        let fdToClose = masterFD
+        let fdToClose = primaryFD
         isReading = false
         childPID = -1
-        masterFD = -1
+        primaryFD = -1
 
         DispatchQueue.global(qos: .utility).async {
             if pidToKill > 0 {
@@ -199,7 +199,7 @@ public final class PTYHost: SessionIOBackend {
     /// the `maxPendingBytes` stall this keeps the UI responsive at any output rate.
     private func startReading() {
         isReading = true
-        let fd = masterFD
+        let fd = primaryFD
         readQueue.async { [weak self] in
             let bufferSize = 65536
             var buffer = [UInt8](repeating: 0, count: bufferSize)
