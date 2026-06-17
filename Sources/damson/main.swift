@@ -674,6 +674,11 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Tab 1…9). Populated by `buildWindowMenu`; shown only when the active window has 2+ tabs.
     var windowTabItems: [NSMenuItem] = []
 
+    /// The Window menu's pane focus/swap items (and their dividers). Populated by
+    /// `buildWindowMenu`; shown only when the active tab has 2+ panes. Split stays visible —
+    /// it's what creates the second pane.
+    var windowPaneItems: [NSMenuItem] = []
+
     /// Number of tabs in the active window, across Compact (tab list) and Standard/Auto
     /// (native tab group) modes.
     @MainActor
@@ -682,12 +687,23 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return currentNativeTabs().count
     }
 
-    /// Just before the Window menu opens, hide the per-tab items when there's a single tab —
-    /// switching/numbering tabs is meaningless until a second one exists.
+    /// Number of panes in the active tab, across Compact and Standard/Auto modes.
+    @MainActor
+    func currentPaneCount() -> Int {
+        if let active = activeCompact() { return active.paneList().count }
+        if let single = activeSingleController() { return single.paneList().count }
+        return 1
+    }
+
+    /// Just before the Window menu opens, hide the per-tab items when there's a single tab and
+    /// the pane focus/swap items when there's a single pane — those actions are meaningless
+    /// until a second tab/pane exists.
     @MainActor
     func menuNeedsUpdate(_ menu: NSMenu) {
         let multipleTabs = currentTabCount() >= 2
         for item in windowTabItems { item.isHidden = !multipleTabs }
+        let multiplePanes = currentPaneCount() >= 2
+        for item in windowPaneItems { item.isHidden = !multiplePanes }
     }
 
     @MainActor
@@ -913,22 +929,30 @@ private func buildWindowMenu(into mainMenu: NSMenu, delegate: DamsonAppDelegate)
     // --- Pane layout (formerly the standalone "Split" menu) ---
     // Panes are window subdivisions, so they belong next to tabs rather than in their own
     // top-level menu. Reaches the active window controller via the responder chain.
+    // Split is always available — it's what creates the second pane.
     windowMenu.addItem(menuItem("Split Horizontally",
                                 #selector(CompactWindowController.splitPaneHorizontally(_:)), .splitHorizontally))
     windowMenu.addItem(menuItem("Split Vertically",
                                 #selector(CompactWindowController.splitPaneVertically(_:)), .splitVertically))
-    windowMenu.addItem(NSMenuItem.separator())
+
+    // Focus/Swap only make sense with 2+ panes. Collected (with their leading dividers) so
+    // `menuNeedsUpdate` hides them on a single pane, leaving just Split above.
+    let paneFocusSeparator = NSMenuItem.separator()
     // Pane focus navigation — default Cmd+Opt+arrows (rebindable via the store).
-    windowMenu.addItem(menuItem("Focus Pane Left", NSSelectorFromString("focusPaneLeft:"), .focusPaneLeft))
-    windowMenu.addItem(menuItem("Focus Pane Right", NSSelectorFromString("focusPaneRight:"), .focusPaneRight))
-    windowMenu.addItem(menuItem("Focus Pane Down", NSSelectorFromString("focusPaneDown:"), .focusPaneDown))
-    windowMenu.addItem(menuItem("Focus Pane Up", NSSelectorFromString("focusPaneUp:"), .focusPaneUp))
-    windowMenu.addItem(NSMenuItem.separator())
+    let focusLeft = menuItem("Focus Pane Left", NSSelectorFromString("focusPaneLeft:"), .focusPaneLeft)
+    let focusRight = menuItem("Focus Pane Right", NSSelectorFromString("focusPaneRight:"), .focusPaneRight)
+    let focusDown = menuItem("Focus Pane Down", NSSelectorFromString("focusPaneDown:"), .focusPaneDown)
+    let focusUp = menuItem("Focus Pane Up", NSSelectorFromString("focusPaneUp:"), .focusPaneUp)
+    let paneSwapSeparator = NSMenuItem.separator()
     // Cmd+Shift+arrows — swap position with the adjacent pane (the same swap as ⌘⇧+click).
-    windowMenu.addItem(menuItem("Swap Pane Left", NSSelectorFromString("swapPaneLeft:"), .swapPaneLeft))
-    windowMenu.addItem(menuItem("Swap Pane Right", NSSelectorFromString("swapPaneRight:"), .swapPaneRight))
-    windowMenu.addItem(menuItem("Swap Pane Down", NSSelectorFromString("swapPaneDown:"), .swapPaneDown))
-    windowMenu.addItem(menuItem("Swap Pane Up", NSSelectorFromString("swapPaneUp:"), .swapPaneUp))
+    let swapLeft = menuItem("Swap Pane Left", NSSelectorFromString("swapPaneLeft:"), .swapPaneLeft)
+    let swapRight = menuItem("Swap Pane Right", NSSelectorFromString("swapPaneRight:"), .swapPaneRight)
+    let swapDown = menuItem("Swap Pane Down", NSSelectorFromString("swapPaneDown:"), .swapPaneDown)
+    let swapUp = menuItem("Swap Pane Up", NSSelectorFromString("swapPaneUp:"), .swapPaneUp)
+    let paneItems = [paneFocusSeparator, focusLeft, focusRight, focusDown, focusUp,
+                     paneSwapSeparator, swapLeft, swapRight, swapDown, swapUp]
+    paneItems.forEach { windowMenu.addItem($0); $0.isHidden = true }
+    delegate.windowPaneItems = paneItems
 }
 
 private func buildToolsMenu(into mainMenu: NSMenu) {
