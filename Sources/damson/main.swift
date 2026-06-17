@@ -869,33 +869,13 @@ private func buildViewMenu(into mainMenu: NSMenu) {
                               #selector(DamsonSurfaceView.toggleAppleMetalHUD(_:)), .toggleAppleHUD))
 }
 
-private func buildSplitMenu(into mainMenu: NSMenu) {
-    // Pane splitting. Reaches the active window controller via the responder chain.
-    let splitMenu = addSubmenu("Split", to: mainMenu)
-    splitMenu.addItem(menuItem("Split Horizontally",
-                               #selector(CompactWindowController.splitPaneHorizontally(_:)), .splitHorizontally))
-    splitMenu.addItem(menuItem("Split Vertically",
-                               #selector(CompactWindowController.splitPaneVertically(_:)), .splitVertically))
-    splitMenu.addItem(NSMenuItem.separator())
-    // Pane focus navigation — default Cmd+Opt+arrows (rebindable via the store).
-    splitMenu.addItem(menuItem("Focus Pane Left", NSSelectorFromString("focusPaneLeft:"), .focusPaneLeft))
-    splitMenu.addItem(menuItem("Focus Pane Right", NSSelectorFromString("focusPaneRight:"), .focusPaneRight))
-    splitMenu.addItem(menuItem("Focus Pane Down", NSSelectorFromString("focusPaneDown:"), .focusPaneDown))
-    splitMenu.addItem(menuItem("Focus Pane Up", NSSelectorFromString("focusPaneUp:"), .focusPaneUp))
-    splitMenu.addItem(NSMenuItem.separator())
-    // Cmd+Shift+arrows — swap position with the adjacent pane (the same swap as ⌘⇧+click).
-    splitMenu.addItem(menuItem("Swap Pane Left", NSSelectorFromString("swapPaneLeft:"), .swapPaneLeft))
-    splitMenu.addItem(menuItem("Swap Pane Right", NSSelectorFromString("swapPaneRight:"), .swapPaneRight))
-    splitMenu.addItem(menuItem("Swap Pane Down", NSSelectorFromString("swapPaneDown:"), .swapPaneDown))
-    splitMenu.addItem(menuItem("Swap Pane Up", NSSelectorFromString("swapPaneUp:"), .swapPaneUp))
-}
-
 private func buildWindowMenu(into mainMenu: NSMenu, delegate: DamsonAppDelegate) {
     let windowMenu = addSubmenu("Window", to: mainMenu)
     // Switching/numbering tabs only makes sense with 2+ tabs — `menuNeedsUpdate` hides the
-    // items collected here whenever the active window has a single tab.
+    // tab items collected here whenever the active window has a single tab.
     windowMenu.delegate = delegate
 
+    // --- Tab navigation ---
     // NSMenu's punctuation key-equivalent matching for ⌘⇧] / ⌘⇧[ is unreliable
     // (charactersIgnoringModifiers applies Shift → "}"/"{", and letters case-fold
     // but punctuation doesn't). These items stay for menu DISPLAY + click; the
@@ -903,11 +883,11 @@ private func buildWindowMenu(into mainMenu: NSMenu, delegate: DamsonAppDelegate)
     // path ⌘W already uses. (store fills the displayed equivalent.)
     let nextTab = menuItem("Show Next Tab", NSSelectorFromString("selectNextTab:"), .nextTab)
     let prevTab = menuItem("Show Previous Tab", NSSelectorFromString("selectPreviousTab:"), .previousTab)
-    let separator = NSMenuItem.separator()
+    let tabInnerSeparator = NSMenuItem.separator()
     windowMenu.addItem(nextTab)
     windowMenu.addItem(prevTab)
-    windowMenu.addItem(separator)
-    var tabItems = [nextTab, prevTab, separator]
+    windowMenu.addItem(tabInnerSeparator)
+    var tabItems = [nextTab, prevTab, tabInnerSeparator]
 
     // Cmd+1..9 — go to the nth tab. tag holds the 1-based number.
     for n in 1...9 {
@@ -921,10 +901,34 @@ private func buildWindowMenu(into mainMenu: NSMenu, delegate: DamsonAppDelegate)
         windowMenu.addItem(item)
         tabItems.append(item)
     }
-
+    // The divider between tabs and panes belongs to the tab group, so hiding the tabs (single
+    // tab) leaves the pane section below without a dangling leading separator.
+    let tabSectionEnd = NSMenuItem.separator()
+    windowMenu.addItem(tabSectionEnd)
+    tabItems.append(tabSectionEnd)
     // Hidden until a second tab exists; `menuNeedsUpdate` re-evaluates before each open.
     tabItems.forEach { $0.isHidden = true }
     delegate.windowTabItems = tabItems
+
+    // --- Pane layout (formerly the standalone "Split" menu) ---
+    // Panes are window subdivisions, so they belong next to tabs rather than in their own
+    // top-level menu. Reaches the active window controller via the responder chain.
+    windowMenu.addItem(menuItem("Split Horizontally",
+                                #selector(CompactWindowController.splitPaneHorizontally(_:)), .splitHorizontally))
+    windowMenu.addItem(menuItem("Split Vertically",
+                                #selector(CompactWindowController.splitPaneVertically(_:)), .splitVertically))
+    windowMenu.addItem(NSMenuItem.separator())
+    // Pane focus navigation — default Cmd+Opt+arrows (rebindable via the store).
+    windowMenu.addItem(menuItem("Focus Pane Left", NSSelectorFromString("focusPaneLeft:"), .focusPaneLeft))
+    windowMenu.addItem(menuItem("Focus Pane Right", NSSelectorFromString("focusPaneRight:"), .focusPaneRight))
+    windowMenu.addItem(menuItem("Focus Pane Down", NSSelectorFromString("focusPaneDown:"), .focusPaneDown))
+    windowMenu.addItem(menuItem("Focus Pane Up", NSSelectorFromString("focusPaneUp:"), .focusPaneUp))
+    windowMenu.addItem(NSMenuItem.separator())
+    // Cmd+Shift+arrows — swap position with the adjacent pane (the same swap as ⌘⇧+click).
+    windowMenu.addItem(menuItem("Swap Pane Left", NSSelectorFromString("swapPaneLeft:"), .swapPaneLeft))
+    windowMenu.addItem(menuItem("Swap Pane Right", NSSelectorFromString("swapPaneRight:"), .swapPaneRight))
+    windowMenu.addItem(menuItem("Swap Pane Down", NSSelectorFromString("swapPaneDown:"), .swapPaneDown))
+    windowMenu.addItem(menuItem("Swap Pane Up", NSSelectorFromString("swapPaneUp:"), .swapPaneUp))
 }
 
 private func buildToolsMenu(into mainMenu: NSMenu) {
@@ -953,7 +957,6 @@ func installMainMenu() {
     buildFileMenu(into: mainMenu)
     buildEditMenu(into: mainMenu)
     buildViewMenu(into: mainMenu)
-    buildSplitMenu(into: mainMenu)
     buildWindowMenu(into: mainMenu, delegate: appDelegate)
     buildToolsMenu(into: mainMenu)
     NSApp.mainMenu = mainMenu
