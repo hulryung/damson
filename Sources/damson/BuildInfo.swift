@@ -24,10 +24,18 @@ enum BuildInfo {
         return d
     }
 
-    /// Top-right window badge: "dev a12ee87" for dev builds, the build time for release builds.
+    /// Marketing version (CFBundleShortVersionString), e.g. "0.3.1". nil if missing/placeholder.
+    static var shortVersion: String? {
+        guard let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              !v.isEmpty, v != "0.0.0-dev"
+        else { return nil }
+        return v
+    }
+
+    /// Top-right window badge: "dev a12ee87" for dev builds, the release version ("v0.3.1") for release builds.
     static var badgeText: String? {
         if isDevBuild { return gitHash.map { "dev \($0)" } ?? "dev" }
-        return buildDate
+        return shortVersion.map { "v\($0)" }
     }
 
     /// Dev marker appended to the window title (" · dev a12ee87"). Empty string for release.

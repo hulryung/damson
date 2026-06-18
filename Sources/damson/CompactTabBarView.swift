@@ -95,7 +95,7 @@ final class CompactTabBarView: NSView {
         newTabButton.action = #selector(newTabClicked)
         addSubview(newTabButton)
 
-        // Right-side badge — git hash (orange) for dev builds, build time (muted color) for release builds.
+        // Right-side badge — git hash (orange) for dev builds, release version (muted color) for release builds.
         if let badge = BuildInfo.badgeText {
             let l = NSTextField(labelWithString: badge)
             l.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
