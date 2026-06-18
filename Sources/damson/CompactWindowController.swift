@@ -120,6 +120,11 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private var swipeNeighborIndex = -1
     private var swipeFromRight = false   // neighbor (next tab) enters from the right
 
+    /// Bumped on every `animateTabSwitch`. A re-entrant switch (Cmd+arrow again mid-slide)
+    /// supersedes the previous one; the prior completion block checks this and bails so it
+    /// can't detach/reset a view the new switch is now using.
+    private var tabSwitchGeneration = 0
+
     // Tab-slide motion. The trackpad swipe settle uses the longer duration: the
     // finger has already dragged the content most of the way, so the 0.42s is
     // just the release deceleration and reads as natural follow-through.
@@ -453,10 +458,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         refreshTabBar()
 
         // The incoming tree may carry a leftover from-state if a prior create/switch
-        // animation on this same view was superseded. Reset to the final visual state
-        // unconditionally; the branches below re-apply a from-state if they animate.
+        // animation on this same view was superseded. Remove any in-flight switch animation
+        // and reset to the final visual state unconditionally; the branches below re-apply a
+        // from-state if they animate. (Without the removeAnimation, a leftover off-screen
+        // switch animation would keep this tree shifted/black when shown via the instant path.)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        clearSwitchAnimations(tree.layer)
         tree.layer?.opacity = 1
         tree.layer?.transform = CATransform3DIdentity
         CATransaction.commit()
@@ -547,6 +555,16 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         // Ensure constraints have produced the final frame before we read/animate it.
         contentContainer.layoutSubtreeIfNeeded()
 
+        // Re-entrancy: pressing Cmd+arrow again mid-slide reuses one of these layers (the prior
+        // incoming becomes the new outgoing, or vice-versa). Clear any in-flight switch animation
+        // on both so the new translations don't stack with stale ones — stacked translations break
+        // the "glued" invariant and flash the bare (black) container for a frame. Bump the
+        // generation so the previous switch's completion bails instead of fighting this one.
+        clearSwitchAnimations(incomingLayer)
+        clearSwitchAnimations(outgoingLayer)
+        tabSwitchGeneration += 1
+        let generation = tabSwitchGeneration
+
         // Cross-slide geometry (matches Rust halite). Higher target index = new tab
         // is to the right → it enters from the right while the old one exits left.
         let goingRight = toIndex > fromIndex
@@ -590,6 +608,9 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self, weak tree, weak outgoing] in
+            // Superseded by a newer switch? It now owns these views' cleanup — bail so we
+            // don't detach/reset something the new switch is mid-animating.
+            if let self, self.tabSwitchGeneration != generation { return }
             if let outgoing {
                 // Detach unless something re-selected it mid-animation (it would then be
                 // the currently-shown tree and must stay).
@@ -1102,4 +1123,11 @@ private func tabSlideTranslation(style: TabTransitionStyle, from: CGFloat, to: C
     a.fromValue = from
     a.toValue = to
     return a
+}
+
+/// Remove any in-flight tab cross-slide animations from a layer (used before reusing it for a
+/// new switch, or when showing a tree via the instant path).
+private func clearSwitchAnimations(_ layer: CALayer?) {
+    layer?.removeAnimation(forKey: "switchIn")
+    layer?.removeAnimation(forKey: "switchOut")
 }
