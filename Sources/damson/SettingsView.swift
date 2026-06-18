@@ -36,6 +36,8 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.wordSeparators") private var wordSeparators: String = ""
     @AppStorage("damson.tabBarTransparent") private var tabBarTransparent: Bool = false
 
+    @ObservedObject private var updater = DamsonUpdater.shared
+
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
 
@@ -328,10 +330,28 @@ struct DamsonSettingsView: View {
                 Text("When on, checks for new versions in the background. You can always check manually via \"Check for Updates…\".")
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                HStack {
+                    Button("Check for Updates…") {
+                        DamsonUpdater.shared.checkForUpdates(nil)
+                    }
+                    .disabled(!updater.canCheckForUpdates)
+                    Spacer()
+                    Text(currentVersionText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    /// "Version 0.3.0 (259)" — shown next to the manual check button.
+    private var currentVersionText: String {
+        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "Version \(short) (\(build))"
     }
 
     private func postChanged() {

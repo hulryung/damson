@@ -19,11 +19,17 @@ import Sparkle
 /// Why SPUUpdater is used directly instead of SPUStandardUpdaterController: suppressing the
 /// failure dialog requires injecting a custom user driver, but the controller builds its own
 /// standard driver internally and doesn't allow injection.
-final class DamsonUpdater: NSObject {
+final class DamsonUpdater: NSObject, ObservableObject {
     static let shared = DamsonUpdater()
+
+    /// Whether a manual check can be performed right now (false in dev builds and while a
+    /// check is already in progress). Drives the enabled state of the Settings
+    /// "Check for Updates…" button; kept in sync with Sparkle via KVO.
+    @Published private(set) var canCheckForUpdates: Bool = false
 
     private let userDriver: SilentErrorUserDriver
     private let updater: SPUUpdater
+    private var canCheckObservation: NSKeyValueObservation?
 
     /// Dev builds never run the updater: a dev .app silently replacing itself
     /// with the release feed's build would clobber the local dev install (and
@@ -53,6 +59,12 @@ final class DamsonUpdater: NSObject {
         }
         // Apply the saved setting (default false) to automatic checks.
         applyAutomaticChecksSetting()
+        // Mirror Sparkle's canCheckForUpdates into our @Published property so SwiftUI
+        // re-evaluates the button's enabled state when a check starts/finishes.
+        canCheckObservation = updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { [weak self] updater, _ in
+            guard let self else { return }
+            self.canCheckForUpdates = self.updatesEnabled && updater.canCheckForUpdates
+        }
     }
 
     /// Entry point invoked by the menu action (checks immediately, regardless of the automatic setting).
