@@ -50,6 +50,7 @@ struct DamsonSettingsView: View {
             KeysSettingsTab().tabItem { Label("Keys", systemImage: "keyboard") }
             advancedTab.tabItem { Label("Advanced", systemImage: "gearshape") }
         }
+        .padding(.top, 14)
         .frame(width: 540, height: 600)
         .onChange(of: fontSize) { _ in postChanged() }
         .onChange(of: fontFamily) { _ in postChanged() }

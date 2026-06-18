@@ -569,6 +569,11 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let host = NSHostingController(rootView: view)
         let win = NSWindow(contentViewController: host)
         win.title = "Damson Settings"
+        // Hide the redundant title text — the tab bar already labels the window — and
+        // make the titlebar transparent so the tab strip reads as one cohesive top area
+        // rather than being crammed under a separate title row.
+        win.titleVisibility = .hidden
+        win.titlebarAppearsTransparent = true
         win.styleMask = [.titled, .closable, .resizable]
         win.setContentSize(NSSize(width: 540, height: 600))
         win.isReleasedWhenClosed = false
@@ -847,6 +852,12 @@ private func buildAppMenu(into mainMenu: NSMenu) {
         action: #selector(DamsonAppDelegate.showAbout(_:)),
         keyEquivalent: ""
     ))
+    // Disabled version line under About (standard macOS app-menu pattern).
+    let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+    let versionItem = NSMenuItem(title: "Version \(short) (\(build))", action: nil, keyEquivalent: "")
+    versionItem.isEnabled = false
+    appMenu.addItem(versionItem)
     appMenu.addItem(NSMenuItem.separator())
     appMenu.addItem(menuItem("Settings…", #selector(DamsonAppDelegate.showSettings(_:)), .settings))
     appMenu.addItem(NSMenuItem.separator())
