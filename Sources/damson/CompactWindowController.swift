@@ -126,9 +126,24 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     static let tabSlideDuration: TimeInterval = 0.42
     // A discrete click/keyboard switch has no finger tracking — the full-width
     // slide starts from zero, so the 0.42s settle is perceived as pure latency
-    // ("the tab switches slowly"). A short slide keeps a sense of direction while
-    // feeling immediate.
-    static let tabClickSlideDuration: TimeInterval = 0.16
+    // ("the tab switches slowly"). This is shorter so it feels immediate, but long
+    // enough that the easeOutCubic deceleration into place is actually visible — at
+    // 0.16s the slow-down-and-arrive was over too fast to notice.
+    static let tabClickSlideDuration: TimeInterval = 0.24
+    /// easeOutCubic — a clear, even deceleration into the final position. Unlike
+    /// `tabSlideTiming` (the trackpad follow-through curve) it doesn't jump most of the
+    /// way early and crawl the rest, so a full-width click slide reads as a smooth arrival.
+    static func tabClickSlideTiming() -> CAMediaTimingFunction {
+        CAMediaTimingFunction(controlPoints: 0.215, 0.61, 0.355, 1)
+    }
+    /// (duration, timing) for the tab-bar selection pill on a discrete switch — matched to the
+    /// active content transition so the pill and the content settle as one.
+    static func tabSwitchPillMotion() -> (TimeInterval, CAMediaTimingFunction) {
+        switch TabTransitionStyle.current {
+        case .slide: return (tabClickSlideDuration, tabClickSlideTiming())
+        case .crossfade, .none: return (Motion.duration, Motion.timing)
+        }
+    }
     static func tabSlideTiming() -> CAMediaTimingFunction {
         CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)   // strong ease-out
     }
@@ -552,14 +567,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             fade = false
             incomingStart = goingRight ? width : -width
             outgoingEnd = goingRight ? -width : width
-            // Discrete click/keyboard switch — snappy. NOT the trackpad-swipe
-            // settle curve (tabSlideTiming): that one is an extreme ease-out
-            // tuned for finger-release follow-through — it jumps ~90% in the
-            // first fifth then crawls the final stretch, which on a full-width
-            // click slide reads as "almost there… still sliding" = sluggish.
-            // A plain easeOut finishes cleanly with no slow tail.
+            // Discrete click/keyboard switch. easeOutCubic over tabClickSlideDuration
+            // gives a visible "slow down and arrive" settle — the old 0.16s named
+            // .easeOut was too quick to perceive. Still avoids tabSlideTiming's extreme
+            // tail (the trackpad follow-through), which crawls on a full-width slide.
             dur = Self.tabClickSlideDuration
-            timing = CAMediaTimingFunction(name: .easeOut)
+            timing = Self.tabClickSlideTiming()
         case .crossfade, .none:
             fade = true
             let delta: CGFloat = 24

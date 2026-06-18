@@ -425,8 +425,10 @@ final class CompactTabBarView: NSView {
 
         CATransaction.begin()
         if isSwitch && Motion.enabled {
-            CATransaction.setAnimationDuration(Motion.duration)
-            CATransaction.setAnimationTimingFunction(Motion.timing)
+            // Match the content cross-slide so the pill and the content settle together.
+            let (dur, timing) = CompactWindowController.tabSwitchPillMotion()
+            CATransaction.setAnimationDuration(dur)
+            CATransaction.setAnimationTimingFunction(timing)
         } else {
             CATransaction.setDisableActions(true)
         }
