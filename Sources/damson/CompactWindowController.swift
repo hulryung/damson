@@ -124,17 +124,16 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     // finger has already dragged the content most of the way, so the 0.42s is
     // just the release deceleration and reads as natural follow-through.
     static let tabSlideDuration: TimeInterval = 0.42
-    // A discrete click/keyboard switch has no finger tracking — the full-width
-    // slide starts from zero, so the 0.42s settle is perceived as pure latency
-    // ("the tab switches slowly"). This is shorter so it feels immediate, but long
-    // enough that the easeOutCubic deceleration into place is actually visible — at
-    // 0.16s the slow-down-and-arrive was over too fast to notice.
-    static let tabClickSlideDuration: TimeInterval = 0.24
-    /// easeOutCubic — a clear, even deceleration into the final position. Unlike
-    /// `tabSlideTiming` (the trackpad follow-through curve) it doesn't jump most of the
-    /// way early and crawl the rest, so a full-width click slide reads as a smooth arrival.
+    // A discrete click/keyboard switch. Long enough that the deceleration into place
+    // is unmistakable — the tab rushes in, then visibly glides the last stretch to a
+    // stop. Shorter than the 0.42s trackpad settle so it still feels deliberate, not
+    // laggy. (Earlier 0.16–0.24s values made the slow-down too brief to perceive.)
+    static let tabClickSlideDuration: TimeInterval = 0.30
+    /// Strong ease-out (≈ easeOutExpo): covers most of the distance fast, then a long,
+    /// clearly visible glide into the final position — that tail IS the "arrival" the
+    /// user wants to see. The full-width slide ends exactly on target (no edge gap).
     static func tabClickSlideTiming() -> CAMediaTimingFunction {
-        CAMediaTimingFunction(controlPoints: 0.215, 0.61, 0.355, 1)
+        CAMediaTimingFunction(controlPoints: 0.16, 1, 0.28, 1)
     }
     /// (duration, timing) for the tab-bar selection pill on a discrete switch — matched to the
     /// active content transition so the pill and the content settle as one.
