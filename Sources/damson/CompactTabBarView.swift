@@ -423,9 +423,31 @@ final class CompactTabBarView: NSView {
         let isSwitch = pillDisplayedIndex != -1 && pillDisplayedIndex != selectedIndex
         pillDisplayedIndex = selectedIndex
 
+        // Slide style: spring overshoot matched to the content (pill slips past, bounces back).
+        if isSwitch && Motion.enabled && TabTransitionStyle.current == .slide {
+            let fromPos = selectionPill.presentation()?.position ?? selectionPill.position
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            selectionPill.isHidden = false
+            selectionPill.frame = target               // model jumps to the final position
+            let toPos = selectionPill.position
+            let dir: CGFloat = toPos.x >= fromPos.x ? 1 : -1
+            let os = CompactWindowController.tabPillOvershoot
+            let kf = CAKeyframeAnimation(keyPath: "position")
+            kf.values = [NSValue(point: fromPos),
+                         NSValue(point: NSPoint(x: toPos.x + dir * os, y: toPos.y)),
+                         NSValue(point: toPos)]
+            kf.keyTimes = CompactWindowController.tabOvershootKeyTimes
+            kf.timingFunctions = CompactWindowController.tabOvershootTimingFunctions()
+            kf.duration = CompactWindowController.tabClickSlideDuration
+            selectionPill.add(kf, forKey: "pillSwitch")
+            CATransaction.commit()
+            return
+        }
+
         CATransaction.begin()
         if isSwitch && Motion.enabled {
-            // Match the content cross-slide so the pill and the content settle together.
+            // Match the content transition so the pill and the content settle together.
             let (dur, timing) = CompactWindowController.tabSwitchPillMotion()
             CATransaction.setAnimationDuration(dur)
             CATransaction.setAnimationTimingFunction(timing)
