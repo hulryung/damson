@@ -124,27 +124,28 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     // finger has already dragged the content most of the way, so the 0.42s is
     // just the release deceleration and reads as natural follow-through.
     static let tabSlideDuration: TimeInterval = 0.42
-    // A discrete click/keyboard switch. Long enough that the deceleration into place
-    // is unmistakable — the tab rushes in, then visibly glides the last stretch to a
-    // stop. Shorter than the 0.42s trackpad settle so it still feels deliberate, not
-    // laggy. (Earlier 0.16–0.24s values made the slow-down too brief to perceive.)
-    static let tabClickSlideDuration: TimeInterval = 0.30
-    /// Strong ease-out (≈ easeOutExpo): covers most of the distance fast, then a long,
-    /// clearly visible glide into the final position — that tail IS the "arrival" the
-    /// user wants to see. The full-width slide ends exactly on target (no edge gap).
-    static func tabClickSlideTiming() -> CAMediaTimingFunction {
-        CAMediaTimingFunction(controlPoints: 0.16, 1, 0.28, 1)
+    // A discrete click/keyboard switch settles with a real spring (tabSlideSpring): the tab
+    // rushes in and eases organically into place. A spring's deceleration reads more naturally
+    // ("elastic") than a fixed bezier, and the long, smooth tail is the visible "arrival".
+    /// Spring for the click/keyboard slide. ζ ≈ 0.82 — underdamped enough to feel elastic, damped
+    /// enough that it doesn't bounce awkwardly (a whisper of overshoot, ~1% of the travel). Tuned
+    /// to settle a touch slower than the old 0.30s ease (the "lengthen it" ask). Works for any
+    /// keyPath — `transform.translation.x` (content) or `position` (the tab-bar pill).
+    static func tabSlideSpring(_ keyPath: String, from: Any, to: Any) -> CASpringAnimation {
+        let s = CASpringAnimation(keyPath: keyPath)
+        s.fromValue = from
+        s.toValue = to
+        s.mass = 1
+        s.stiffness = 150
+        s.damping = 20
+        s.initialVelocity = 0
+        s.duration = s.settlingDuration
+        return s
     }
-    /// (duration, timing) for the tab-bar selection pill on a discrete switch — matched to the
-    /// active content transition so the pill and the content settle as one.
-    static func tabSwitchPillMotion() -> (TimeInterval, CAMediaTimingFunction) {
-        switch TabTransitionStyle.current {
-        case .slide: return (tabClickSlideDuration, tabClickSlideTiming())
-        case .crossfade, .none: return (Motion.duration, Motion.timing)
-        }
-    }
+    /// The spring's natural settling time — paces the wrapping animation group / pill transaction.
+    static var tabSlideSpringDuration: TimeInterval { tabSlideSpring("x", from: 0, to: 1).settlingDuration }
     static func tabSlideTiming() -> CAMediaTimingFunction {
-        CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)   // strong ease-out
+        CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)   // strong ease-out (trackpad swipe)
     }
 
     var hasTabs: Bool { !tabs.isEmpty }
@@ -566,12 +567,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             fade = false
             incomingStart = goingRight ? width : -width
             outgoingEnd = goingRight ? -width : width
-            // Discrete click/keyboard switch. easeOutCubic over tabClickSlideDuration
-            // gives a visible "slow down and arrive" settle — the old 0.16s named
-            // .easeOut was too quick to perceive. Still avoids tabSlideTiming's extreme
-            // tail (the trackpad follow-through), which crawls on a full-width slide.
-            dur = Self.tabClickSlideDuration
-            timing = Self.tabClickSlideTiming()
+            // Spring settle (built below). Paint the container so the few points the spring
+            // briefly overshoots past the edge match the terminal bg instead of flashing the
+            // window behind. The group is paced linearly; the spring carries its own curve.
+            let themeBG = (activeSession?.config.theme ?? DamsonConfig.fromUserDefaults().theme).background
+            contentContainer.layer?.backgroundColor = themeBG.cgColor
+            dur = Self.tabSlideSpringDuration
+            timing = CAMediaTimingFunction(name: .linear)
         case .crossfade, .none:
             fade = true
             let delta: CGFloat = 24
@@ -607,10 +609,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             tree?.layer?.removeAnimation(forKey: "switchIn")
         }
 
-        // Incoming: slide from off-screen to 0 (+ optional fade in).
-        let iSlide = CABasicAnimation(keyPath: "transform.translation.x")
-        iSlide.fromValue = incomingStart
-        iSlide.toValue = 0
+        // Incoming: slide from off-screen to 0 (spring for `slide`, plain + fade for crossfade).
+        let iSlide = tabSlideTranslation(style: style, from: incomingStart, to: 0)
         var inAnims = [iSlide]
         if fade {
             let iFade = CABasicAnimation(keyPath: "opacity")
@@ -624,11 +624,9 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         iGroup.timingFunction = timing
         incomingLayer.add(iGroup, forKey: "switchIn")
 
-        // Outgoing live layer: slide 0 → outgoingEnd (+ optional fade out).
-        // fillMode=.forwards pins the end state until the completion detaches the view.
-        let oSlide = CABasicAnimation(keyPath: "transform.translation.x")
-        oSlide.fromValue = 0
-        oSlide.toValue = outgoingEnd
+        // Outgoing live layer: slide 0 → outgoingEnd. Same spring params as the incoming, so the
+        // two stay rigidly glued. fillMode=.forwards pins the end state until completion detaches it.
+        let oSlide = tabSlideTranslation(style: style, from: 0, to: outgoingEnd)
         var outAnims = [oSlide]
         if fade {
             let oFade = CABasicAnimation(keyPath: "opacity")
@@ -1092,4 +1090,16 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     func windowDidResize(_ notification: Notification) {
         centerTrafficLights()
     }
+}
+
+/// The tab cross-slide's horizontal translation: a spring for the `slide` style (organic
+/// "elastic" settle), or a plain translation (paced by the wrapping group) for crossfade.
+private func tabSlideTranslation(style: TabTransitionStyle, from: CGFloat, to: CGFloat) -> CABasicAnimation {
+    if style == .slide {
+        return CompactWindowController.tabSlideSpring("transform.translation.x", from: from, to: to)
+    }
+    let a = CABasicAnimation(keyPath: "transform.translation.x")
+    a.fromValue = from
+    a.toValue = to
+    return a
 }

@@ -423,12 +423,25 @@ final class CompactTabBarView: NSView {
         let isSwitch = pillDisplayedIndex != -1 && pillDisplayedIndex != selectedIndex
         pillDisplayedIndex = selectedIndex
 
+        // Slide style: match the content's spring so the pill and the content settle together.
+        if isSwitch && Motion.enabled && TabTransitionStyle.current == .slide {
+            let fromPos = selectionPill.presentation()?.position ?? selectionPill.position
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            selectionPill.isHidden = false
+            selectionPill.frame = target                  // model jumps to the final position
+            let spring = CompactWindowController.tabSlideSpring(
+                "position", from: NSValue(point: fromPos), to: NSValue(point: selectionPill.position))
+            selectionPill.add(spring, forKey: "pillSwitch")
+            CATransaction.commit()
+            return
+        }
+
         CATransaction.begin()
         if isSwitch && Motion.enabled {
-            // Match the content cross-slide so the pill and the content settle together.
-            let (dur, timing) = CompactWindowController.tabSwitchPillMotion()
-            CATransaction.setAnimationDuration(dur)
-            CATransaction.setAnimationTimingFunction(timing)
+            // Crossfade/none: a plain settle in step with the content.
+            CATransaction.setAnimationDuration(Motion.duration)
+            CATransaction.setAnimationTimingFunction(Motion.timing)
         } else {
             CATransaction.setDisableActions(true)
         }
