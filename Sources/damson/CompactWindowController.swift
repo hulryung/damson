@@ -124,35 +124,19 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     // finger has already dragged the content most of the way, so the 0.42s is
     // just the release deceleration and reads as natural follow-through.
     static let tabSlideDuration: TimeInterval = 0.42
-    // Discrete click/keyboard tab switch. The slide settles with a spring overshoot
-    // (see animateTabSwitch): the content rushes in, slips slightly past the target, and
-    // bounces back — an unmistakable "arrival". Shorter than the 0.42s trackpad settle so
-    // it still feels deliberate, not laggy; 0.34s leaves room for the bounce.
-    static let tabClickSlideDuration: TimeInterval = 0.34
-    /// Fixed-pixel overshoot for the spring settle — independent of the slide distance, so a
-    /// full-width page swipe exposes only this many points of background at the edge for an
-    /// instant (the container is painted with the terminal bg, so it isn't read as a gap).
-    static let tabSlideOvershoot: CGFloat = 24
-    static let tabPillOvershoot: CGFloat = 8
-    /// Keyframe schedule for the overshoot: travel to just-past at 66%, settle back by 100%.
-    static let tabOvershootKeyTimes: [NSNumber] = [0, 0.66, 1]
-    static func tabOvershootTimingFunctions() -> [CAMediaTimingFunction] {
-        [CAMediaTimingFunction(controlPoints: 0.25, 0.8, 0.35, 1),   // decelerate to the overshoot
-         CAMediaTimingFunction(controlPoints: 0.4, 0, 0.3, 1)]       // ease back to rest
-    }
-    /// Build a transform.translation.x keyframe that overshoots `to` by `overshoot`, then settles.
-    static func overshootTranslationX(from: CGFloat, to: CGFloat, overshoot: CGFloat) -> CAKeyframeAnimation {
-        let a = CAKeyframeAnimation(keyPath: "transform.translation.x")
-        a.values = [from, to + overshoot, to]
-        a.keyTimes = tabOvershootKeyTimes
-        a.timingFunctions = tabOvershootTimingFunctions()
-        return a
-    }
-    /// Fallback settle timing (crossfade pill / non-overshoot paths).
+    // A discrete click/keyboard switch. Long enough that the deceleration into place
+    // is unmistakable — the tab rushes in, then visibly glides the last stretch to a
+    // stop. Shorter than the 0.42s trackpad settle so it still feels deliberate, not
+    // laggy. (Earlier 0.16–0.24s values made the slow-down too brief to perceive.)
+    static let tabClickSlideDuration: TimeInterval = 0.30
+    /// Strong ease-out (≈ easeOutExpo): covers most of the distance fast, then a long,
+    /// clearly visible glide into the final position — that tail IS the "arrival" the
+    /// user wants to see. The full-width slide ends exactly on target (no edge gap).
     static func tabClickSlideTiming() -> CAMediaTimingFunction {
         CAMediaTimingFunction(controlPoints: 0.16, 1, 0.28, 1)
     }
-    /// (duration, timing) for the tab-bar selection pill on a non-overshoot switch.
+    /// (duration, timing) for the tab-bar selection pill on a discrete switch — matched to the
+    /// active content transition so the pill and the content settle as one.
     static func tabSwitchPillMotion() -> (TimeInterval, CAMediaTimingFunction) {
         switch TabTransitionStyle.current {
         case .slide: return (tabClickSlideDuration, tabClickSlideTiming())
@@ -577,22 +561,15 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         let outgoingEnd: CGFloat     // outgoing overlay's end x (starts at 0)
         let dur: TimeInterval
         let timing: CAMediaTimingFunction
-        // Signed spring overshoot (in the travel direction); 0 = plain settle. The incoming and
-        // outgoing layers use the SAME overshoot, so they stay rigidly `width` apart throughout
-        // (the only exposed area is the fixed-size sliver at the leading edge).
-        let overshoot: CGFloat
         switch style {
         case .slide:
             fade = false
             incomingStart = goingRight ? width : -width
             outgoingEnd = goingRight ? -width : width
-            // Discrete click/keyboard switch — spring overshoot settle (see below): the slide
-            // slips ~24pt past, then bounces back. That bounce is the unmistakable "arrival".
-            overshoot = goingRight ? -Self.tabSlideOvershoot : Self.tabSlideOvershoot
-            // Paint the container so the sliver the overshoot briefly exposes at the edge matches
-            // the terminal background instead of flashing the window behind it.
-            let themeBG = (activeSession?.config.theme ?? DamsonConfig.fromUserDefaults().theme).background
-            contentContainer.layer?.backgroundColor = themeBG.cgColor
+            // Discrete click/keyboard switch. easeOutCubic over tabClickSlideDuration
+            // gives a visible "slow down and arrive" settle — the old 0.16s named
+            // .easeOut was too quick to perceive. Still avoids tabSlideTiming's extreme
+            // tail (the trackpad follow-through), which crawls on a full-width slide.
             dur = Self.tabClickSlideDuration
             timing = Self.tabClickSlideTiming()
         case .crossfade, .none:
@@ -600,7 +577,6 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             let delta: CGFloat = 24
             incomingStart = goingRight ? delta : -delta
             outgoingEnd = goingRight ? -delta : delta
-            overshoot = 0
             dur = Motion.duration
             timing = Motion.timing
         }
@@ -631,18 +607,42 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             tree?.layer?.removeAnimation(forKey: "switchIn")
         }
 
-        // The overshoot keyframe carries its own per-segment timing, so the group must pace it
-        // linearly; the plain slide/crossfade relies on the group's easing curve.
-        let groupTiming = overshoot != 0 ? CAMediaTimingFunction(name: .linear) : timing
+        // Incoming: slide from off-screen to 0 (+ optional fade in).
+        let iSlide = CABasicAnimation(keyPath: "transform.translation.x")
+        iSlide.fromValue = incomingStart
+        iSlide.toValue = 0
+        var inAnims = [iSlide]
+        if fade {
+            let iFade = CABasicAnimation(keyPath: "opacity")
+            iFade.fromValue = 0.0
+            iFade.toValue = 1.0
+            inAnims.append(iFade)
+        }
+        let iGroup = CAAnimationGroup()
+        iGroup.animations = inAnims
+        iGroup.duration = dur
+        iGroup.timingFunction = timing
+        incomingLayer.add(iGroup, forKey: "switchIn")
 
-        // Incoming slides to 0; outgoing slides to outgoingEnd (pinned until the completion
-        // detaches it). The same overshoot on both keeps them rigidly glued.
-        addTabSwitchSlide(to: incomingLayer, TabSwitchSlide(
-            from: incomingStart, to: 0, overshoot: overshoot, fade: fade ? (0, 1) : nil,
-            duration: dur, timing: groupTiming, pinEnd: false))
-        addTabSwitchSlide(to: outgoingLayer, TabSwitchSlide(
-            from: 0, to: outgoingEnd, overshoot: overshoot, fade: fade ? (1, 0) : nil,
-            duration: dur, timing: groupTiming, pinEnd: true))
+        // Outgoing live layer: slide 0 → outgoingEnd (+ optional fade out).
+        // fillMode=.forwards pins the end state until the completion detaches the view.
+        let oSlide = CABasicAnimation(keyPath: "transform.translation.x")
+        oSlide.fromValue = 0
+        oSlide.toValue = outgoingEnd
+        var outAnims = [oSlide]
+        if fade {
+            let oFade = CABasicAnimation(keyPath: "opacity")
+            oFade.fromValue = 1.0
+            oFade.toValue = 0.0
+            outAnims.append(oFade)
+        }
+        let oGroup = CAAnimationGroup()
+        oGroup.animations = outAnims
+        oGroup.duration = dur
+        oGroup.timingFunction = timing
+        oGroup.isRemovedOnCompletion = false
+        oGroup.fillMode = .forwards
+        outgoingLayer.add(oGroup, forKey: "switchOut")
 
         CATransaction.commit()
     }
@@ -1092,48 +1092,4 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     func windowDidResize(_ notification: Notification) {
         centerTrafficLights()
     }
-}
-
-/// Parameters for one side of the tab cross-slide (incoming or outgoing).
-private struct TabSwitchSlide {
-    let from: CGFloat
-    let to: CGFloat
-    /// Signed spring overshoot in points; 0 = plain ease (no bounce).
-    let overshoot: CGFloat
-    /// Opacity (from, to) for crossfade; nil = no fade.
-    let fade: (Float, Float)?
-    let duration: TimeInterval
-    let timing: CAMediaTimingFunction
-    /// Outgoing layer: hold the end state via fillMode until the completion detaches it.
-    let pinEnd: Bool
-}
-
-/// Add the tab cross-slide (translation + optional fade) to one layer. `overshoot != 0` uses
-/// the spring keyframe; otherwise a plain translation paced by `timing`.
-private func addTabSwitchSlide(to layer: CALayer, _ s: TabSwitchSlide) {
-    let slide: CAAnimation
-    if s.overshoot != 0 {
-        slide = CompactWindowController.overshootTranslationX(from: s.from, to: s.to, overshoot: s.overshoot)
-    } else {
-        let a = CABasicAnimation(keyPath: "transform.translation.x")
-        a.fromValue = s.from
-        a.toValue = s.to
-        slide = a
-    }
-    var anims: [CAAnimation] = [slide]
-    if let fade = s.fade {
-        let f = CABasicAnimation(keyPath: "opacity")
-        f.fromValue = fade.0
-        f.toValue = fade.1
-        anims.append(f)
-    }
-    let group = CAAnimationGroup()
-    group.animations = anims
-    group.duration = s.duration
-    group.timingFunction = s.timing
-    if s.pinEnd {
-        group.isRemovedOnCompletion = false
-        group.fillMode = .forwards
-    }
-    layer.add(group, forKey: s.pinEnd ? "switchOut" : "switchIn")
 }
