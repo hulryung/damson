@@ -17,6 +17,11 @@ let package = Package(
             name: "DamsonControl",
             targets: ["DamsonControl"]
         ),
+        // Orchestration engine — drives multiple CLI agents in parallel (used by Damson.app)
+        .library(
+            name: "DamsonOrchestrator",
+            targets: ["DamsonOrchestrator"]
+        ),
         // Standalone app (`swift run damson` during development; Xcode project later for distribution)
         .executable(
             name: "damson",
@@ -26,6 +31,16 @@ let package = Package(
         .executable(
             name: "damson-cli",
             targets: ["damson-cli"]
+        ),
+        // Orchard — standalone multi-agent orchestration app (own bundle/icon)
+        .executable(
+            name: "Orchard",
+            targets: ["Orchard"]
+        ),
+        // CLI to drive a running Orchard instance (for scripts / AI orchestration)
+        .executable(
+            name: "orchard-cli",
+            targets: ["orchard-cli"]
         ),
     ],
     dependencies: [
@@ -44,6 +59,16 @@ let package = Package(
             name: "DamsonControl",
             path: "Sources/DamsonControl"
         ),
+        .target(
+            name: "DamsonOrchestrator",
+            dependencies: ["DamsonTerminal", "DamsonControl"],
+            path: "Sources/DamsonOrchestrator"
+        ),
+        .target(
+            name: "OrchardControl",
+            dependencies: ["DamsonControl"],
+            path: "Sources/OrchardControl"
+        ),
         .executableTarget(
             name: "damson",
             dependencies: [
@@ -59,6 +84,22 @@ let package = Package(
             dependencies: ["DamsonControl"],
             path: "Sources/damson-cli"
         ),
+        .executableTarget(
+            name: "Orchard",
+            dependencies: [
+                "DamsonTerminal",
+                "DamsonControl",
+                "DamsonOrchestrator",
+                "OrchardControl",
+            ],
+            path: "Sources/Orchard",
+            resources: [.copy("Resources/Orchard.icns")]
+        ),
+        .executableTarget(
+            name: "orchard-cli",
+            dependencies: ["OrchardControl"],
+            path: "Sources/orchard-cli"
+        ),
         .testTarget(
             name: "DamsonTerminalTests",
             dependencies: ["DamsonTerminal"],
@@ -68,6 +109,11 @@ let package = Package(
             name: "DamsonControlTests",
             dependencies: ["DamsonControl"],
             path: "Tests/DamsonControlTests"
+        ),
+        .testTarget(
+            name: "DamsonOrchestratorTests",
+            dependencies: ["DamsonOrchestrator"],
+            path: "Tests/DamsonOrchestratorTests"
         ),
     ]
 )

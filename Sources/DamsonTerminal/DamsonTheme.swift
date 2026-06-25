@@ -119,7 +119,7 @@ public extension DamsonTheme {
     }
 
     /// All built-in presets (Settings picker order). Dark → light.
-    static var presets: [DamsonTheme] {
+    public static var presets: [DamsonTheme] {
         [
             // dark
             .defaultDark, .dracula, .monokai, .oneDark, .nord, .gruvboxDark,
@@ -134,7 +134,7 @@ public extension DamsonTheme {
         ]
     }
 
-    static func preset(named name: String) -> DamsonTheme? {
+    public static func preset(named name: String) -> DamsonTheme? {
         presets.first { $0.name == name }
     }
 
