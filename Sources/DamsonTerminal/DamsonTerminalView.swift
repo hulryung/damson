@@ -946,10 +946,15 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
 
     /// -1 = scroll up (pointer above the top edge), +1 = scroll down (below the
-    /// bottom edge), 0 = inside the viewport. The view is flipped (y grows down).
+    /// bottom edge), 0 = inside the viewport.
+    ///
+    /// `DamsonSurfaceView` is NOT flipped (y grows up), so `bounds.maxY` is the TOP edge
+    /// and `bounds.minY` the bottom. (The inner Metal content view is flipped, but mouse
+    /// events here are in the host's y-up space.) `autoScrollTick` adds `dir*cellH` to
+    /// `scrollY`, where a lower `scrollY` reveals older rows — so "past the top" maps to -1.
     private func autoScrollDirection(forViewY y: CGFloat) -> Int {
-        if y < bounds.minY { return -1 }
-        if y > bounds.maxY { return 1 }
+        if y > bounds.maxY { return -1 }   // above the top → scroll up (older)
+        if y < bounds.minY { return 1 }    // below the bottom → scroll down (newer)
         return 0
     }
 
@@ -976,7 +981,8 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         guard dir != 0 else { stopAutoScroll(); return }
         let cellH = max(cellMetrics.height, 1)
         // Scroll roughly one row per tick; speed up the farther past the edge.
-        let overshoot = dir < 0 ? (bounds.minY - inView.y) : (inView.y - bounds.maxY)
+        // dir<0 = above the top edge (overshoot above maxY); dir>0 = below the bottom.
+        let overshoot = dir < 0 ? (inView.y - bounds.maxY) : (bounds.minY - inView.y)
         let rows = max(1, min(4, Int(overshoot / cellH) + 1))
         let target = backend.scrollYPixels + CGFloat(dir) * cellH * CGFloat(rows)
         followingBottom = false
