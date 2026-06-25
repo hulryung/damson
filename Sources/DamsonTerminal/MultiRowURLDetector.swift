@@ -12,14 +12,17 @@ import Foundation
 /// 2. **TUI hard wrap**: a full-screen app (Claude Code etc.) printed a long URL across
 ///    several rows itself, usually indenting the continuation rows. There is no wrap
 ///    flag — the rows are separate logical lines — so joining is heuristic: the upper
-///    row's trailing blanks and the lower row's leading indent are dropped, and the
-///    pair is joined only when it plausibly continues one token:
+///    row's trailing blanks and the lower row's leading indent are dropped. A join is only
+///    considered when the upper row ran **flush to the right edge** (within 3 cells) — that
+///    is the actual signature of a column wrap; a URL that ends mid-line (with trailing
+///    blanks after it) was not wrapped and never joins. Given a flush upper row, the pair
+///    is joined when it plausibly continues one token:
 ///      • the upper row's text ends in a "cut mid-URL" character (`/ - _ = & ? % + , .`), or
 ///      • the lower row's first token carries URL structure (`/ ? = & # % ~`), or
-///      • the lower row's first token is long (≥ 8 chars) AND the upper row's text runs
-///        flush to the right edge (within 3 cells) — the signature of a column wrap.
-///    Ordinary prose ("…see https://a.com" / "    and then…") fails all three, so a
-///    complete URL that merely ends a line doesn't swallow the next line's words.
+///      • the lower row's first token is long (≥ 8 chars).
+///    Ordinary prose ("…see https://a.com" / "    and then…") fails the flush check or all
+///    three token rules, so a complete URL that merely ends a line doesn't swallow the next
+///    line's words.
 enum MultiRowURLDetector {
     /// One row's text content for detection: characters (continuation/wide-spacer cells
     /// excluded), each character's starting column, and the soft-wrap flag.
@@ -134,6 +137,13 @@ enum MultiRowURLDetector {
         guard hi > 0 else { return false }
         let lastChar = upper.chars[hi - 1]
         let lastCol = upper.cols[hi - 1]
+        // A hard wrap only happens when the upper row was actually FULL — its last non-blank
+        // cell must sit at (within a couple cells of) the right edge. A URL that ends
+        // mid-line (trailing blanks after it) was NOT wrapped, so it never swallows the next
+        // line, even when it ends in a "cut" char like '/'. (Fixes a trailing-'/' URL pulling
+        // in the following line's leading '-'.)
+        guard lastCol >= totalCols - 3 else { return false }
+
         var lo = 0
         while lo < lower.chars.count, lower.chars[lo] == " " { lo += 1 }
         guard lo < lower.chars.count else { return false }
@@ -144,7 +154,7 @@ enum MultiRowURLDetector {
 
         if "/-_=&?%+,.".contains(lastChar) { return true }
         if token.contains(where: { "/?=&#%~".contains($0) }) { return true }
-        if token.count >= 8 && lastCol >= totalCols - 3 { return true }
+        if token.count >= 8 { return true }
         return false
     }
 }

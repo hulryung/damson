@@ -89,13 +89,23 @@ final class MultiRowURLDetectorTests: XCTestCase {
     }
 
     func testHardWrapUpperEndsWithCutCharacter() {
-        // Upper row ends in '-' (clearly cut) → joined even if short continuation.
-        let rows = [
-            "  https://e.com/issue-",
-            "    42",
-        ]
-        let m = probe(rows: rows, at: (0, 8))
+        // Upper row is FULL and ends in '-' (cut at the right edge) → joined.
+        let r0 = "  https://e.com/issue-"
+        let m = probe(rows: [r0, "    42"], cols: r0.count, at: (0, 8))
         XCTAssertEqual(m?.url.absoluteString, "https://e.com/issue-42")
+    }
+
+    func testTrailingSlashURLMidLineDoesNotSwallowNextLineDash() {
+        // Reported bug: a URL ending in '/' mid-line (not flush to the edge) must NOT glue
+        // the following line's leading '-'.
+        let rows = [
+            "open: http://127.0.0.1:8092/",
+            "- WASD / move",
+        ]
+        let m = probe(rows: rows, cols: 60, at: (0, 12))
+        XCTAssertEqual(m?.url.absoluteString, "http://127.0.0.1:8092/",
+                       "the next line's dash must not be pulled into the link")
+        XCTAssertEqual(m?.segments.count, 1, "match must stay on the single row")
     }
 
     // MARK: - Prose guards (must NOT join)
