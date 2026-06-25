@@ -126,6 +126,42 @@ final class PaneTreeView: NSView {
         rebuild(animation: Motion.enabled ? .split(newLeaf: newLeaf) : .none)
     }
 
+    /// Apply a preset layout in one shot: reuse existing panes where possible (preserving
+    /// their sessions/scrollback), spawn fresh sessions for any extra panes the template
+    /// needs, and terminate panes the template drops. New panes inherit the active pane's cwd.
+    func applyLayout(_ template: PaneLayoutTemplate) {
+        // tmux-backed tabs own their layout (driven by `%layout-change`) — don't re-layout locally.
+        if onSplitRequest != nil { return }
+
+        let needed = template.paneCount
+        let existing = root.leafNodes()
+        let activeSession: DamsonSession? = {
+            if case .leaf(let s, _) = activeLeaf.kind { return s }
+            if case .leaf(let s, _) = existing.first?.kind { return s }
+            return nil
+        }()
+
+        var leaves: [PaneNode] = []
+        for i in 0..<needed {
+            if i < existing.count {
+                leaves.append(existing[i])
+            } else {
+                var config = DamsonConfig.fromUserDefaults()
+                if let cwd = activeSession?.currentDirectory { config.cwd = cwd }
+                leaves.append(PaneNode.leaf(DamsonSession(config: config)))
+            }
+        }
+        // Terminate sessions for panes the template doesn't keep.
+        if existing.count > needed {
+            for dropped in existing[needed...] {
+                if case .leaf(let s, _) = dropped.kind { s.terminate() }
+            }
+        }
+
+        let newRoot = template.build(leaves)
+        setRoot(newRoot, active: leaves[0])
+    }
+
     /// Replace the entire pane tree with a new root (a tmux `%layout-change` reconcile).
     /// Reused leaf nodes keep their existing sessions/surfaces — and thus their grids and
     /// scrollback — so output is continuous across reconciles; the view hierarchy is rebuilt

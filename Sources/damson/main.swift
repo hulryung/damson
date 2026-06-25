@@ -106,6 +106,16 @@ final class DamsonWindowController: NSWindowController, NSWindowDelegate {
         tree.split(direction: .vertical)
     }
 
+    @objc func applyPaneLayout(_ sender: NSMenuItem) {
+        guard let template = sender.representedObject as? PaneLayoutTemplate else { return }
+        tree.applyLayout(template)
+    }
+
+    /// For damson-cli IPC.
+    func applyLayout(_ template: PaneLayoutTemplate) {
+        tree.applyLayout(template)
+    }
+
     /// For damson-cli IPC — takes a direction directly and splits the active pane.
     func splitActive(direction: SplitDirection) {
         tree.split(direction: direction)
@@ -299,6 +309,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .listPanes:                        return controlListPanes()
         case .dumpGrid:                         return controlDumpGrid()
         case .zoom(let action):                 return controlZoom(action)
+        case .applyLayout(let name):            return controlApplyLayout(name)
         }
     }
 
@@ -316,6 +327,23 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return .ok()
         }
         return .err("no active window to split")
+    }
+
+    @MainActor
+    private func controlApplyLayout(_ name: String) -> ControlResponse {
+        guard let template = PaneLayoutTemplate(rawValue: name) else {
+            let names = PaneLayoutTemplate.allCases.map { $0.rawValue }.joined(separator: ", ")
+            return .err("unknown layout '\(name)'. options: \(names)")
+        }
+        if let active = activeCompact() {
+            active.applyLayout(template)
+            return .ok()
+        }
+        if let single = activeSingleController() {
+            single.applyLayout(template)
+            return .ok()
+        }
+        return .err("no active window")
     }
 
     @MainActor
@@ -973,6 +1001,19 @@ private func buildWindowMenu(into mainMenu: NSMenu, delegate: DamsonAppDelegate)
                                 #selector(CompactWindowController.splitPaneHorizontally(_:)), .splitHorizontally))
     windowMenu.addItem(menuItem("Split Vertically",
                                 #selector(CompactWindowController.splitPaneVertically(_:)), .splitVertically))
+
+    // One-shot preset layouts — split the active tab into a template arrangement at once.
+    let layoutsItem = NSMenuItem(title: "Pane Layouts", action: nil, keyEquivalent: "")
+    let layoutsMenu = NSMenu(title: "Pane Layouts")
+    layoutsItem.submenu = layoutsMenu
+    for template in PaneLayoutTemplate.allCases {
+        let item = menuItem(template.title,
+                            #selector(CompactWindowController.applyPaneLayout(_:)),
+                            template.actionID)
+        item.representedObject = template
+        layoutsMenu.addItem(item)
+    }
+    windowMenu.addItem(layoutsItem)
 
     // Focus/Swap only make sense with 2+ panes. Collected (with their leading dividers) so
     // `menuNeedsUpdate` hides them on a single pane, leaving just Split above.

@@ -171,6 +171,8 @@ struct AppAction {
         case splitHorizontally, splitVertically
         case focusPaneLeft, focusPaneRight, focusPaneDown, focusPaneUp
         case swapPaneLeft, swapPaneRight, swapPaneDown, swapPaneUp
+        case layoutColumns2060, layoutColumns2, layoutColumns3, layoutRows2
+        case layoutGrid2x2, layoutMainRight, layoutMainLeftStack
         case nextTab, previousTab, jumpPreviousPrompt, jumpNextPrompt, quit
     }
 
@@ -232,6 +234,14 @@ struct AppAction {
             a(.swapPaneDown, "Swap Pane Down", "Split", .s(.down, cmdShift)),
             a(.swapPaneUp, "Swap Pane Up", "Split", .s(.up, cmdShift)),
 
+            a(.layoutColumns2060, "Layout: Columns 20 / 60 / 20", "Layout", .c("1", cmdCtrl)),
+            a(.layoutColumns2, "Layout: Two Columns", "Layout", .c("2", cmdCtrl)),
+            a(.layoutColumns3, "Layout: Three Columns", "Layout", .c("3", cmdCtrl)),
+            a(.layoutRows2, "Layout: Two Rows", "Layout", .c("4", cmdCtrl)),
+            a(.layoutGrid2x2, "Layout: 2×2 Grid", "Layout", .c("5", cmdCtrl)),
+            a(.layoutMainRight, "Layout: Main + Right", "Layout", .c("6", cmdCtrl)),
+            a(.layoutMainLeftStack, "Layout: Main + Stacked Right", "Layout", .c("7", cmdCtrl)),
+
             a(.nextTab, "Show Next Tab", "Window", .c("]", cmdShift), view: .nextTab),
             a(.previousTab, "Show Previous Tab", "Window", .c("[", cmdShift), view: .previousTab),
         ]
@@ -239,7 +249,7 @@ struct AppAction {
 
     static func find(_ id: ID) -> AppAction { all.first { $0.id == id }! }
     /// Stable menu section order for the Settings UI.
-    static let categories = ["Application", "File", "Edit", "View", "Split", "Window"]
+    static let categories = ["Application", "File", "Edit", "View", "Split", "Layout", "Window"]
 }
 
 // MARK: - KeyBindingStore — defaults + user overrides, persisted to UserDefaults

@@ -956,6 +956,19 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabs[currentIndex].tree.split(direction: direction)
     }
 
+    /// Apply a one-shot preset pane layout to the active tab.
+    @objc func applyPaneLayout(_ sender: NSMenuItem) {
+        guard currentIndex < tabs.count,
+              let template = sender.representedObject as? PaneLayoutTemplate else { return }
+        tabs[currentIndex].tree.applyLayout(template)
+    }
+
+    /// For damson-cli IPC — apply a preset layout to the active tab.
+    func applyLayout(_ template: PaneLayoutTemplate) {
+        guard currentIndex < tabs.count else { return }
+        tabs[currentIndex].tree.applyLayout(template)
+    }
+
     /// damson-cli `focus-pane` — move focus in the active tab's pane tree.
     func focusActivePane(_ dir: PaneFocusDirection) {
         guard currentIndex < tabs.count else { return }

@@ -202,6 +202,11 @@ case "zoom":
         die("zoom requires: in | out | reset")
     }
     cmdKind = .zoom(rest[0])
+case "layout":
+    guard rest.count == 1 else {
+        die("layout requires a name (e.g. columns2060, columns2, columns3, rows2, grid2x2, mainRight, mainLeftStack)")
+    }
+    cmdKind = .applyLayout(rest[0])
 default:
     die("unknown command: \(sub)")
 }

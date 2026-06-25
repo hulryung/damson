@@ -33,6 +33,15 @@ final class PaneNode {
         return false
     }
 
+    /// The leaf PaneNodes in-order (reference identity preserved — used to reuse panes
+    /// when re-laying out via a template).
+    func leafNodes() -> [PaneNode] {
+        switch kind {
+        case .leaf: return [self]
+        case .split(_, let a, let b, _): return a.leafNodes() + b.leafNodes()
+        }
+    }
+
     /// Traverse all leaves in the tree in-order.
     func leaves() -> [(session: DamsonSession, surface: DamsonSurfaceView)] {
         switch kind {

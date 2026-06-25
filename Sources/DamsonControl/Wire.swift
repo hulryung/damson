@@ -43,6 +43,8 @@ public enum ControlCommandKind: Equatable, Sendable {
     case dumpGrid
     /// Font zoom on the active pane: "in" | "out" | "reset" — same path as Cmd+=/-.
     case zoom(String)
+    /// Apply a preset pane layout to the active tab (e.g. "columns2060", "grid2x2").
+    case applyLayout(String)
 }
 
 /// An incoming command. JSON: `{"cmd":"new-tab"}`, `{"cmd":"split","args":{"dir":"horizontal"}}`, etc.
@@ -101,6 +103,10 @@ public struct ControlCommand: Decodable, Equatable, Sendable {
             struct ZoomArgs: Decodable { let action: String }
             let a = try c.decode(ZoomArgs.self, forKey: .args)
             self.kind = .zoom(a.action)
+        case "layout":
+            struct LayoutArgs: Decodable { let name: String }
+            let a = try c.decode(LayoutArgs.self, forKey: .args)
+            self.kind = .applyLayout(a.name)
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .cmd, in: c,
@@ -157,6 +163,8 @@ public func encodeCommand(_ kind: ControlCommandKind) -> String {
     case .dumpGrid: return #"{"cmd":"dump-grid"}"#
     case .zoom(let a):
         return #"{"cmd":"zoom","args":{"action":"\#(jsonEscape(a))"}}"#
+    case .applyLayout(let name):
+        return #"{"cmd":"layout","args":{"name":"\#(jsonEscape(name))"}}"#
     }
 }
 
