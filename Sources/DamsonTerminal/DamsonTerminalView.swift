@@ -1124,15 +1124,53 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // Plain-text URL — may span multiple rows (soft wrap, or a TUI's own hard
         // wrap with indented continuations). EVERY row's segment is returned so the
         // hover underline covers the whole link, not just the hovered row.
-        guard let m = multiRowURLMatch(at: pos) else { return nil }
-        let segments: [(row: Int, colRange: Range<Int>)] = m.segments.map { seg in
-            // Include the trailing continuation cell of a wide-char URL.
-            let rowCells = cellsForTextViewRow(seg.row)
-            var endEx = seg.cols.upperBound
-            while endEx < rowCells.count && rowCells[endEx].isContinuation { endEx += 1 }
-            return (seg.row, seg.cols.lowerBound..<endEx)
+        if let m = multiRowURLMatch(at: pos) {
+            let segments: [(row: Int, colRange: Range<Int>)] = m.segments.map { seg in
+                // Include the trailing continuation cell of a wide-char URL.
+                let rowCells = cellsForTextViewRow(seg.row)
+                var endEx = seg.cols.upperBound
+                while endEx < rowCells.count && rowCells[endEx].isContinuation { endEx += 1 }
+                return (seg.row, seg.cols.lowerBound..<endEx)
+            }
+            return (m.url, segments)
         }
-        return (m.url, segments)
+        // Fall through to a file path (single row) resolved against the session cwd.
+        return filePathInfoAtCell(pos)
+    }
+
+    /// A file path under `pos` that exists relative to the session cwd, as a file:// URL +
+    /// its column range (single row). Only existing files/dirs are returned, so plain words
+    /// and dead paths never become clickable.
+    private func filePathInfoAtCell(
+        _ pos: (row: Int, col: Int)
+    ) -> (url: URL, segments: [(row: Int, colRange: Range<Int>)])? {
+        let cells = cellsForTextViewRow(pos.row)
+        guard pos.col >= 0, pos.col < cells.count else { return nil }
+        var chars: [Character] = []
+        var cols: [Int] = []
+        for (i, c) in cells.enumerated() where !c.isContinuation && !c.isWideSpacer {
+            chars.append(c.char)
+            cols.append(i)
+        }
+        guard let tok = FilePathDetector.token(at: pos.col, chars: chars, cols: cols),
+              let url = resolveExistingFile(tok.path) else { return nil }
+        return (url, [(pos.row, tok.cols)])
+    }
+
+    /// Resolve a path token to an existing file/dir URL: `/abs`, `~/home`, or relative to the
+    /// session's current working directory (OSC 7). Returns nil if it doesn't exist.
+    private func resolveExistingFile(_ path: String) -> URL? {
+        var p = path
+        if p.hasPrefix("~") { p = (p as NSString).expandingTildeInPath }
+        let url: URL
+        if p.hasPrefix("/") {
+            url = URL(fileURLWithPath: p)
+        } else if let cwd = session.currentDirectory ?? session.currentWorkingDirectory {
+            url = URL(fileURLWithPath: cwd).appendingPathComponent(p)
+        } else {
+            return nil
+        }
+        return FileManager.default.fileExists(atPath: url.path) ? url.standardizedFileURL : nil
     }
 
     /// Multi-row plain-URL detection at a unified (row, col) — adapter from the grid
@@ -1387,7 +1425,10 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
         // 2. Plain-text URL — joined across soft-wrapped rows and TUI-style
         //    indented hard-wrapped continuations (see MultiRowURLDetector).
-        return multiRowURLMatch(at: pos)?.url
+        if let url = multiRowURLMatch(at: pos)?.url { return url }
+        // 3. A file path that exists relative to the session cwd → a file:// URL so
+        //    Cmd-click opens it in the default app (see FilePathDetector).
+        return filePathInfoAtCell(pos)?.url
     }
 
     /// Converts `event.locationInWindow` to (row, col) in the textView content coordinate system.
