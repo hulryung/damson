@@ -786,6 +786,7 @@ final class PaneTreeView: NSView {
         defer { rebuilding = false }
         for sub in subviews { sub.removeFromSuperview() }
         addSubviewsForNode(root, into: self)
+        configureAccessibility()
         updateBorderColors()
         if case .leaf(_, let surface) = activeLeaf.kind {
             window?.makeFirstResponder(surface)
@@ -1089,6 +1090,26 @@ final class PaneTreeView: NSView {
         case .split(_, let a, _, _): return firstLeaf(of: a)
         }
     }
+
+    // MARK: - Accessibility (VoiceOver) — additive; does not affect layout/drag/focus
+
+    /// Expose the split structure to assistive tech. When the tree holds at least one split,
+    /// the whole tree is an AX "split group" (matching the AppKit splitter-group convention) so
+    /// VoiceOver announces it as split panes containing the per-pane groups and adjustable
+    /// dividers. A single pane is just a plain container — no split-group framing needed.
+    /// Re-applied on every rebuild() since rebuild() recreates the child views (the dividers /
+    /// pane groups configure themselves in their own init).
+    private func configureAccessibility() {
+        if case .split = root.kind {
+            setAccessibilityRole(.splitGroup)
+            setAccessibilityRoleDescription("split panes")
+            setAccessibilityElement(true)
+        } else {
+            setAccessibilityRole(.group)
+            setAccessibilityRoleDescription(nil)
+            setAccessibilityElement(false)
+        }
+    }
 }
 
 /// Leaf wrapper view — shows the active pane in the configured style (dim / border).
@@ -1116,6 +1137,14 @@ private final class PaneLeafWrapper: NSView {
         layer?.addSublayer(dimLayer)
         layer?.addSublayer(borderLayer)
 
+        // Accessibility (VoiceOver): expose the pane as a labeled group. The label is computed
+        // live in `accessibilityLabel()` (session title → cwd → fallback, plus an "active" tag),
+        // so it tracks title/cwd/focus changes without any extra wiring. Role .group keeps this
+        // a container so the terminal surface child stays reachable — we do NOT mark the wrapper
+        // itself a leaf element, which would hide the surface.
+        setAccessibilityRole(.group)
+        setAccessibilityRoleDescription("terminal pane")
+
         // Focus-follows-mouse: hover over a pane to activate it. The terminal
         // surface sits on top with its own tracking areas, but tracking areas are
         // per-view and independent, so this one still fires when the cursor crosses
@@ -1130,6 +1159,24 @@ private final class PaneLeafWrapper: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// VoiceOver label for the pane — computed live so it reflects the current title / cwd /
+    /// focus without needing to be re-pushed on every change. Prefers the session title, falls
+    /// back to the working directory's last path component, then a generic name; the active
+    /// pane is tagged "(active)" so VoiceOver announces which pane has focus.
+    override func accessibilityLabel() -> String? {
+        var name = "Terminal pane"
+        if case .leaf(let session, _) = leaf.kind {
+            let title = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty {
+                name = title
+            } else if let cwd = session.currentDirectory, !cwd.isEmpty {
+                let leafName = (cwd as NSString).lastPathComponent
+                name = leafName.isEmpty ? cwd : leafName
+            }
+        }
+        return isActive ? "\(name) (active)" : name
+    }
 
     /// When the cursor enters this pane (setting on + key window), make it the active
     /// pane — same path as a click. While the mouse button is held and dragged into
@@ -1317,6 +1364,32 @@ private final class SplitContainer: NSView {
         divider.onDragEnd = { [weak self] in self?.cornerPartner = nil }
         // Cursor: a corner (two-axis) point exists only when a perpendicular divider meets an end here.
         divider.isCornerPoint = { [weak self] p in self?.findCornerPartner(forWindowPoint: p) != nil }
+        // Accessibility (VoiceOver): let the divider report the current split ratio and resize the
+        // panes via AXSplitter increment/decrement, reusing the same ratio path the mouse drag uses.
+        divider.accessibilityRatio = { [weak self] in self?.currentRatio ?? 0.5 }
+        divider.accessibilityNudge = { [weak self] increment in self?.accessibilityNudgeRatio(increment: increment) }
+    }
+
+    /// Current split ratio (0–1) for the divider's AX value.
+    var currentRatio: CGFloat {
+        guard case .split(_, _, _, let ratio) = node.kind else { return 0.5 }
+        return ratio
+    }
+
+    /// VoiceOver AXSplitter increment/decrement: nudge the split ratio by ~2% of the divider's
+    /// axis, routed through the same `applyAxisDrag` the mouse drag uses. `increment` grows the
+    /// first (left/top) pane; `applyAxisDrag` handles the bottom-up sign flip for vertical splits,
+    /// so we feed it a window-space delta with the matching sign.
+    func accessibilityNudgeRatio(increment: Bool) {
+        guard case .split(let dir, _, _, _) = node.kind else { return }
+        let axis = (dir == .horizontal) ? bounds.width : bounds.height
+        let step = axis * 0.02
+        let delta: CGFloat
+        switch dir {
+        case .horizontal: delta = increment ? step : -step
+        case .vertical:   delta = increment ? -step : step
+        }
+        applyAxisDrag(delta)
     }
 
     @available(*, unavailable)
@@ -1461,8 +1534,12 @@ private final class PaneDragImageWindow: NSWindow {
 private final class DividerView: NSView {
     enum Orientation { case horizontal, vertical }
     var orientation: Orientation = .vertical {
-        didSet { updateCursor(); needsDisplay = true }
+        didSet { updateCursor(); needsDisplay = true; updateAccessibilityOrientation() }
     }
+    /// Accessibility (VoiceOver): current split ratio (0–1) of the owning split, for the AX value.
+    var accessibilityRatio: (() -> CGFloat)?
+    /// Accessibility: nudge the split ratio one step; `true` grows the first (left/top) pane.
+    var accessibilityNudge: ((Bool) -> Void)?
     /// One drag tick as raw window-space deltas. The owning SplitContainer routes one axis
     /// (normal drag) or both (corner drag).
     var onDrag: ((CGFloat, CGFloat) -> Void)?
@@ -1478,10 +1555,43 @@ private final class DividerView: NSView {
         super.init(frame: frame)
         wantsLayer = true   // background is clear — the drag zone is wide but only a 1px line is drawn in the center.
         updateCursor()
+        // Accessibility (VoiceOver): an adjustable AXSplitter. Role + label are static; the value
+        // (ratio) and increment/decrement are served live by the override methods below. Orientation
+        // follows the divider's own orientation (a horizontal split's vertical divider is a .vertical
+        // splitter, and vice-versa).
+        setAccessibilityRole(.splitter)
+        setAccessibilityLabel("Pane divider")
+        setAccessibilityElement(true)
+        updateAccessibilityOrientation()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func updateAccessibilityOrientation() {
+        switch orientation {
+        case .vertical:   setAccessibilityOrientation(.vertical)
+        case .horizontal: setAccessibilityOrientation(.horizontal)
+        }
+    }
+
+    // MARK: - Accessibility (VoiceOver) — adjustable splitter
+
+    override func accessibilityValue() -> Any? {
+        accessibilityRatio?() ?? 0.5
+    }
+
+    override func accessibilityPerformIncrement() -> Bool {
+        guard let accessibilityNudge else { return false }
+        accessibilityNudge(true)
+        return true
+    }
+
+    override func accessibilityPerformDecrement() -> Bool {
+        guard let accessibilityNudge else { return false }
+        accessibilityNudge(false)
+        return true
+    }
 
     /// Draw only a thin 1px separator line in the center of the wide hit zone (thin and subtle).
     override func draw(_ dirtyRect: NSRect) {
