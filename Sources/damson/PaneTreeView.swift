@@ -904,6 +904,10 @@ private final class SplitContainer: NSView {
     private let divider = DividerView()
     /// Width of the easy-to-grab hit zone. The divider is this wide but draws only a 1px line in the center.
     private let dividerDrag: CGFloat = 10
+    /// How close (owner coords) a perpendicular divider must pass to a corner point to count as meeting it.
+    private let cornerTolerance: CGFloat = 4
+    /// The perpendicular split being driven alongside this one during a corner drag (nil = single-axis).
+    private weak var cornerPartner: SplitContainer?
 
     init(node: PaneNode, owner: PaneTreeView) {
         self.node = node
@@ -915,7 +919,11 @@ private final class SplitContainer: NSView {
         }
         divider.wantsLayer = true
         addSubview(divider)   // place above the panels to occupy the drag zone at the boundary
-        divider.onDrag = { [weak self] delta in self?.applyDrag(delta) }
+        divider.onDragBegin = { [weak self] p in self?.cornerPartner = self?.findCornerPartner(forWindowPoint: p) }
+        divider.onDrag = { [weak self] dx, dy in self?.applyDrag(dx: dx, dy: dy) }
+        divider.onDragEnd = { [weak self] in self?.cornerPartner = nil }
+        // Cursor: a corner (two-axis) point exists only when a perpendicular divider meets an end here.
+        divider.isCornerPoint = { [weak self] p in self?.findCornerPartner(forWindowPoint: p) != nil }
     }
 
     @available(*, unavailable)
@@ -946,7 +954,28 @@ private final class SplitContainer: NSView {
         }
     }
 
-    private func applyDrag(_ delta: CGFloat) {
+    /// One drag tick, reported as raw window-space deltas. Drives this divider's own axis
+    /// always; when a corner partner was found at mouseDown, also drives that perpendicular
+    /// divider — so dragging a corner moves both axes at once.
+    private func applyDrag(dx: CGFloat, dy: CGFloat) {
+        guard case .split(let dir, _, _, _) = node.kind else { return }
+        applyAxisDrag(axisDelta(dir, dx, dy))
+        if let partner = cornerPartner, case .split(let pdir, _, _, _) = partner.node.kind {
+            partner.applyAxisDrag(partner.axisDelta(pdir, dx, dy))
+        }
+    }
+
+    /// Pick the window-space delta component `applyAxisDrag` expects for a split of `dir`:
+    /// a horizontal split (vertical divider) tracks the x delta; a vertical split (horizontal
+    /// divider) tracks the y delta (negated inside `applyAxisDrag` for the bottom-up axis).
+    private func axisDelta(_ dir: SplitDirection, _ dx: CGFloat, _ dy: CGFloat) -> CGFloat {
+        switch dir {
+        case .horizontal: return dx
+        case .vertical:   return dy
+        }
+    }
+
+    private func applyAxisDrag(_ delta: CGFloat) {
         guard case .split(let dir, let a, let b, let ratio) = node.kind else { return }
         let total: CGFloat
         let deltaRatio: CGFloat
@@ -962,6 +991,52 @@ private final class SplitContainer: NSView {
         node.kind = .split(direction: dir, first: a, second: b, ratio: newRatio)
         needsLayout = true
     }
+
+    /// If `windowPoint` sits in a corner zone — within `dividerDrag` of one of this divider's
+    /// two ends — and a perpendicular divider passes through that end point, return that split.
+    /// Otherwise nil (so the caller falls back to a normal single-axis drag). Pure geometry, so
+    /// it finds the perpendicular partner whether it's an ancestor, descendant, or sibling split.
+    private func findCornerPartner(forWindowPoint windowPoint: NSPoint) -> SplitContainer? {
+        guard let owner else { return nil }
+        let local = divider.convert(windowPoint, from: nil)
+        let cornerLocal: NSPoint
+        switch divider.orientation {
+        case .vertical:    // long axis = y; ends at minY / maxY
+            if local.y <= divider.bounds.minY + dividerDrag {
+                cornerLocal = NSPoint(x: divider.bounds.midX, y: divider.bounds.minY)
+            } else if local.y >= divider.bounds.maxY - dividerDrag {
+                cornerLocal = NSPoint(x: divider.bounds.midX, y: divider.bounds.maxY)
+            } else { return nil }
+        case .horizontal:  // long axis = x; ends at minX / maxX
+            if local.x <= divider.bounds.minX + dividerDrag {
+                cornerLocal = NSPoint(x: divider.bounds.minX, y: divider.bounds.midY)
+            } else if local.x >= divider.bounds.maxX - dividerDrag {
+                cornerLocal = NSPoint(x: divider.bounds.maxX, y: divider.bounds.midY)
+            } else { return nil }
+        }
+        let corner = divider.convert(cornerLocal, to: owner)
+        // Walk the whole pane-view tree for a perpendicular divider whose line passes through
+        // the corner. Pick the closest by perpendicular distance to disambiguate near-ties.
+        var best: SplitContainer?
+        var bestDist = CGFloat.greatestFiniteMagnitude
+        func walk(_ view: NSView) {
+            for sub in view.subviews {
+                if let sc = sub as? SplitContainer, sc !== self,
+                   sc.divider.orientation != divider.orientation {
+                    let frame = sc.divider.convert(sc.divider.bounds, to: owner)
+                    if frame.insetBy(dx: -cornerTolerance, dy: -cornerTolerance).contains(corner) {
+                        let d = (sc.divider.orientation == .horizontal)
+                            ? abs(corner.y - frame.midY)
+                            : abs(corner.x - frame.midX)
+                        if d < bestDist { bestDist = d; best = sc }
+                    }
+                }
+                walk(sub)
+            }
+        }
+        walk(owner)
+        return best
+    }
 }
 
 /// Draggable divider.
@@ -970,7 +1045,15 @@ private final class DividerView: NSView {
     var orientation: Orientation = .vertical {
         didSet { updateCursor(); needsDisplay = true }
     }
-    var onDrag: ((CGFloat) -> Void)?
+    /// One drag tick as raw window-space deltas. The owning SplitContainer routes one axis
+    /// (normal drag) or both (corner drag).
+    var onDrag: ((CGFloat, CGFloat) -> Void)?
+    /// mouseDown, with the window-space location, so the owner can detect a corner.
+    var onDragBegin: ((NSPoint) -> Void)?
+    /// mouseUp — clear any corner state.
+    var onDragEnd: (() -> Void)?
+    /// Given a window-space point, true if it sits in a valid two-axis corner zone.
+    var isCornerPoint: ((NSPoint) -> Bool)?
     private var dragStart: NSPoint?
 
     override init(frame: NSRect) {
@@ -1004,6 +1087,11 @@ private final class DividerView: NSView {
     }
 
     override func cursorUpdate(with event: NSEvent) {
+        // Over a corner zone (a perpendicular divider meets an end here) → two-axis cursor.
+        if let loc = window?.mouseLocationOutsideOfEventStream, isCornerPoint?(loc) == true {
+            NSCursor.crosshair.set()
+            return
+        }
         switch orientation {
         case .vertical: NSCursor.resizeLeftRight.set()
         case .horizontal: NSCursor.resizeUpDown.set()
@@ -1011,23 +1099,23 @@ private final class DividerView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        dragStart = window?.mouseLocationOutsideOfEventStream
+        let loc = window?.mouseLocationOutsideOfEventStream
+        dragStart = loc
+        if let loc { onDragBegin?(loc) }
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let start = dragStart,
               let now = window?.mouseLocationOutsideOfEventStream
         else { return }
-        let delta: CGFloat
-        switch orientation {
-        case .vertical: delta = now.x - start.x
-        case .horizontal: delta = now.y - start.y
-        }
+        let dx = now.x - start.x
+        let dy = now.y - start.y
         dragStart = now
-        onDrag?(delta)
+        onDrag?(dx, dy)
     }
 
     override func mouseUp(with event: NSEvent) {
         dragStart = nil
+        onDragEnd?()
     }
 }
