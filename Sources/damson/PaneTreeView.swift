@@ -267,7 +267,9 @@ final class PaneTreeView: NSView {
         guard case .leaf(_, let surface) = leaf.kind else { return }
         let changed = activeLeaf !== leaf
         activeLeaf = leaf
-        updateBorderColors()
+        // A genuine focus move while the layout is stable → cross-fade the indicator
+        // (rebuild() uses the instant path, so it never animates from a stale frame).
+        updateBorderColors(animated: changed)
         // Only re-grab first responder on an actual change — onFocus→setActive
         // calls back in here when a pane is clicked, so re-asserting would loop.
         if changed, window?.firstResponder !== surface {
@@ -674,11 +676,14 @@ final class PaneTreeView: NSView {
 
     // MARK: - Border color update
 
-    private func updateBorderColors() {
+    /// `animated` is true only on a genuine focus change while the layout is stable
+    /// (`setActive`); `rebuild()` passes false so the indicator never animates from a
+    /// stale frame. The flag is forwarded to each wrapper's indicator update.
+    private func updateBorderColors(animated: Bool = false) {
         func walk(_ view: NSView) {
             if let wrapper = view as? PaneLeafWrapper {
                 let active = (wrapper.leaf === activeLeaf)
-                wrapper.isActive = active
+                wrapper.setActiveState(active, animated: animated)
                 // The surface has its own isActive (cursor blink runs only in the
                 // active pane) — the wrapper flag only drives the dim/border overlay.
                 if case .leaf(_, let surface) = wrapper.leaf.kind {
@@ -731,9 +736,9 @@ private final class PaneLeafWrapper: NSView {
     /// dimLayer = inactive-pane scrim, borderLayer = active-pane border.
     private let dimLayer = CALayer()
     private let borderLayer = CALayer()
-    var isActive: Bool = false {
-        didSet { applyIndicator() }
-    }
+    /// Whether this leaf is the active pane. Set only via `setActiveState(_:animated:)`
+    /// so the caller controls whether the indicator transition animates.
+    private(set) var isActive: Bool = false
 
     init(leaf: PaneNode, owner: PaneTreeView) {
         self.leaf = leaf
@@ -784,14 +789,33 @@ private final class PaneLeafWrapper: NSView {
         CATransaction.commit()
     }
 
+    /// Update the active flag and refresh the indicator. When `animated` (and motion is
+    /// enabled) the dim/border layers cross-fade; otherwise the change is instant. Called
+    /// with `animated: true` only on a genuine focus move (`setActive`).
+    func setActiveState(_ active: Bool, animated: Bool) {
+        isActive = active
+        applyIndicator(animated: animated)
+    }
+
     /// Re-read the settings and refresh the indicator (on active change or settings change).
-    func applyIndicator() {
+    /// `animated` cross-fades the dim scrim / active border via CoreAnimation, gated on
+    /// `Motion.enabled`; the default instant path is the historical behaviour (and is what
+    /// `rebuild()` / settings changes use, so the indicator never animates from a stale frame).
+    func applyIndicator(animated: Bool = false) {
         let mode = ActivePaneIndicator.current
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        dimLayer.isHidden = !(mode == .dimInactive && !isActive)
-        dimLayer.opacity = 0.4
-        if isActive, mode == .accentBorder || mode == .subtleBorder {
+        let borderMode = (mode == .accentBorder || mode == .subtleBorder)
+
+        // Target visibility, expressed as layer opacity so it can cross-fade:
+        //  - dim scrim participates only in dimInactive mode, shown (0.4) on inactive panes.
+        //  - border shows on the active pane in the two border modes.
+        let dimVisible = (mode == .dimInactive)
+        let dimTarget: Float = (dimVisible && !isActive) ? 0.4 : 0.0
+        let borderTarget: Float = (borderMode && isActive) ? 1.0 : 0.0
+
+        // Border color/width are static per mode (only opacity animates the fade), so set
+        // them on BOTH panes in a border mode — the inactive one rests at opacity 0 and can
+        // then fade its border out when it loses focus.
+        if borderMode {
             let color = (mode == .accentBorder) ? NSColor.controlAccentColor
                                                 : Self.subtleBorderColor(leaf: leaf)
             borderLayer.borderColor = color.cgColor
@@ -799,7 +823,41 @@ private final class PaneLeafWrapper: NSView {
         } else {
             borderLayer.borderWidth = 0
         }
-        CATransaction.commit()
+
+        guard animated, Motion.enabled else {
+            // Instant path — identical end state to the historical behaviour.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            dimLayer.isHidden = !dimVisible
+            dimLayer.opacity = dimTarget
+            borderLayer.opacity = borderTarget
+            CATransaction.commit()
+            return
+        }
+
+        // Animated cross-fade. Un-hiding can't animate, so make the scrim present instantly
+        // (it was already un-hidden + at its resting opacity by the prior instant pass) and
+        // carry the transition on opacity. Border layers stay width 1 across a focus move
+        // (the mode is unchanged), so only opacity animates there too.
+        let dimFrom = dimLayer.isHidden ? Float(0) : dimLayer.opacity
+        dimLayer.isHidden = !dimVisible
+        animateOpacity(dimLayer, from: dimFrom, to: dimTarget, key: "damson.indicator-dim")
+        animateOpacity(borderLayer, from: borderLayer.opacity, to: borderTarget, key: "damson.indicator-border")
+    }
+
+    /// Fade a layer's opacity `from`→`to` over Motion.duration/timing. Same explicit
+    /// CABasicAnimation idiom as the pane split/close animations: set the model value to its
+    /// final state, then add a non-additive from→to animation, so the layer rests at `to`
+    /// once the animation completes (no cleanup needed). A no-op when `from == to`.
+    private func animateOpacity(_ layer: CALayer, from: Float, to: Float, key: String) {
+        layer.opacity = to
+        guard from != to else { layer.removeAnimation(forKey: key); return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = from
+        fade.toValue = to
+        fade.duration = Motion.duration
+        fade.timingFunction = Motion.timing
+        layer.add(fade, forKey: key)
     }
 
     /// A subtle border color shifted slightly from the background (dark theme → a bit lighter, light theme → a bit darker).
