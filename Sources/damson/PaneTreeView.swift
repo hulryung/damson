@@ -8,10 +8,19 @@ enum PaneFocusDirection {
 
 /// Which edge of a hovered pane a dragged pane will dock to (Control+Command pane drag).
 /// `left`/`right` build a horizontal split, `top`/`bottom` a vertical one; `center` means
-/// "swap places" (no new split). Kept module-internal so the future cross-window step can
+/// "swap places" (no new split). Kept module-internal so the cross-window step can
 /// reuse the same drop semantics.
 enum PaneDropEdge {
     case left, right, top, bottom, center
+}
+
+/// The host (window controller) of a `PaneTreeView`, used by the cross-window pane drag to
+/// reveal the destination tree after a drop: order its window forward and, in compact mode,
+/// switch to the tab that holds the tree. Both `DamsonWindowController` (one tree per window)
+/// and `CompactWindowController` (N tabbed trees per window) conform with a minimal method.
+protocol PaneTreeHosting: AnyObject {
+    /// Bring `tree` to the front: select its tab (if tabbed) and order its window forward.
+    func revealTree(_ tree: PaneTreeView)
 }
 
 /// NSView that lays out the PaneNode tree on screen. Divider drag adjusts the ratio,
@@ -25,6 +34,27 @@ final class PaneTreeView: NSView {
 
     /// Called when the last leaf is closed (the host — the tab controller — closes the tab/window).
     var onAllPanesClosed: (() -> Void)?
+
+    /// The window controller hosting this tree. Used by cross-window pane drag to reveal the
+    /// destination (bring its window forward / select its tab) after a drop.
+    weak var host: PaneTreeHosting?
+
+    /// Set true when this tree's *sole* pane was moved out to another tree by a cross-window
+    /// pane drag (see `moveLeafToOtherTree`). The moved `PaneNode` + its live session now belong
+    /// to the destination tree, but `root` still references that node until `onAllPanesClosed`
+    /// closes this (now-empty) host. So while this flag is set, NO source-teardown path may
+    /// terminate it — `deinit` and `terminateAllForClose()` both honor the flag. This is the one
+    /// cross-tree invariant that needs care: the session is orphaned from the source root before
+    /// any source teardown, and the flag prevents the lingering `root` pointer from killing it.
+    private var movedOutEmpty = false
+
+    /// Terminate every session this tree still owns — the entry point host controllers call on
+    /// tab/window close. Honors `movedOutEmpty`: if the sole pane was moved to another tree, this
+    /// tree owns nothing, so it terminates nothing (the moved session lives on in its new tree).
+    func terminateAllForClose() {
+        guard !movedOutEmpty else { return }
+        root.terminateAll()
+    }
 
     /// When set, a user split request (Cmd+D / Cmd+Shift+D) is handed to this hook *instead*
     /// of mutating the tree locally. Used by tmux-backed tabs so a split issues a tmux
@@ -98,7 +128,9 @@ final class PaneTreeView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
-        root.terminateAll()
+        // Honor a cross-window move: if this tree's sole pane was moved out, its session is now
+        // owned by another tree and must not be terminated here (root still points at it).
+        if !movedOutEmpty { root.terminateAll() }
     }
 
     // MARK: - Public actions
@@ -441,8 +473,9 @@ final class PaneTreeView: NSView {
         let dragImage: NSImage?          // snapshot of the dragged pane (may be nil → no image)
         let originalFrame: NSRect        // dragged wrapper's frame in self (cancel target)
         var armed: Bool                  // crossed the drag threshold → overlays shown
-        var imageLayer: CALayer?         // semi-transparent snapshot following the cursor
+        var imageWindow: PaneDragImageWindow?  // floating snapshot following the cursor (crosses windows)
         var indicatorLayer: CALayer?     // drop-edge highlight over the hovered pane
+        weak var indicatorTree: PaneTreeView?  // tree currently showing the indicator (may be another window)
     }
     private var paneDrag: PaneDragState?
     /// Movement (pt) required before a Control+Command press becomes a drag (vs. a stray click).
@@ -453,14 +486,16 @@ final class PaneTreeView: NSView {
     /// pane now (live Metal content included) for the floating drag image. Called by the leaf
     /// wrapper, which then forwards drag/up events here.
     func beginPaneDrag(from leaf: PaneNode, startWindowPoint: NSPoint) -> Bool {
-        guard leaf.isLeaf, leaf.parent != nil else { return false }
+        // Any leaf can be picked up. A sole pane (no parent) has no in-window destination, but
+        // it CAN be dropped into another window — which then closes this now-empty source.
+        guard leaf.isLeaf else { return false }
         let startSelf = convert(startWindowPoint, from: nil)
         let wrapper = findWrapper(for: leaf, in: self)
         let image = wrapper.flatMap { Motion.snapshot(of: $0) }
-        let frame = wrapper.map { $0.convert($0.bounds, to: self) } ?? .zero
+        let frame = wrapper.map { $0.convert($0.bounds, to: self) } ?? bounds
         paneDrag = PaneDragState(leaf: leaf, startSelf: startSelf, dragImage: image,
                                  originalFrame: frame, armed: false,
-                                 imageLayer: nil, indicatorLayer: nil)
+                                 imageWindow: nil, indicatorLayer: nil, indicatorTree: nil)
         return true
     }
 
@@ -468,43 +503,32 @@ final class PaneTreeView: NSView {
     /// creates the floating drag image + drop indicator, then on every move repositions the
     /// image under the cursor and re-targets the indicator onto the hovered pane's drop edge.
     func updatePaneDrag(windowPoint: NSPoint) {
-        guard var drag = paneDrag else { return }
+        guard var drag = paneDrag, let win = window else { return }
         let p = convert(windowPoint, from: nil)
+        let screenPoint = win.convertPoint(toScreen: windowPoint)
         if !drag.armed {
             guard hypot(p.x - drag.startSelf.x, p.y - drag.startSelf.y) >= paneDragThreshold else { return }
             drag.armed = true
-            // Floating snapshot of the pane, scaled to half size + translucent, centered on
-            // the cursor. Sits above everything (zPosition) so it reads as "lifted".
+            // Floating snapshot in its own borderless window so it follows the cursor ACROSS
+            // windows — a source-window CALayer can't draw over another window.
             if let img = drag.dragImage {
                 let size = NSSize(width: drag.originalFrame.width * 0.5,
                                   height: drag.originalFrame.height * 0.5)
-                let layer = Motion.overlay(image: img, frame: NSRect(origin: .zero, size: size), in: self)
-                layer.opacity = 0.75
-                layer.zPosition = 100_000
-                drag.imageLayer = layer
+                let imageWindow = PaneDragImageWindow(image: img, size: size)
+                imageWindow.center(on: screenPoint)
+                imageWindow.orderFront(nil)
+                drag.imageWindow = imageWindow
             }
-            let indicator = CALayer()
-            indicator.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.22).cgColor
-            indicator.borderColor = NSColor.controlAccentColor.cgColor
-            indicator.borderWidth = 2
-            indicator.zPosition = 99_999
-            indicator.isHidden = true
-            layer?.addSublayer(indicator)
-            drag.indicatorLayer = indicator
         }
-        // No implicit animations — the image and indicator must track the cursor instantly.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        drag.imageLayer?.position = p   // anchor is (0.5,0.5) → centers the image on the cursor
-        if let (target, edge) = dropTarget(at: p), target !== drag.leaf,
-           let tw = findWrapper(for: target, in: self) {
-            let f = tw.convert(tw.bounds, to: self)
-            drag.indicatorLayer?.frame = indicatorFrame(for: edge, in: f)
-            drag.indicatorLayer?.isHidden = false
+        drag.imageWindow?.center(on: screenPoint)
+        // Re-target the drop indicator onto whatever pane — in ANY window — is under the cursor.
+        if let hit = treeAndLeaf(atScreen: screenPoint),
+           !(hit.tree === self && hit.leaf === drag.leaf),
+           let rect = hit.tree.indicatorRect(for: hit.leaf, edge: hit.edge) {
+            setIndicator(on: hit.tree, frame: rect, drag: &drag)
         } else {
-            drag.indicatorLayer?.isHidden = true
+            setIndicator(on: nil, frame: nil, drag: &drag)
         }
-        CATransaction.commit()
         paneDrag = drag
     }
 
@@ -512,33 +536,66 @@ final class PaneTreeView: NSView {
     /// at the chosen edge (or swap on a center drop), then rebuild with the split-in settle.
     /// Anything else (no target, dropped on itself, never armed) cancels and animates back.
     func endPaneDrag(windowPoint: NSPoint) {
-        guard let drag = paneDrag else { return }
+        guard let drag = paneDrag, let win = window else { return }
         guard drag.armed else { cancelPaneDrag(); return }
-        let p = convert(windowPoint, from: nil)
-        guard let (target, edge) = dropTarget(at: p), target !== drag.leaf else {
+        let screenPoint = win.convertPoint(toScreen: windowPoint)
+        // The drop target may be in this tree OR another window's tree. Dropping on the dragged
+        // pane itself (its only in-self target when it's the sole pane) is a no-op cancel.
+        guard let hit = treeAndLeaf(atScreen: screenPoint),
+              !(hit.tree === self && hit.leaf === drag.leaf) else {
             cancelPaneDrag(); return
         }
         // Valid drop — tear down the floating overlays; the rebuild settle takes over.
         paneDrag = nil
-        drag.imageLayer?.removeFromSuperlayer()
+        drag.imageWindow?.orderOut(nil)
         drag.indicatorLayer?.removeFromSuperlayer()
 
+        if hit.tree === self {
+            performSameWindowDrop(dragged: drag.leaf, target: hit.leaf, edge: hit.edge)
+        } else {
+            performCrossWindowDrop(dragged: drag.leaf, to: hit.tree, target: hit.leaf, edge: hit.edge)
+        }
+    }
+
+    /// Same-window re-dock (the original drop path). center = swap; otherwise detach + insert.
+    private func performSameWindowDrop(dragged: PaneNode, target: PaneNode, edge: PaneDropEdge) {
         if edge == .center {
-            // Center → trade places with the target (reuse the existing position swap).
-            activeLeaf = drag.leaf
+            activeLeaf = dragged
             swapActive(with: target)
             return
         }
-        // Capture the target's session BEFORE detaching: collapsing the dragged pane's old
-        // parent can remap the target node (if the target was the dragged pane's sibling leaf,
-        // the sibling's payload is hoisted into the parent and the original node is discarded).
-        // The session survives the collapse, so we re-find the live target leaf by it.
-        guard case .leaf(let targetSession, _) = target.kind else { cancelPaneDrag(); return }
-        guard detachLeafForMove(drag.leaf) else { return }
+        // Capture the target session BEFORE detaching: collapsing the dragged pane's old parent
+        // can remap the target node (sibling payload hoisted). Re-find the live target by session.
+        guard case .leaf(let targetSession, _) = target.kind else { return }
+        guard detachLeafForMove(dragged) else { return }
         let liveTarget = leafNode(for: targetSession, in: root) ?? target
-        insertLeaf(drag.leaf, nextTo: liveTarget, edge: edge)
-        activeLeaf = drag.leaf
-        rebuild(animation: Motion.enabled ? .split(newLeaf: drag.leaf) : .none)
+        insertLeaf(dragged, nextTo: liveTarget, edge: edge)
+        activeLeaf = dragged
+        rebuild(animation: Motion.enabled ? .split(newLeaf: dragged) : .none)
+    }
+
+    /// Move `dragged` (carrying its live session/surface) out of this tree into another window's
+    /// `dest` tree. The dragged node's `.leaf(session, surface)` travels intact, so when `dest`
+    /// rebuilds, the destination wrapper adopts the existing surface (AppKit reparents the NSView).
+    /// CROSS-TREE INVARIANT: the dragged node is removed from this tree's live structure (detach,
+    /// or — for a sole pane — flagged `movedOutEmpty`) BEFORE any source teardown, so the moved
+    /// session is never terminated by the now-empty source closing.
+    private func performCrossWindowDrop(dragged: PaneNode, to dest: PaneTreeView,
+                                        target: PaneNode, edge: PaneDropEdge) {
+        let dockEdge: PaneDropEdge = (edge == .center) ? .left : edge   // no "swap" across windows
+        let soleSource = (dragged.parent == nil)   // dragged pane IS this tree's whole content
+        if soleSource {
+            movedOutEmpty = true                    // this tree empties; its close must not terminate
+        } else {
+            detachLeafForMove(dragged)              // collapse this tree's parent split
+        }
+        // dest's nodes are untouched by the source collapse, so `target` is still valid.
+        dest.insertLeaf(dragged, nextTo: target, edge: dockEdge)
+        dest.activeLeaf = dragged
+        if !soleSource { rebuild() }                // source: relayout without the moved pane
+        dest.rebuild(animation: Motion.enabled ? .split(newLeaf: dragged) : .none)
+        dest.host?.revealTree(dest)                 // bring the destination forward / select its tab
+        if soleSource { onAllPanesClosed?() }       // close the now-empty source tab/window
     }
 
     /// Cancel an in-flight drag: remove the indicator and (if motion is on) glide the drag
@@ -547,21 +604,81 @@ final class PaneTreeView: NSView {
         guard let drag = paneDrag else { return }
         paneDrag = nil
         drag.indicatorLayer?.removeFromSuperlayer()
-        guard let imageLayer = drag.imageLayer else { return }
-        guard Motion.enabled else { imageLayer.removeFromSuperlayer(); return }
-        let from = imageLayer.position
-        let to = CGPoint(x: drag.originalFrame.midX, y: drag.originalFrame.midY)
-        let slide = CABasicAnimation(keyPath: "position")
-        slide.fromValue = NSValue(point: from)
-        slide.toValue = NSValue(point: to)
-        slide.duration = Motion.duration
-        slide.timingFunction = Motion.timing
-        slide.isRemovedOnCompletion = false
-        slide.fillMode = .forwards
-        imageLayer.add(slide, forKey: "damson.pane-drag-cancel")
-        DispatchQueue.main.asyncAfter(deadline: .now() + Motion.duration) {
-            imageLayer.removeFromSuperlayer()
+        guard let imageWindow = drag.imageWindow else { return }
+        guard Motion.enabled, let win = window else { imageWindow.orderOut(nil); return }
+        // Glide the floating image back to the source pane's on-screen spot, then remove it.
+        let windowPt = convert(NSPoint(x: drag.originalFrame.midX, y: drag.originalFrame.midY), to: nil)
+        let screenMid = win.convertPoint(toScreen: windowPt)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = Motion.duration
+            imageWindow.animator().setFrameOrigin(NSPoint(x: screenMid.x - imageWindow.frame.width / 2,
+                                                          y: screenMid.y - imageWindow.frame.height / 2))
+        }, completionHandler: {
+            imageWindow.orderOut(nil)
+        })
+    }
+
+    // MARK: - Cross-window drop helpers
+
+    /// The drop-indicator rect (self coords) for docking next to `leaf` on `edge`, or nil if the
+    /// leaf isn't in this tree. Called on the DESTINATION tree during a cross-window drag.
+    func indicatorRect(for leaf: PaneNode, edge: PaneDropEdge) -> NSRect? {
+        guard let w = findWrapper(for: leaf, in: self) else { return nil }
+        let f = w.convert(w.bounds, to: self)
+        return indicatorFrame(for: edge, in: f)
+    }
+
+    /// Show/move the drop indicator on `tree` (possibly another window), migrating the layer
+    /// between trees as the cursor crosses windows. nil tree hides it.
+    private func setIndicator(on tree: PaneTreeView?, frame: NSRect?, drag: inout PaneDragState) {
+        if drag.indicatorTree !== tree {
+            drag.indicatorLayer?.removeFromSuperlayer()
+            drag.indicatorLayer = nil
+            if let tree {
+                let ind = CALayer()
+                ind.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.22).cgColor
+                ind.borderColor = NSColor.controlAccentColor.cgColor
+                ind.borderWidth = 2
+                ind.zPosition = 99_999
+                tree.layer?.addSublayer(ind)
+                drag.indicatorLayer = ind
+            }
+            drag.indicatorTree = tree
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let frame {
+            drag.indicatorLayer?.frame = frame
+            drag.indicatorLayer?.isHidden = false
+        } else {
+            drag.indicatorLayer?.isHidden = true
+        }
+        CATransaction.commit()
+    }
+
+    /// Frontmost pane under a SCREEN point across all visible windows: its tree, leaf, drop edge.
+    private func treeAndLeaf(atScreen sp: NSPoint) -> (tree: PaneTreeView, leaf: PaneNode, edge: PaneDropEdge)? {
+        for win in NSApp.orderedWindows where win.isVisible {
+            guard let content = win.contentView else { continue }
+            let winPt = win.convertPoint(fromScreen: sp)
+            for tree in PaneTreeView.collectTrees(in: content) {
+                let inTree = tree.convert(winPt, from: nil)
+                guard tree.bounds.contains(inTree) else { continue }
+                if let hit = tree.dropTarget(at: inTree) { return (tree, hit.leaf, hit.edge) }
+            }
+        }
+        return nil
+    }
+
+    /// Collect the `PaneTreeView`s in a window's content view (does not descend into a found tree).
+    private static func collectTrees(in view: NSView) -> [PaneTreeView] {
+        var out: [PaneTreeView] = []
+        func walk(_ v: NSView) {
+            if let t = v as? PaneTreeView { out.append(t); return }
+            for s in v.subviews { walk(s) }
+        }
+        walk(view)
+        return out
     }
 
     // MARK: - Detach / insert (reusable; the cross-window step will call these)
@@ -616,7 +733,7 @@ final class PaneTreeView: NSView {
 
     /// Hit-test `point` (self coords) to the leaf wrapper under it, returning the leaf and which
     /// drop edge the point falls in. nil when the point is over no pane.
-    private func dropTarget(at point: NSPoint) -> (leaf: PaneNode, edge: PaneDropEdge)? {
+    func dropTarget(at point: NSPoint) -> (leaf: PaneNode, edge: PaneDropEdge)? {
         var wrappers: [PaneLeafWrapper] = []
         func collect(_ v: NSView) {
             if let w = v as? PaneLeafWrapper { wrappers.append(w) }
@@ -1312,6 +1429,31 @@ private final class SplitContainer: NSView {
         }
         walk(owner)
         return best
+    }
+}
+
+/// Borderless floating window holding the drag snapshot during a pane drag, so the image can
+/// follow the cursor ACROSS windows (a CALayer in the source window can't draw over another).
+private final class PaneDragImageWindow: NSWindow {
+    init(image: NSImage, size: NSSize) {
+        super.init(contentRect: NSRect(origin: .zero, size: size),
+                   styleMask: .borderless, backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        ignoresMouseEvents = true   // never a drop target, never steals events
+        level = .floating
+        alphaValue = 0.85
+        let iv = NSImageView(frame: NSRect(origin: .zero, size: size))
+        iv.image = image
+        iv.imageScaling = .scaleAxesIndependently
+        contentView = iv
+    }
+
+    /// Position the window centered on a screen point (the cursor).
+    func center(on screenPoint: NSPoint) {
+        setFrameOrigin(NSPoint(x: screenPoint.x - frame.width / 2,
+                               y: screenPoint.y - frame.height / 2))
     }
 }
 

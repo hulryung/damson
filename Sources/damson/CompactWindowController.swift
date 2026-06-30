@@ -49,7 +49,7 @@ final class CompactWindow: NSWindow {
 /// row with the traffic lights.
 ///
 /// Borrows the MainWindowController structure from hiterm (`~/dev/hiterm`).
-final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSwipeHandler {
+final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSwipeHandler, PaneTreeHosting {
     /// A tab = (PaneTreeView, a subscription to the title of that tree's first leaf session).
     /// Splitting within a tab via Cmd+D / Cmd+Shift+D adds a leaf to that tab's tree.
     private struct Tab {
@@ -373,10 +373,20 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         }
     }
 
+    /// `PaneTreeHosting` — a cross-window pane drop landed in `tree`: select its tab and bring
+    /// the window forward so the moved pane is visible.
+    func revealTree(_ tree: PaneTreeView) {
+        if let idx = tabs.firstIndex(where: { $0.tree === tree }), idx != currentIndex {
+            selectTab(idx)
+        }
+        window?.makeKeyAndOrderFront(nil)
+    }
+
     /// Add an already-built PaneTreeView as a new tab (a new or restored tree).
     private func addTab(tree: PaneTreeView, transition: TabTransition = .none,
                         customTitle: String? = nil) {
         tree.translatesAutoresizingMaskIntoConstraints = false
+        tree.host = self   // cross-window pane drop reveals this tab via PaneTreeHosting.revealTree
         // Close this tab when its last pane closes. Must be found by tree reference, not by
         // the current index into the tabs array (stays correct even if tabs are reordered).
         tree.onAllPanesClosed = { [weak self, weak tree] in
@@ -877,7 +887,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             )
         }
 
-        tabs[index].tree.root.terminateAll()
+        tabs[index].tree.terminateAllForClose()   // honors a pane dragged out to another window
         tabs.remove(at: index)
 
         if tabs.isEmpty {
@@ -1109,7 +1119,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     func windowWillClose(_ notification: Notification) {
         onWindowWillClose?()
-        for t in tabs { t.tree.root.terminateAll() }
+        for t in tabs { t.tree.terminateAllForClose() }   // honor panes dragged out to other windows
     }
 
     // On full-screen enter/exit: update the leading reservation (traffic lights) + top inset (menu bar).

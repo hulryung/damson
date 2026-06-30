@@ -14,7 +14,7 @@ AppBundleTrampoline.relaunchInAppBundleIfNeeded()
 
 /// One window + one pane tree (Standard/Auto mode). Multiple windows are grouped
 /// via native NSWindow tabs, and within each window Cmd+D / Cmd+Shift+D split panes.
-final class DamsonWindowController: NSWindowController, NSWindowDelegate {
+final class DamsonWindowController: NSWindowController, NSWindowDelegate, PaneTreeHosting {
     private let tree: PaneTreeView
     private var titleSubscription: AnyCancellable?
     private var tabStyleApplier: TabBarStyleApplier?
@@ -65,6 +65,7 @@ final class DamsonWindowController: NSWindowController, NSWindowDelegate {
         window.tabbingIdentifier = "damson.terminal"
         super.init(window: window)
         window.delegate = self
+        tree.host = self
         // Close the window (= native tab) when its last pane closes.
         tree.onAllPanesClosed = { [weak self] in
             self?.window?.performClose(nil)
@@ -176,12 +177,17 @@ final class DamsonWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func windowWillClose(_ notification: Notification) {
-        // Terminate all of this window's pane sessions. (PaneTreeView.deinit also
-        // calls terminateAll, but do it once explicitly at window-close time —
-        // double termination is idempotent since PTYHost uses childPID=-1.)
-        tree.root.terminateAll()
+        // Terminate all of this window's pane sessions. `terminateAllForClose` (not
+        // root.terminateAll) so a pane that was just dragged out to ANOTHER window — leaving
+        // this window empty — keeps running there instead of being killed here.
+        tree.terminateAllForClose()
         // If this is the last window, the application terminates automatically
         // (applicationShouldTerminateAfterLastWindowClosed == true).
+    }
+
+    /// `PaneTreeHosting` — a cross-window pane drop landed in this single-tree window: bring it forward.
+    func revealTree(_ tree: PaneTreeView) {
+        window?.makeKeyAndOrderFront(nil)
     }
 }
 
