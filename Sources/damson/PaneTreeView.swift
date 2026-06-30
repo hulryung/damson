@@ -6,6 +6,14 @@ enum PaneFocusDirection {
     case left, right, up, down
 }
 
+/// Which edge of a hovered pane a dragged pane will dock to (Control+Command pane drag).
+/// `left`/`right` build a horizontal split, `top`/`bottom` a vertical one; `center` means
+/// "swap places" (no new split). Kept module-internal so the future cross-window step can
+/// reuse the same drop semantics.
+enum PaneDropEdge {
+    case left, right, top, bottom, center
+}
+
 /// NSView that lays out the PaneNode tree on screen. Divider drag adjusts the ratio,
 /// clicking a leaf selects the active pane. Cmd+D / Cmd+Shift+D split, Cmd+W closes the active pane.
 final class PaneTreeView: NSView {
@@ -422,6 +430,235 @@ final class PaneTreeView: NSView {
         return best?.leaf
     }
 
+    // MARK: - Pane drag (Control+Command drag to re-dock a pane)
+
+    /// In-flight Control+Command pane drag. Holds the dragged leaf, the floating drag-image
+    /// layer that follows the cursor, and the drop-indicator layer, plus enough to animate a
+    /// cancel back to where the pane started. nil when no pane drag is active.
+    private struct PaneDragState {
+        let leaf: PaneNode
+        let startSelf: NSPoint           // mouseDown point in self coords (for the threshold)
+        let dragImage: NSImage?          // snapshot of the dragged pane (may be nil → no image)
+        let originalFrame: NSRect        // dragged wrapper's frame in self (cancel target)
+        var armed: Bool                  // crossed the drag threshold → overlays shown
+        var imageLayer: CALayer?         // semi-transparent snapshot following the cursor
+        var indicatorLayer: CALayer?     // drop-edge highlight over the hovered pane
+    }
+    private var paneDrag: PaneDragState?
+    /// Movement (pt) required before a Control+Command press becomes a drag (vs. a stray click).
+    private let paneDragThreshold: CGFloat = 6
+
+    /// Begin a Control+Command pane drag from `leaf`. Returns false (no drag) when the pane
+    /// can't be moved — i.e. it's the only pane (no parent split to collapse). Snapshots the
+    /// pane now (live Metal content included) for the floating drag image. Called by the leaf
+    /// wrapper, which then forwards drag/up events here.
+    func beginPaneDrag(from leaf: PaneNode, startWindowPoint: NSPoint) -> Bool {
+        guard leaf.isLeaf, leaf.parent != nil else { return false }
+        let startSelf = convert(startWindowPoint, from: nil)
+        let wrapper = findWrapper(for: leaf, in: self)
+        let image = wrapper.flatMap { Motion.snapshot(of: $0) }
+        let frame = wrapper.map { $0.convert($0.bounds, to: self) } ?? .zero
+        paneDrag = PaneDragState(leaf: leaf, startSelf: startSelf, dragImage: image,
+                                 originalFrame: frame, armed: false,
+                                 imageLayer: nil, indicatorLayer: nil)
+        return true
+    }
+
+    /// A drag tick (cursor moved). Below the threshold this is a no-op; once crossed it lazily
+    /// creates the floating drag image + drop indicator, then on every move repositions the
+    /// image under the cursor and re-targets the indicator onto the hovered pane's drop edge.
+    func updatePaneDrag(windowPoint: NSPoint) {
+        guard var drag = paneDrag else { return }
+        let p = convert(windowPoint, from: nil)
+        if !drag.armed {
+            guard hypot(p.x - drag.startSelf.x, p.y - drag.startSelf.y) >= paneDragThreshold else { return }
+            drag.armed = true
+            // Floating snapshot of the pane, scaled to half size + translucent, centered on
+            // the cursor. Sits above everything (zPosition) so it reads as "lifted".
+            if let img = drag.dragImage {
+                let size = NSSize(width: drag.originalFrame.width * 0.5,
+                                  height: drag.originalFrame.height * 0.5)
+                let layer = Motion.overlay(image: img, frame: NSRect(origin: .zero, size: size), in: self)
+                layer.opacity = 0.75
+                layer.zPosition = 100_000
+                drag.imageLayer = layer
+            }
+            let indicator = CALayer()
+            indicator.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.22).cgColor
+            indicator.borderColor = NSColor.controlAccentColor.cgColor
+            indicator.borderWidth = 2
+            indicator.zPosition = 99_999
+            indicator.isHidden = true
+            layer?.addSublayer(indicator)
+            drag.indicatorLayer = indicator
+        }
+        // No implicit animations — the image and indicator must track the cursor instantly.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        drag.imageLayer?.position = p   // anchor is (0.5,0.5) → centers the image on the cursor
+        if let (target, edge) = dropTarget(at: p), target !== drag.leaf,
+           let tw = findWrapper(for: target, in: self) {
+            let f = tw.convert(tw.bounds, to: self)
+            drag.indicatorLayer?.frame = indicatorFrame(for: edge, in: f)
+            drag.indicatorLayer?.isHidden = false
+        } else {
+            drag.indicatorLayer?.isHidden = true
+        }
+        CATransaction.commit()
+        paneDrag = drag
+    }
+
+    /// Drop: if the cursor is over a valid other pane, detach the dragged node and re-insert it
+    /// at the chosen edge (or swap on a center drop), then rebuild with the split-in settle.
+    /// Anything else (no target, dropped on itself, never armed) cancels and animates back.
+    func endPaneDrag(windowPoint: NSPoint) {
+        guard let drag = paneDrag else { return }
+        guard drag.armed else { cancelPaneDrag(); return }
+        let p = convert(windowPoint, from: nil)
+        guard let (target, edge) = dropTarget(at: p), target !== drag.leaf else {
+            cancelPaneDrag(); return
+        }
+        // Valid drop — tear down the floating overlays; the rebuild settle takes over.
+        paneDrag = nil
+        drag.imageLayer?.removeFromSuperlayer()
+        drag.indicatorLayer?.removeFromSuperlayer()
+
+        if edge == .center {
+            // Center → trade places with the target (reuse the existing position swap).
+            activeLeaf = drag.leaf
+            swapActive(with: target)
+            return
+        }
+        // Capture the target's session BEFORE detaching: collapsing the dragged pane's old
+        // parent can remap the target node (if the target was the dragged pane's sibling leaf,
+        // the sibling's payload is hoisted into the parent and the original node is discarded).
+        // The session survives the collapse, so we re-find the live target leaf by it.
+        guard case .leaf(let targetSession, _) = target.kind else { cancelPaneDrag(); return }
+        guard detachLeafForMove(drag.leaf) else { return }
+        let liveTarget = leafNode(for: targetSession, in: root) ?? target
+        insertLeaf(drag.leaf, nextTo: liveTarget, edge: edge)
+        activeLeaf = drag.leaf
+        rebuild(animation: Motion.enabled ? .split(newLeaf: drag.leaf) : .none)
+    }
+
+    /// Cancel an in-flight drag: remove the indicator and (if motion is on) glide the drag
+    /// image back to where the pane started before removing it. No tree mutation.
+    func cancelPaneDrag() {
+        guard let drag = paneDrag else { return }
+        paneDrag = nil
+        drag.indicatorLayer?.removeFromSuperlayer()
+        guard let imageLayer = drag.imageLayer else { return }
+        guard Motion.enabled else { imageLayer.removeFromSuperlayer(); return }
+        let from = imageLayer.position
+        let to = CGPoint(x: drag.originalFrame.midX, y: drag.originalFrame.midY)
+        let slide = CABasicAnimation(keyPath: "position")
+        slide.fromValue = NSValue(point: from)
+        slide.toValue = NSValue(point: to)
+        slide.duration = Motion.duration
+        slide.timingFunction = Motion.timing
+        slide.isRemovedOnCompletion = false
+        slide.fillMode = .forwards
+        imageLayer.add(slide, forKey: "damson.pane-drag-cancel")
+        DispatchQueue.main.asyncAfter(deadline: .now() + Motion.duration) {
+            imageLayer.removeFromSuperlayer()
+        }
+    }
+
+    // MARK: - Detach / insert (reusable; the cross-window step will call these)
+
+    /// Detach `leaf` from the tree WITHOUT terminating its session — the inverse half of
+    /// `closeLeaf` (which collapses + terminates). Collapses the parent split by hoisting the
+    /// sibling subtree into the parent's slot, fixes the promoted children's parent links, and
+    /// orphans `leaf` (parent = nil) so it carries its live session+surface out intact, ready to
+    /// be re-inserted elsewhere. Returns false for the root leaf (nothing to collapse). Does NOT
+    /// rebuild — the caller pairs this with `insertLeaf` then a single rebuild.
+    @discardableResult
+    func detachLeafForMove(_ leaf: PaneNode) -> Bool {
+        guard leaf.isLeaf,
+              let parent = leaf.parent,
+              case .split(_, let first, let second, _) = parent.kind
+        else { return false }
+        let sibling = (first === leaf) ? second : first
+        // Promote the sibling into the parent's slot (identical collapse to closeLeaf).
+        parent.kind = sibling.kind
+        if case .split(_, let a, let b, _) = parent.kind {
+            a.parent = parent
+            b.parent = parent
+        }
+        leaf.parent = nil   // orphaned, but still .leaf(session, surface) → the terminal travels with it
+        return true
+    }
+
+    /// Insert the (already detached) `node` next to leaf `target`, docking on `edge`. Mirrors
+    /// `split()`: the `target` NODE stays in place and becomes the new split (so its parent link
+    /// — or the root pointer — is preserved automatically), with a copy carrying the target's
+    /// payload as one child and `node` as the other. Order/direction come from the edge:
+    /// left/top → node is `first`; right/bottom → node is `second`; horizontal for left/right,
+    /// vertical for top/bottom; ratio 0.5. `center` is handled by the caller via swap, not here.
+    func insertLeaf(_ node: PaneNode, nextTo target: PaneNode, edge: PaneDropEdge) {
+        guard target.isLeaf else { return }
+        let direction: SplitDirection
+        let draggedFirst: Bool
+        switch edge {
+        case .left:   direction = .horizontal; draggedFirst = true
+        case .right:  direction = .horizontal; draggedFirst = false
+        case .top:    direction = .vertical;   draggedFirst = true
+        case .bottom: direction = .vertical;   draggedFirst = false
+        case .center: return
+        }
+        let targetCopy = PaneNode(kind: target.kind)
+        targetCopy.parent = target
+        node.parent = target
+        let first  = draggedFirst ? node : targetCopy
+        let second = draggedFirst ? targetCopy : node
+        target.kind = .split(direction: direction, first: first, second: second, ratio: 0.5)
+    }
+
+    /// Hit-test `point` (self coords) to the leaf wrapper under it, returning the leaf and which
+    /// drop edge the point falls in. nil when the point is over no pane.
+    private func dropTarget(at point: NSPoint) -> (leaf: PaneNode, edge: PaneDropEdge)? {
+        var wrappers: [PaneLeafWrapper] = []
+        func collect(_ v: NSView) {
+            if let w = v as? PaneLeafWrapper { wrappers.append(w) }
+            for sub in v.subviews { collect(sub) }
+        }
+        collect(self)
+        for w in wrappers {
+            let f = w.convert(w.bounds, to: self)
+            if f.contains(point) { return (w.leaf, dropEdge(at: point, in: f)) }
+        }
+        return nil
+    }
+
+    /// Classify a point inside pane frame `f` (self coords, y-up) into a drop edge: the inner
+    /// ~30% box is `center` (swap), otherwise the nearest of the four edges (diagonal quadrants).
+    private func dropEdge(at point: NSPoint, in f: NSRect) -> PaneDropEdge {
+        let lx = point.x - f.minX
+        let ly = point.y - f.minY
+        let w = max(f.width, 1), h = max(f.height, 1)
+        if lx > w * 0.35, lx < w * 0.65, ly > h * 0.35, ly < h * 0.65 { return .center }
+        // Normalized distance to each edge; the smallest wins.
+        let dLeft = lx / w, dRight = (w - lx) / w
+        let dBottom = ly / h, dTop = (h - ly) / h   // y-up: top edge is the higher-y side
+        let m = min(dLeft, dRight, dTop, dBottom)
+        if m == dLeft { return .left }
+        if m == dRight { return .right }
+        if m == dTop { return .top }
+        return .bottom
+    }
+
+    /// The sub-rect of pane frame `f` (self coords, y-up) the drop indicator highlights for a
+    /// given edge: the half on that side, or the whole pane for a center (swap) drop.
+    private func indicatorFrame(for edge: PaneDropEdge, in f: NSRect) -> NSRect {
+        switch edge {
+        case .left:   return NSRect(x: f.minX, y: f.minY, width: f.width / 2, height: f.height)
+        case .right:  return NSRect(x: f.midX, y: f.minY, width: f.width / 2, height: f.height)
+        case .top:    return NSRect(x: f.minX, y: f.midY, width: f.width, height: f.height / 2)
+        case .bottom: return NSRect(x: f.minX, y: f.minY, width: f.width, height: f.height / 2)
+        case .center: return f
+        }
+    }
+
     // MARK: - Tree → NSView rebuild
 
     private func rebuild(animation: PaneAnimation = .none) {
@@ -543,22 +780,31 @@ final class PaneTreeView: NSView {
               wrapper.bounds.width > 0, wrapper.bounds.height > 0
         else { return }
 
-        // Small "nudge", not a full traverse, to keep the motion subtle.
-        // The new pane is always `second`: right of the divider (horizontal) or
-        // below it (vertical). All views here are non-flipped (y grows upward),
-        // matching SplitContainer.layout()'s bottom-up coordinate comments.
+        // Small "nudge", not a full traverse, to keep the motion subtle. The new pane
+        // may be either child: a Cmd+D split always makes it `second`, but a pane re-dock
+        // (insertLeaf) can place it `first` (dropped on the target's left/top edge). Derive
+        // which side it's on from the parent split so the nudge starts from the divider in
+        // both cases. All views here are non-flipped (y grows upward), matching
+        // SplitContainer.layout()'s bottom-up coordinate comments.
+        let isFirst: Bool = {
+            if let parent = newLeaf.parent, case .split(_, let first, _, _) = parent.kind {
+                return first === newLeaf
+            }
+            return false
+        }()
         let fromTransform: CATransform3D
         switch direction {
         case .horizontal:
-            // New pane sits to the RIGHT of the divider → start nudged LEFT
-            // (toward the divider, -x) and settle right into place.
-            let dx = -min(24, wrapper.bounds.width * 0.06)
-            fromTransform = CATransform3DMakeTranslation(dx, 0, 0)
+            // The divider is on the side the pane butts against: a `second` (right) pane
+            // starts nudged LEFT (-x) toward the divider; a `first` (left) pane nudged
+            // RIGHT (+x). It then settles back into place.
+            let mag = min(24, wrapper.bounds.width * 0.06)
+            fromTransform = CATransform3DMakeTranslation(isFirst ? mag : -mag, 0, 0)
         case .vertical:
-            // New pane sits BELOW the divider (lower y in bottom-up coords) →
-            // start nudged UP toward the divider (+y) and settle down into place.
-            let dy = min(24, wrapper.bounds.height * 0.06)
-            fromTransform = CATransform3DMakeTranslation(0, dy, 0)
+            // Bottom-up coords: a `second` (bottom) pane starts nudged UP (+y) toward the
+            // divider; a `first` (top) pane nudged DOWN (-y). Then settles into place.
+            let mag = min(24, wrapper.bounds.height * 0.06)
+            fromTransform = CATransform3DMakeTranslation(0, isFirst ? -mag : mag, 0)
         }
 
         // Set the final state on the MODEL layer first, then add explicit
@@ -872,12 +1118,18 @@ private final class PaneLeafWrapper: NSView {
                        blue: mix(bg.blueComponent), alpha: 1.0)
     }
 
-    /// While ⌘⇧ is held, claim the click for the wrapper (pane swap) instead of
-    /// letting it fall through to the terminal surface underneath.
+    /// True between a ⌃⌘ mouseDown that started a pane drag and its mouseUp — so the wrapper
+    /// forwards the drag/up events to the owner instead of treating them as normal clicks.
+    private var paneDragging = false
+
+    /// While ⌘⇧ (pane swap) or ⌃⌘ (pane drag) is held, claim the click for the wrapper instead
+    /// of letting it fall through to the terminal surface underneath — this is also what lets a
+    /// ⌃⌘ drag bypass mouse-reporting passthrough (the surface never sees the event).
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
-        if hit != nil, NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            .isSuperset(of: [.command, .shift]) {
+        guard hit != nil else { return hit }
+        let mods = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if mods.isSuperset(of: [.command, .shift]) || mods.isSuperset(of: [.command, .control]) {
             return self
         }
         return hit
@@ -890,8 +1142,32 @@ private final class PaneLeafWrapper: NSView {
             owner?.swapActive(with: leaf)
             return
         }
+        if mods == [.command, .control] {
+            // ⌃⌘+drag — begin moving this pane to a new dock location. Consumes the event
+            // (no selection / no PTY passthrough). beginPaneDrag returns false for the sole
+            // pane, in which case the gesture is simply a no-op.
+            paneDragging = owner?.beginPaneDrag(from: leaf, startWindowPoint: event.locationInWindow) ?? false
+            return
+        }
         owner?.setActive(leaf)
         super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        if paneDragging {
+            owner?.updatePaneDrag(windowPoint: event.locationInWindow)
+            return
+        }
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if paneDragging {
+            paneDragging = false
+            owner?.endPaneDrag(windowPoint: event.locationInWindow)
+            return
+        }
+        super.mouseUp(with: event)
     }
 }
 
