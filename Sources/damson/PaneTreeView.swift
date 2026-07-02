@@ -1043,6 +1043,13 @@ final class PaneTreeView: NSView {
     /// `animated` is true only on a genuine focus change while the layout is stable
     /// (`setActive`); `rebuild()` passes false so the indicator never animates from a
     /// stale frame. The flag is forwarded to each wrapper's indicator update.
+    /// True when the tree has more than one pane (i.e. the root is a split). Border focus
+    /// indicators only show when there are multiple panes — a lone pane needs no hint.
+    var hasMultiplePanes: Bool {
+        if case .split = root.kind { return true }
+        return false
+    }
+
     private func updateBorderColors(animated: Bool = false) {
         func walk(_ view: NSView) {
             if let wrapper = view as? PaneLeafWrapper {
@@ -1218,15 +1225,17 @@ private final class PaneLeafWrapper: NSView {
         // Target visibility, expressed as layer opacity so it can cross-fade:
         //  - dim scrim participates only in dimInactive mode, shown (0.4) on inactive panes.
         //  - border shows on the active pane in the two border modes.
+        // A lone pane needs no focus hint — only show the border when the window is split.
+        let multiPane = owner?.hasMultiplePanes ?? false
         let dimVisible = (mode == .dimInactive)
         let dimTarget: Float = (dimVisible && !isActive) ? 0.4 : 0.0
-        let borderTarget: Float = (borderMode && isActive) ? 1.0 : 0.0
+        let borderTarget: Float = (borderMode && isActive && multiPane) ? 1.0 : 0.0
 
         // Border color/width are static per mode (only opacity animates the fade), so set
         // them on BOTH panes in a border mode — the inactive one rests at opacity 0 and can
         // then fade its border out when it loses focus.
         if borderMode {
-            let color = (mode == .accentBorder) ? NSColor.controlAccentColor
+            let color = (mode == .accentBorder) ? Self.accentBorderColor()
                                                 : Self.subtleBorderColor(leaf: leaf)
             borderLayer.borderColor = color.cgColor
             borderLayer.borderWidth = 1
@@ -1271,6 +1280,15 @@ private final class PaneLeafWrapper: NSView {
     }
 
     /// A subtle border color shifted slightly from the background (dark theme → a bit lighter, light theme → a bit darker).
+    /// A muted accent for the active-pane border. The raw system accent is too vivid and
+    /// "pops", so blend it toward black and drop the alpha a little — still clearly the accent
+    /// hue, just calmer.
+    private static func accentBorderColor() -> NSColor {
+        let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .controlAccentColor
+        let darker = accent.blended(withFraction: 0.4, of: .black) ?? accent
+        return darker.withAlphaComponent(0.8)
+    }
+
     private static func subtleBorderColor(leaf: PaneNode) -> NSColor {
         guard case .leaf(let session, _) = leaf.kind else { return .clear }
         let bg = (session.config.backgroundColor.usingColorSpace(.sRGB)) ?? .black
