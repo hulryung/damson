@@ -1001,41 +1001,89 @@ final class PaneTreeView: NSView {
         }
     }
 
-    /// Cross-slide swap: the A snapshot moves in a straight line frameA→frameB and the B
-    /// snapshot frameB→frameA. If the two panes differ in size, bounds.size is interpolated
-    /// along with position (content stretches via `.resize` gravity), so on arrival it
-    /// matches the live content size exactly → the overlay removal is seamless. Same overlay
-    /// idiom as close (explicit CABasicAnimation + fillMode forwards + asyncAfter removal).
+    /// Cross-slide swap, tuned to read naturally: the initiating (active) pane A lifts
+    /// slightly and passes OVER the other, which dips beneath — so the crossing reads as
+    /// two panes trading places in depth rather than two images blending through each
+    /// other. Both travel on a spring (accelerate, then settle organically) instead of the
+    /// fixed easeOut slide, and a soft shadow under the lifted snapshot sells the depth.
+    /// If the two panes differ in size, bounds.size is interpolated along with position
+    /// (content stretches via `.resize` gravity), so on arrival it matches the live content
+    /// size exactly → the overlay removal is seamless. Same overlay idiom as close
+    /// (explicit animations + fillMode forwards + asyncAfter removal).
     private func animateSwap(snapA: NSImage, frameA: NSRect, snapB: NSImage, frameB: NSRect) {
         // Settle the live content rebuild just placed into its final position/size (before the snapshot covers it).
         layoutSubtreeIfNeeded()
         let overlayA = Motion.overlay(image: snapA, frame: frameA, in: self)
         let overlayB = Motion.overlay(image: snapB, frame: frameB, in: self)
-        slideOverlay(overlayA, from: frameA, to: frameB, key: "damson.swap-a")
-        slideOverlay(overlayB, from: frameB, to: frameA, key: "damson.swap-b")
-        DispatchQueue.main.asyncAfter(deadline: .now() + Motion.duration) {
+        // A (the pane the user is moving) rides above B so the crossing reads as "over".
+        overlayA.zPosition = 10_001
+        overlayB.zPosition = 10_000
+        overlayA.shadowColor = NSColor.black.cgColor
+        overlayA.shadowRadius = 12
+        overlayA.shadowOffset = CGSize(width: 0, height: -4)   // self is y-up: cast downward
+
+        let settle = swapAnimate(overlayA, from: frameA, to: frameB,
+                                 lift: 1.03, key: "damson.swap-a", shadow: true)
+        swapAnimate(overlayB, from: frameB, to: frameA,
+                    lift: 0.97, key: "damson.swap-b", shadow: false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + settle) {
             overlayA.removeFromSuperlayer()
             overlayB.removeFromSuperlayer()
         }
     }
 
-    /// Animate the overlay layer's position+size together from `from`→`to` (frames in self's coordinates).
-    private func slideOverlay(_ layer: CALayer, from: NSRect, to: NSRect, key: String) {
-        let pos = CABasicAnimation(keyPath: "position")
-        pos.fromValue = NSValue(point: CGPoint(x: from.midX, y: from.midY))
-        pos.toValue = NSValue(point: CGPoint(x: to.midX, y: to.midY))
+    /// Drive one swap overlay `from`→`to`: spring position+size, plus a mid-flight scale
+    /// "lift" (>1 rides over, <1 dips under) that returns to 1.0 on arrival, and — for the
+    /// lifted pane — a shadow that fades in at the crossing and back out. Returns the
+    /// spring's settling duration so the caller can time the overlay removal.
+    @discardableResult
+    private func swapAnimate(_ layer: CALayer, from: NSRect, to: NSRect,
+                             lift: CGFloat, key: String, shadow: Bool) -> TimeInterval {
+        // ζ ≈ 0.8 — the same "organic settle" family as the tab-slide spring
+        // (CompactWindowController.tabSlideSpring, 150/20), a touch stiffer so a pane swap
+        // (a small, frequent gesture) lands quicker (~0.33s vs 0.42s).
+        func spring(_ keyPath: String, _ fromValue: Any, _ toValue: Any) -> CASpringAnimation {
+            let s = CASpringAnimation(keyPath: keyPath)
+            s.fromValue = fromValue
+            s.toValue = toValue
+            s.mass = 1
+            s.stiffness = 220
+            s.damping = 24
+            s.duration = s.settlingDuration
+            s.isRemovedOnCompletion = false
+            s.fillMode = .forwards
+            return s
+        }
+        let pos = spring("position",
+                         NSValue(point: CGPoint(x: from.midX, y: from.midY)),
+                         NSValue(point: CGPoint(x: to.midX, y: to.midY)))
+        let size = spring("bounds.size", NSValue(size: from.size), NSValue(size: to.size))
+        let settle = pos.settlingDuration
 
-        let size = CABasicAnimation(keyPath: "bounds.size")
-        size.fromValue = NSValue(size: from.size)
-        size.toValue = NSValue(size: to.size)
+        // Mid-flight lift/dip, back to exactly 1.0 on arrival so the hand-off to the live
+        // content underneath is seamless.
+        let scale = CAKeyframeAnimation(keyPath: "transform.scale")
+        scale.values = [1.0, lift, 1.0]
+        scale.keyTimes = [0, 0.45, 1]
+        scale.timingFunctions = [CAMediaTimingFunction(name: .easeInEaseOut),
+                                 CAMediaTimingFunction(name: .easeInEaseOut)]
+        scale.duration = settle
+        scale.isRemovedOnCompletion = false
+        scale.fillMode = .forwards
 
-        let group = CAAnimationGroup()
-        group.animations = [pos, size]
-        group.duration = Motion.duration
-        group.timingFunction = Motion.timing
-        group.isRemovedOnCompletion = false
-        group.fillMode = .forwards
-        layer.add(group, forKey: key)
+        layer.add(pos, forKey: key + ".pos")
+        layer.add(size, forKey: key + ".size")
+        layer.add(scale, forKey: key + ".scale")
+        if shadow {
+            let sh = CAKeyframeAnimation(keyPath: "shadowOpacity")
+            sh.values = [0.0, 0.30, 0.0]
+            sh.keyTimes = [0, 0.45, 1]
+            sh.duration = settle
+            sh.isRemovedOnCompletion = false
+            sh.fillMode = .forwards
+            layer.add(sh, forKey: key + ".shadow")
+        }
+        return settle
     }
 
     // MARK: - Border color update
