@@ -1013,6 +1013,29 @@ final class PaneTreeView: NSView {
     private func animateSwap(snapA: NSImage, frameA: NSRect, snapB: NSImage, frameB: NSRect) {
         // Settle the live content rebuild just placed into its final position/size (before the snapshot covers it).
         layoutSubtreeIfNeeded()
+
+        // Opaque backdrops over both slots: rebuild has ALREADY placed the live content in
+        // its final (swapped) arrangement, so as the traveling snapshots vacate their slots
+        // the destination content would show through underneath (clearly visible while the
+        // panes overlap mid-crossing). Theme-background backdrops hide it until the
+        // snapshots land, so the flight reads as panes moving over an empty well.
+        let backdropColor: CGColor = {
+            if case .leaf(let s, _) = activeLeaf.kind { return s.config.backgroundColor.cgColor }
+            return DamsonConfig.fromUserDefaults().backgroundColor.cgColor
+        }()
+        var backdrops: [CALayer] = []
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for f in [frameA, frameB] {
+            let back = CALayer()
+            back.frame = f
+            back.backgroundColor = backdropColor
+            back.zPosition = 9_999   // under both traveling snapshots
+            layer?.addSublayer(back)
+            backdrops.append(back)
+        }
+        CATransaction.commit()
+
         let overlayA = Motion.overlay(image: snapA, frame: frameA, in: self)
         let overlayB = Motion.overlay(image: snapB, frame: frameB, in: self)
         // A (the pane the user is moving) rides above B so the crossing reads as "over".
@@ -1029,6 +1052,7 @@ final class PaneTreeView: NSView {
         DispatchQueue.main.asyncAfter(deadline: .now() + settle) {
             overlayA.removeFromSuperlayer()
             overlayB.removeFromSuperlayer()
+            backdrops.forEach { $0.removeFromSuperlayer() }
         }
     }
 
