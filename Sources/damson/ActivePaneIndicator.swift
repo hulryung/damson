@@ -5,10 +5,10 @@ import AppKit
 /// Read by PaneLeafWrapper when it draws.
 enum ActivePaneIndicator: String, CaseIterable {
     /// Distinguish the active pane by darkening only the inactive panes with a scrim. No border.
-    /// With a single pane there are no inactive panes, so nothing is drawn. **Default.**
+    /// With a single pane there are no inactive panes, so nothing is drawn.
     case dimInactive
 
-    /// An accent-colored (system accent) border on the active pane.
+    /// An accent-colored (system accent) border on the active pane. **Default.**
     case accentBorder
 
     /// A subtle border on the active pane, shifted slightly from the background color.
@@ -31,6 +31,6 @@ enum ActivePaneIndicator: String, CaseIterable {
            let v = ActivePaneIndicator(rawValue: raw) {
             return v
         }
-        return .dimInactive
+        return .accentBorder
     }
 }

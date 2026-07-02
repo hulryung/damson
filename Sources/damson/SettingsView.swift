@@ -19,7 +19,7 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.doubleWidthIcons") private var doubleWidthIcons: Bool = true
     @AppStorage("damson.showScrollbar") private var showScrollbar: Bool = false
     @AppStorage("damson.tabTransition") private var tabTransitionRaw: String = TabTransitionStyle.slide.rawValue
-    @AppStorage("damson.activePaneIndicator") private var activePaneRaw: String = ActivePaneIndicator.dimInactive.rawValue
+    @AppStorage("damson.activePaneIndicator") private var activePaneRaw: String = ActivePaneIndicator.accentBorder.rawValue
     @AppStorage("damson.focusFollowsMouse") private var focusFollowsMouse: Bool = true
     @AppStorage("damson.newTabDirectory") private var newTabDirRaw: String = NewTabDirectory.home.rawValue
     @AppStorage("damson.backgroundOpacity") private var backgroundOpacity: Double = 1.0
