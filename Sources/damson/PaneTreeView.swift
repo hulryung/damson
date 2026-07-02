@@ -1004,65 +1004,150 @@ final class PaneTreeView: NSView {
     /// Cross-slide swap, tuned to read naturally: the initiating (active) pane A lifts
     /// slightly and passes OVER the other, which dips beneath — so the crossing reads as
     /// two panes trading places in depth rather than two images blending through each
-    /// other. Both travel on a spring (accelerate, then settle organically) instead of the
-    /// fixed easeOut slide, and a soft shadow under the lifted snapshot sells the depth.
-    /// If the two panes differ in size, bounds.size is interpolated along with position
-    /// (content stretches via `.resize` gravity), so on arrival it matches the live content
-    /// size exactly → the overlay removal is seamless. Same overlay idiom as close
-    /// (explicit animations + fillMode forwards + asyncAfter removal).
+    /// other. Both travel on a spring (accelerate, then settle organically), with a soft
+    /// shadow under the lifted card.
+    ///
+    /// Different-sized panes: the content must NOT rubber-stretch to the destination size.
+    /// Each traveling "card" is a small layer stack — an opaque theme-background base (also
+    /// the shadow caster) with the snapshot on top at `.resizeAspect` (uniform scale, like
+    /// a macOS window zoom; the base fills the letterbox). Near arrival the old snapshot
+    /// dissolves into a snapshot of the re-flowed destination content, so the card lands
+    /// pixel-identical to the live pane underneath and the overlay removal stays seamless.
     private func animateSwap(snapA: NSImage, frameA: NSRect, snapB: NSImage, frameB: NSRect) {
         // Settle the live content rebuild just placed into its final position/size (before the snapshot covers it).
         layoutSubtreeIfNeeded()
 
+        // Arrival (re-flowed) content for the landing dissolve — only needed when the sizes
+        // differ. Repaint synchronously first so the snapshots show the new-size render, not
+        // a stale frame from before the swap.
+        let sizesDiffer = frameA.size != frameB.size
+        var arrivalAtB: NSImage?   // what now lives in slot B (the moved active pane)
+        var arrivalAtA: NSImage?
+        if sizesDiffer {
+            repaintAllLeaves()
+            if let w = findWrapper(for: activeLeaf, in: self) { arrivalAtB = Motion.snapshot(of: w) }
+            if let w = wrapperAt(frame: frameA) { arrivalAtA = Motion.snapshot(of: w) }
+        }
+
         // Opaque backdrops over both slots: rebuild has ALREADY placed the live content in
-        // its final (swapped) arrangement, so as the traveling snapshots vacate their slots
-        // the destination content would show through underneath (clearly visible while the
-        // panes overlap mid-crossing). Theme-background backdrops hide it until the
-        // snapshots land, so the flight reads as panes moving over an empty well.
-        let backdropColor: CGColor = {
+        // its final (swapped) arrangement, so as the traveling cards vacate their slots the
+        // destination content would show through underneath (clearly visible while the panes
+        // overlap mid-crossing). Theme-background backdrops hide it until the cards land.
+        let bg: CGColor = {
             if case .leaf(let s, _) = activeLeaf.kind { return s.config.backgroundColor.cgColor }
             return DamsonConfig.fromUserDefaults().backgroundColor.cgColor
         }()
-        var backdrops: [CALayer] = []
+        var cleanup: [CALayer] = []
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for f in [frameA, frameB] {
             let back = CALayer()
             back.frame = f
-            back.backgroundColor = backdropColor
-            back.zPosition = 9_999   // under both traveling snapshots
+            back.backgroundColor = bg
+            back.zPosition = 9_999   // under both traveling cards
             layer?.addSublayer(back)
-            backdrops.append(back)
+            cleanup.append(back)
         }
         CATransaction.commit()
 
-        let overlayA = Motion.overlay(image: snapA, frame: frameA, in: self)
-        let overlayB = Motion.overlay(image: snapB, frame: frameB, in: self)
         // A (the pane the user is moving) rides above B so the crossing reads as "over".
-        overlayA.zPosition = 10_001
-        overlayB.zPosition = 10_000
-        overlayA.shadowColor = NSColor.black.cgColor
-        overlayA.shadowRadius = 12
-        overlayA.shadowOffset = CGSize(width: 0, height: -4)   // self is y-up: cast downward
-
-        let settle = swapAnimate(overlayA, from: frameA, to: frameB,
-                                 lift: 1.03, key: "damson.swap-a", shadow: true)
-        swapAnimate(overlayB, from: frameB, to: frameA,
-                    lift: 0.97, key: "damson.swap-b", shadow: false)
+        let settle = flyCard(old: snapA, arrival: arrivalAtB, from: frameA, to: frameB,
+                             bg: bg, lift: 1.03, shadow: true, z: 10_010,
+                             key: "damson.swap-a", cleanup: &cleanup)
+        _ = flyCard(old: snapB, arrival: arrivalAtA, from: frameB, to: frameA,
+                    bg: bg, lift: 0.97, shadow: false, z: 10_000,
+                    key: "damson.swap-b", cleanup: &cleanup)
         DispatchQueue.main.asyncAfter(deadline: .now() + settle) {
-            overlayA.removeFromSuperlayer()
-            overlayB.removeFromSuperlayer()
-            backdrops.forEach { $0.removeFromSuperlayer() }
+            cleanup.forEach { $0.removeFromSuperlayer() }
         }
     }
 
-    /// Drive one swap overlay `from`→`to`: spring position+size, plus a mid-flight scale
-    /// "lift" (>1 rides over, <1 dips under) that returns to 1.0 on arrival, and — for the
-    /// lifted pane — a shadow that fades in at the crossing and back out. Returns the
-    /// spring's settling duration so the caller can time the overlay removal.
-    @discardableResult
-    private func swapAnimate(_ layer: CALayer, from: NSRect, to: NSRect,
-                             lift: CGFloat, key: String, shadow: Bool) -> TimeInterval {
+    /// The leaf wrapper currently occupying `frame` (self coords) — used to snapshot a
+    /// slot's re-flowed content after a swap rebuild. The tree shape is unchanged by a
+    /// swap, so the slot rects match the pre-swap frames exactly.
+    private func wrapperAt(frame: NSRect) -> PaneLeafWrapper? {
+        var found: PaneLeafWrapper?
+        func walk(_ v: NSView) {
+            if let w = v as? PaneLeafWrapper,
+               w.convert(w.bounds, to: self).insetBy(dx: -0.5, dy: -0.5).contains(
+                   CGPoint(x: frame.midX, y: frame.midY)),
+               abs(w.convert(w.bounds, to: self).width - frame.width) < 1 {
+                found = w
+            }
+            for sub in v.subviews where found == nil { walk(sub) }
+        }
+        walk(self)
+        return found
+    }
+
+    /// Uniformly fit `aspect` into `rect`, anchored at the TOP-LEFT (self is y-up, so the
+    /// top edge is maxY). Terminal content starts at the top-left, so scaling a traveling
+    /// pane from that corner reads naturally; the card's background fills the right/bottom.
+    private func fitTopLeft(aspect: NSSize, in rect: NSRect) -> NSRect {
+        guard aspect.width > 0, aspect.height > 0 else { return rect }
+        let k = min(rect.width / aspect.width, rect.height / aspect.height)
+        let size = NSSize(width: aspect.width * k, height: aspect.height * k)
+        return NSRect(x: rect.minX, y: rect.maxY - size.height,
+                      width: size.width, height: size.height)
+    }
+
+    /// Fly one swap "card" `from`→`to` and return the spring's settling duration.
+    /// The card is a sibling stack sharing one flight path (each layer gets identical
+    /// spring/scale animations — CA doesn't relayout sublayers along a parent's
+    /// presentation-layer bounds animation, so siblings are simpler than a container):
+    ///   base:    opaque theme background — fill behind the fitted content and the shadow
+    ///            caster for the lifted card. Flies the full `from`→`to` rects.
+    ///   old:     the pre-swap snapshot, flying to its aspect-fitted rect anchored at the
+    ///            destination's top-left. The endpoint sizes are exact uniform multiples, so
+    ///            every interpolated size keeps the image's aspect — no rubber-stretching —
+    ///            and the card/content top-left corners coincide for the whole flight.
+    ///   arrival: (sizes differ) the re-flowed destination snapshot flying the reverse
+    ///            fit (top-left-fitted-in-`from` → full `to`), dissolving in over the last
+    ///            ~45% so the card lands matching the live content underneath.
+    private func flyCard(old: NSImage, arrival: NSImage?, from: NSRect, to: NSRect,
+                         bg: CGColor, lift: CGFloat, shadow: Bool, z: CGFloat,
+                         key: String, cleanup: inout [CALayer]) -> TimeInterval {
+        let scaleFactor = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+
+        let base = CALayer()
+        base.backgroundColor = bg
+        if shadow {
+            base.shadowColor = NSColor.black.cgColor
+            base.shadowRadius = 12
+            base.shadowOffset = CGSize(width: 0, height: -4)   // self is y-up: cast downward
+        }
+
+        let oldLayer = CALayer()
+        oldLayer.contents = old
+        oldLayer.contentsGravity = .resize   // frames keep the image aspect (uniform multiples)
+        oldLayer.contentsScale = scaleFactor
+
+        // Per-layer flight rects (see doc comment).
+        var stack: [(layer: CALayer, from: NSRect, to: NSRect)] = [
+            (base, from, to),
+            (oldLayer, from, fitTopLeft(aspect: from.size, in: to)),
+        ]
+        var arrivalLayer: CALayer?
+        if let arrival {
+            let n = CALayer()
+            n.contents = arrival
+            n.contentsGravity = .resize
+            n.contentsScale = scaleFactor
+            n.opacity = 0
+            arrivalLayer = n
+            stack.append((n, fitTopLeft(aspect: to.size, in: from), to))
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (i, entry) in stack.enumerated() {
+            entry.layer.frame = entry.from
+            entry.layer.zPosition = z + CGFloat(i)
+            layer?.addSublayer(entry.layer)
+        }
+        CATransaction.commit()
+        cleanup.append(contentsOf: stack.map { $0.layer })
+
         // ζ ≈ 0.8 — the same "organic settle" family as the tab-slide spring
         // (CompactWindowController.tabSlideSpring, 150/20), a touch stiffer so a pane swap
         // (a small, frequent gesture) lands quicker (~0.33s vs 0.42s).
@@ -1078,34 +1163,45 @@ final class PaneTreeView: NSView {
             s.fillMode = .forwards
             return s
         }
-        let pos = spring("position",
-                         NSValue(point: CGPoint(x: from.midX, y: from.midY)),
-                         NSValue(point: CGPoint(x: to.midX, y: to.midY)))
-        let size = spring("bounds.size", NSValue(size: from.size), NSValue(size: to.size))
-        let settle = pos.settlingDuration
+        func keyframes(_ keyPath: String, _ values: [Any], _ keyTimes: [NSNumber],
+                       _ duration: TimeInterval) -> CAKeyframeAnimation {
+            let k = CAKeyframeAnimation(keyPath: keyPath)
+            k.values = values
+            k.keyTimes = keyTimes
+            k.timingFunctions = Array(repeating: CAMediaTimingFunction(name: .easeInEaseOut),
+                                      count: max(values.count - 1, 1))
+            k.duration = duration
+            k.isRemovedOnCompletion = false
+            k.fillMode = .forwards
+            return k
+        }
 
-        // Mid-flight lift/dip, back to exactly 1.0 on arrival so the hand-off to the live
-        // content underneath is seamless.
-        let scale = CAKeyframeAnimation(keyPath: "transform.scale")
-        scale.values = [1.0, lift, 1.0]
-        scale.keyTimes = [0, 0.45, 1]
-        scale.timingFunctions = [CAMediaTimingFunction(name: .easeInEaseOut),
-                                 CAMediaTimingFunction(name: .easeInEaseOut)]
-        scale.duration = settle
-        scale.isRemovedOnCompletion = false
-        scale.fillMode = .forwards
+        let settle = spring("position", 0, 1).settlingDuration
 
-        layer.add(pos, forKey: key + ".pos")
-        layer.add(size, forKey: key + ".size")
-        layer.add(scale, forKey: key + ".scale")
+        for (i, entry) in stack.enumerated() {
+            let l = entry.layer
+            l.add(spring("position",
+                         NSValue(point: CGPoint(x: entry.from.midX, y: entry.from.midY)),
+                         NSValue(point: CGPoint(x: entry.to.midX, y: entry.to.midY))),
+                  forKey: "\(key).pos.\(i)")
+            l.add(spring("bounds.size",
+                         NSValue(size: entry.from.size), NSValue(size: entry.to.size)),
+                  forKey: "\(key).size.\(i)")
+            // Mid-flight lift/dip, back to exactly 1.0 on arrival for a seamless hand-off.
+            l.add(keyframes("transform.scale", [1.0, lift, 1.0], [0, 0.45, 1], settle),
+                  forKey: "\(key).scale.\(i)")
+        }
         if shadow {
-            let sh = CAKeyframeAnimation(keyPath: "shadowOpacity")
-            sh.values = [0.0, 0.30, 0.0]
-            sh.keyTimes = [0, 0.45, 1]
-            sh.duration = settle
-            sh.isRemovedOnCompletion = false
-            sh.fillMode = .forwards
-            layer.add(sh, forKey: key + ".shadow")
+            base.add(keyframes("shadowOpacity", [0.0, 0.30, 0.0], [0, 0.45, 1], settle),
+                     forKey: "\(key).shadow")
+        }
+        // Landing dissolve: old content out, re-flowed arrival content in, over the tail of
+        // the flight — hides the aspect-fit crop/reflow difference exactly where it matters.
+        if let arrivalLayer {
+            oldLayer.add(keyframes("opacity", [1.0, 1.0, 0.0], [0, 0.55, 1], settle),
+                         forKey: "\(key).fade-out")
+            arrivalLayer.add(keyframes("opacity", [0.0, 0.0, 1.0], [0, 0.55, 1], settle),
+                             forKey: "\(key).fade-in")
         }
         return settle
     }
