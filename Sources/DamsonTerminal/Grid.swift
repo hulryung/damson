@@ -152,6 +152,12 @@ public final class Grid {
         return cells[r].wrapped
     }
 
+    /// Whether a viewport row carries the OSC 133;A prompt-start mark (see `markPromptStart`).
+    public func rowIsPromptStart(_ r: Int) -> Bool {
+        precondition(r >= 0 && r < rows)
+        return cells[r].isPromptStart
+    }
+
     /// Called when the shell sends OSC 133;A (prompt start). Puts a prompt-start mark
     /// on the current cursor row. Reflow preserves the "live prompt block" from this
     /// mark to the cursor without rewrapping, so the shell's SIGWINCH redraw (relative
@@ -718,7 +724,13 @@ public final class Grid {
     /// - On the primary screen, **a column change reflows** (re-lays soft-wrapped lines
     ///   out for the new width). Otherwise (alt screen, width unchanged): trim/pad.
     /// - Fewer rows push the oldest rows to scrollback; more rows pad the bottom with blanks.
-    public func resize(cols newCols: Int, rows newRows: Int) {
+    /// `preservePromptBlock`: whether the span from the last OSC 133;A mark through the
+    /// cursor is preserved physically (clip/pad, no rewrap) so the shell's ↑N+erase prompt
+    /// redraw stays consistent. Pass false while a foreground app owns the screen — the
+    /// shell is NOT going to redraw that block, and physically clipping the app's finished
+    /// output to a narrower width would destroy it permanently (§repro: zoom in over a
+    /// wide TUI table → zoom out → the table stays truncated).
+    public func resize(cols newCols: Int, rows newRows: Int, preservePromptBlock: Bool = true) {
         precondition(newCols > 0 && newRows > 0)
         if newCols == cols && newRows == rows { return }
 
@@ -727,7 +739,7 @@ public final class Grid {
             // physical rows into logical lines, re-splits at the new width, redistributes
             // into scrollback+viewport, preserving the cursor's logical position. (Alt
             // screen excluded — apps redraw it themselves.)
-            reflowPrimary(toCols: newCols, toRows: newRows)
+            reflowPrimary(toCols: newCols, toRows: newRows, preservePromptBlock: preservePromptBlock)
         } else {
             // Alt screen or a pure row change → simple trim/pad. With width unchanged,
             // wrap boundaries don't move, so no reflow needed.
@@ -805,7 +817,7 @@ public final class Grid {
     /// Column reflow (primary screen only). At call time `cols`/`rows` still hold the old values.
     /// Rejoin scrollback+viewport into logical lines → re-split at the new width →
     /// redistribute into scrollback and a `newRows`-tall viewport. Preserves the cursor's logical position.
-    private func reflowPrimary(toCols newCols: Int, toRows newRows: Int) {
+    private func reflowPrimary(toCols newCols: Int, toRows newRows: Int, preservePromptBlock: Bool) {
         // 1. scrollback + viewport as one contiguous sequence of physical rows. The
         //    last scrollback row's wrap flag carries into the first viewport row.
         let phys: [Line] = scrollback + cells
@@ -827,13 +839,20 @@ public final class Grid {
         //    preserved as-is. The boundary is the OSC 133;A (prompt start) mark; with
         //    no mark (shells without 133) only the cursor's logical line is preserved.
         var preserveStart = cursorAbs
-        var m = min(cursorAbs, kept.count - 1)
-        var foundMark = false
-        while m >= 0 {
-            if kept[m].isPromptStart { preserveStart = m; foundMark = true; break }
-            m -= 1
+        if preservePromptBlock {
+            var m = min(cursorAbs, kept.count - 1)
+            var foundMark = false
+            while m >= 0 {
+                if kept[m].isPromptStart { preserveStart = m; foundMark = true; break }
+                m -= 1
+            }
+            if !foundMark { preserveStart = cursorAbs }
         }
-        if !foundMark { preserveStart = cursorAbs }
+        // else: a foreground app owns the screen. The nearest mark above belongs to the
+        // prompt the app was LAUNCHED from — the shell won't redraw it, and physically
+        // preserving (clip/pad) everything from there would permanently truncate the
+        // app's output on width shrink. Preserve only the cursor's logical line and
+        // rewrap the rest losslessly.
         // Extend back to the start of that logical line so it isn't split.
         while preserveStart > 0 && kept[preserveStart - 1].wrapped { preserveStart -= 1 }
         preserveStart = max(0, min(preserveStart, cursorAbs))
@@ -904,20 +923,29 @@ public final class Grid {
     private func appendRewrapped(_ rows: [Line], to newCols: Int, into newPhys: inout [Line]) {
         guard !rows.isEmpty else { return }
         var logicals: [[Cell]] = []
+        var logicalMarks: [Bool] = []   // OSC 133;A prompt marks survive the rewrap (⌘↑ jumps)
         var curCells: [Cell] = []
+        var curMark = false
         for row in rows {
+            if row.isPromptStart { curMark = true }
             for cell in row.cells where !cell.isWideSpacer { curCells.append(cell) }
-            if !row.wrapped { logicals.append(curCells); curCells = [] }
+            if !row.wrapped { logicals.append(curCells); logicalMarks.append(curMark); curCells = []; curMark = false }
         }
-        if !curCells.isEmpty { logicals.append(curCells) }
+        if !curCells.isEmpty { logicals.append(curCells); logicalMarks.append(curMark) }
         for li in logicals.indices {
             var n = logicals[li].count
             while n > 0 && isBlankCell(logicals[li][n - 1]) { n -= 1 }
             if n < logicals[li].count { logicals[li].removeLast(logicals[li].count - n) }
         }
-        for L in logicals {
-            if L.isEmpty { newPhys.append(paddedRow([], to: newCols, wrapped: false)); continue }
+        for (li, L) in logicals.enumerated() {
+            if L.isEmpty {
+                var line = paddedRow([], to: newCols, wrapped: false)
+                line.isPromptStart = logicalMarks[li]
+                newPhys.append(line)
+                continue
+            }
             var idx = 0
+            var firstRowOfLine = true
             while idx < L.count {
                 var end = min(idx + newCols, L.count)
                 var wideWrapped = false
@@ -925,7 +953,9 @@ public final class Grid {
                 let isLast = (end == L.count)
                 var rowCells = Array(L[idx..<end])
                 if wideWrapped { rowCells.append(Cell.wideSpacer(attrs: defaultPen)) }
-                newPhys.append(paddedRow(rowCells, to: newCols, wrapped: !isLast))
+                var line = paddedRow(rowCells, to: newCols, wrapped: !isLast)
+                if firstRowOfLine { line.isPromptStart = logicalMarks[li]; firstRowOfLine = false }
+                newPhys.append(line)
                 idx = end
             }
         }

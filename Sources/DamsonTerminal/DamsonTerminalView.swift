@@ -594,11 +594,18 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         let ptyStale = (lastPtySize == nil || lastPtySize! != (cols, rows))
         if !gridStale && !ptyStale { return }   // genuine no-op layout
 
-        if inLiveResize || inZoomBurst {
+        if (inLiveResize || inZoomBurst) && !session.hasRunningForegroundJob {
             // Visual reflow only; defer SIGWINCH so the shell doesn't redraw and
             // accumulate its prompt on every drag frame / zoom step. The final size
             // is flushed (with SIGWINCH) at viewDidEndLiveResize / the zoom-burst
             // settle timer.
+            //
+            // Only while the shell is at the prompt: the deferral exists for prompt
+            // pile-up, a shell problem. A running TUI (Claude Code spinner, vim)
+            // keeps painting on its own cadence — deferring SIGWINCH leaves it
+            // painting at the STALE width against the already-reflowed grid, so its
+            // relative-cursor repaints land wrong and strand debris. Foreground job
+            // → notify immediately per step (iTerm2 behavior); TUIs repaint cheaply.
             if gridStale { session.resizeGridOnly(cols: cols, rows: rows) }
         } else {
             session.resize(cols: cols, rows: rows)   // grid + PTY (SIGWINCH)

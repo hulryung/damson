@@ -125,7 +125,10 @@ public final class DamsonSession: ObservableObject {
 
     public func resize(cols: Int, rows: Int) {
         dumpEvent("resize", cols, rows)
-        grid.resize(cols: cols, rows: rows)
+        // While a foreground app owns the screen, don't physically preserve (clip) the
+        // "prompt block" — the shell won't redraw it, and clipping would permanently
+        // truncate the app's output on width shrink. See Grid.resize(preservePromptBlock:).
+        grid.resize(cols: cols, rows: rows, preservePromptBlock: !hasRunningForegroundJob)
         pty.resize(cols: cols, rows: rows)
         gridChanged.send()
     }
@@ -136,7 +139,7 @@ public final class DamsonSession: ObservableObject {
     /// `resize` (SIGWINCH) when the drag ends.
     public func resizeGridOnly(cols: Int, rows: Int) {
         dumpEvent("resize-grid-only", cols, rows)
-        grid.resize(cols: cols, rows: rows)
+        grid.resize(cols: cols, rows: rows, preservePromptBlock: !hasRunningForegroundJob)
         gridChanged.send()
     }
 
