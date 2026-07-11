@@ -63,10 +63,14 @@ final class GlyphRasterizer {
         /// false = R8 coverage mask (modulated by fg); true = premultiplied BGRA
         /// color (emoji), drawn as-is ignoring fg.
         var isColor: Bool = false
-        /// Extra cells the render quad should span beyond the glyph's grid width,
-        /// split evenly on both sides (centered overflow). >0 only for double-
-        /// width Nerd icons: the bitmap is a 2-cell box but the grid slot is 1.
+        /// Extra cells the render quad should span beyond the glyph's grid width.
+        /// Centered (split evenly on both sides) for double-width Nerd icons; when
+        /// `overflowLeftAnchored` is set, the whole overflow extends to the RIGHT
+        /// (full-width-designed glyphs anchored at their own cell's left edge).
         var overflowCells: CGFloat = 0
+        /// See `overflowCells` — true for natural-size full-width designs whose ink
+        /// starts at the cell's left edge and spills only rightward.
+        var overflowLeftAnchored: Bool = false
     }
 
     init(font: NSFont, cellW: CGFloat, cellH: CGFloat, scale: CGFloat,
@@ -97,7 +101,10 @@ final class GlyphRasterizer {
     /// bitmap; (2) base font mask; (3) pinned CJK face for anything the base
     /// lacks (Hangul, and symbols like ④ that coding fonts carry); (4) the
     /// system-recommended font, fit-scaled into the cell. See the type doc.
-    func raster(_ ch: Character, bold: Bool, wide: Bool) -> Bitmap? {
+    /// `forceFit`: request the shrink-to-one-cell variant of a glyph whose natural-size
+    /// (left-anchored, 2-cell) variant would spill into an occupied right neighbor — the
+    /// renderer picks per instance (blank neighbor → natural, occupied → fitted).
+    func raster(_ ch: Character, bold: Bool, wide: Bool, forceFit: Bool = false) -> Bitmap? {
         if ch == " " || ch == "\u{00A0}" { return nil }
         // Emoji first: emoji-presentation chars (incl. VS16 / ZWJ sequences) render
         // in colour, not as a base-font monochrome glyph.
@@ -114,7 +121,36 @@ final class GlyphRasterizer {
         if Self.isPrivateUse(ch) {
             baseFit = (iconDoubleWidth && !Self.isPowerline(ch)) ? .doubleWidthIcon : .fitOneCell
         } else {
-            baseFit = .none
+            // The base font gets the ink-overflow check too (it reroutes only when ink
+            // actually escapes the cell box): Korean coding fonts (D2Coding) design
+            // EAW-ambiguous symbols (①…⑳, ※, ★) at FULL width while the grid — like
+            // every terminal's wcwidth — allocates 1 cell. Unfitted they'd clip at the
+            // bitmap edge here (or overlap neighbors via the ligature-shaping path).
+            // Normal monospace glyphs never overflow, so they keep the natural pen
+            // layout; the bounds query cost is amortized by the atlas cache.
+            baseFit = .fitOneCell
+
+            // FULL-WIDTH design in a narrow slot (D2Coding's ①…⑳ etc.): honor the
+            // designer's intent — render at NATURAL size on a 2-cell canvas, ink
+            // left-anchored at the glyph's own cell so it spills only into the RIGHT
+            // neighbor. The renderer uses this variant only when that neighbor is
+            // blank; otherwise it re-requests the shrink-fitted variant (`forceFit`).
+            // Applies to whichever face would draw the char: the base font, or the
+            // pinned CJK fallback when the base lacks the glyph.
+            if !wide, !forceFit {
+                let f = bold ? boldFont : font
+                let face: NSFont? = (fitFactor(ch, in: f, wide: false) != nil)
+                    ? f : (bold ? boldCJKFont : cjkFont)
+                if let face,
+                   let narrowFit = fitFactor(ch, in: face, wide: false),
+                   narrowFit < Self.legibleFitFloor,
+                   let wideFit = fitFactor(ch, in: face, wide: true), wideFit >= 0.9,
+                   var bmp = draw(ch, in: face, wide: true) {
+                    bmp.overflowCells = 1
+                    bmp.overflowLeftAnchored = true
+                    return bmp
+                }
+            }
         }
         if let bmp = draw(ch, in: bold ? boldFont : font, wide: wide, overflow: baseFit) {
             return bmp
@@ -149,19 +185,66 @@ final class GlyphRasterizer {
         return (0xE0B0...0xE0D7).contains(u.value)
     }
 
+    /// Below this fit factor a shrink-to-cell glyph stops being legible (a full-width
+    /// ① squeezed into a 1-cell slot lands ~0.55). Under it, `raster` prefers a
+    /// narrower-designed face at near-natural size over shrinking the wide design.
+    private static let legibleFitFloor: CGFloat = 0.72
+
+    /// The uniform scale `drawFitted` would apply to `f`'s rendition of `ch` (1 = fits
+    /// naturally, no shrink). nil when `f`'s cmap lacks the glyph. Mirrors `draw()`'s
+    /// pen-layout ink measurement; cheap, and amortized by the atlas cache.
+    private func fitFactor(_ ch: Character, in f: NSFont, wide: Bool) -> CGFloat? {
+        let ctFont = f as CTFont
+        let utf16 = Array(String(ch).precomposedStringWithCanonicalMapping.utf16)
+        guard !utf16.isEmpty else { return nil }
+        var glyphs = [CGGlyph](repeating: 0, count: utf16.count)
+        let hasAll = utf16.withUnsafeBufferPointer { buf in
+            CTFontGetGlyphsForCharacters(ctFont, buf.baseAddress!, &glyphs, utf16.count)
+        }
+        guard hasAll else { return nil }
+        var advances = [CGSize](repeating: .zero, count: glyphs.count)
+        CTFontGetAdvancesForGlyphs(ctFont, .horizontal, glyphs, &advances, glyphs.count)
+        var boxes = [CGRect](repeating: .zero, count: glyphs.count)
+        CTFontGetBoundingRectsForGlyphs(ctFont, .horizontal, glyphs, &boxes, glyphs.count)
+        var penX: CGFloat = 0
+        var inkMinX = CGFloat.greatestFiniteMagnitude
+        var inkMaxX = -CGFloat.greatestFiniteMagnitude
+        var inkH: CGFloat = 0
+        for i in glyphs.indices {
+            if !boxes[i].isNull, boxes[i].width > 0 {
+                inkMinX = min(inkMinX, penX + boxes[i].minX)
+                inkMaxX = max(inkMaxX, penX + boxes[i].maxX)
+                inkH = max(inkH, boxes[i].height)
+            }
+            penX += advances[i].width
+        }
+        guard inkMaxX > inkMinX else { return nil }
+        let glyphCellW = wide ? cellW * 2 : cellW
+        let inset = 2 / scale
+        let boxW = glyphCellW - inset * 2, boxH = cellH - inset * 2
+        guard boxW > 0, boxH > 0 else { return nil }
+        return min(1, min(boxW / (inkMaxX - inkMinX), boxH / max(inkH, 0.001)))
+    }
+
+    /// The face CoreText recommends for `ch` (`CTFontCreateForString`), bold-converted;
+    /// nil when it resolves back to the base face (no new coverage).
+    private func systemResolvedFont(for ch: Character, bold: Bool) -> NSFont? {
+        let str = String(ch)
+        let base = (bold ? boldFont : font) as CTFont
+        let resolved = CTFontCreateForString(base, str as CFString,
+                                             CFRange(location: 0, length: str.utf16.count))
+        if CFEqual(resolved, base) { return nil }
+        var f = resolved as NSFont
+        if bold { f = NSFontManager.shared.convert(f, toHaveTrait: .boldFontMask) }
+        return f
+    }
+
     /// Tier-4 fallback: ask CoreText which installed font covers `ch`
     /// (`CTFontCreateForString`) and rasterize with it, scaled down to fit the
     /// cell box if the glyph ink overflows (e.g. full-square ④ in a 1-cell box).
     /// nil when even the system has no coverage — genuine tofu.
     private func drawSystemFallback(_ ch: Character, bold: Bool, wide: Bool) -> Bitmap? {
-        let str = String(ch)
-        let base = (bold ? boldFont : font) as CTFont
-        let resolved = CTFontCreateForString(base, str as CFString,
-                                             CFRange(location: 0, length: str.utf16.count))
-        // Same face as the base → its cmap already failed in draw(); nothing new.
-        if CFEqual(resolved, base) { return nil }
-        var f = resolved as NSFont
-        if bold { f = NSFontManager.shared.convert(f, toHaveTrait: .boldFontMask) }
+        guard let f = systemResolvedFont(for: ch, bold: bold) else { return nil }
         return drawFitted(ch, in: f, wide: wide)
     }
 

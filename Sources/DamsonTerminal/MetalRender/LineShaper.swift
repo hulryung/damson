@@ -44,6 +44,13 @@ struct LineShaper {
     private func shapable(_ cell: Cell) -> Bool {
         if cell.isContinuation { return false }
         if Cell.isWide(cell.char) || Cell.isEmojiPresentation(cell.char) { return false }
+        // Shaping exists for programming ligatures/kerning — ASCII operators and
+        // Latin text, all below U+2000. Symbols above (enclosed alphanumerics ①…⑳,
+        // ※/★, Nerd PUA icons) never ligate, and shaping them would bypass the
+        // per-char rasterizer's ink-overflow handling: a full-width-designed
+        // ambiguous glyph (D2Coding's ①) draws into the ligature padding and
+        // overlaps the neighboring cells. Route them to the per-char path instead.
+        guard let u = cell.char.unicodeScalars.first, u.value < 0x2000 else { return false }
         return String(cell.char).utf16.count == 1
     }
 

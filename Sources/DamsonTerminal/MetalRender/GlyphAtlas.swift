@@ -24,9 +24,12 @@ final class GlyphAtlas {
     struct Region {
         var uv: GlyphInstanceUV
         var isColor: Bool
-        /// Cells the render quad spans beyond the grid slot, centered (see
+        /// Cells the render quad spans beyond the grid slot (see
         /// `GlyphRasterizer.Bitmap.overflowCells`). 0 for ordinary glyphs.
         var overflowCells: CGFloat = 0
+        /// Overflow extends rightward from the cell's left edge (full-width designs)
+        /// instead of centered (Nerd icons). See `GlyphRasterizer.Bitmap`.
+        var overflowLeftAnchored: Bool = false
     }
 
     /// nil value = rasterized but nothing to draw (blank). Cached to avoid retry.
@@ -46,7 +49,9 @@ final class GlyphAtlas {
         // key the glyph gets cached at one width and then looks stretched/squashed
         // when drawn at the other (e.g. if a wide character's continuation briefly
         // disappears and it gets cached as narrow, later wide renders break).
-        case char(Character, bold: Bool, wide: Bool)
+        /// `fitted` selects the shrink-to-slot variant of a glyph whose natural-size
+        /// variant overflows (chosen per instance by the right neighbor's blankness).
+        case char(Character, bold: Bool, wide: Bool, fitted: Bool)
         /// A shaped ligature glyph (by glyph id), spanning `span` cells.
         case glyph(UInt16, bold: Bool, span: Int)
     }
@@ -74,16 +79,20 @@ final class GlyphAtlas {
     }
 
     /// Region for a glyph, rasterizing+packing on first use. nil = draw nothing.
-    func region(for ch: Character, bold: Bool, wide: Bool) -> Region? {
-        let key = GlyphKey.char(ch, bold: bold, wide: wide)
+    /// `fitted` requests the shrink-to-slot variant of a natural-size-overflowing
+    /// glyph (see `GlyphKey.char`).
+    func region(for ch: Character, bold: Bool, wide: Bool, fitted: Bool = false) -> Region? {
+        let key = GlyphKey.char(ch, bold: bold, wide: wide, fitted: fitted)
         if let cached = regions[key] { return cached }   // includes cached-nil blanks
-        guard let bmp = rasterizer.raster(ch, bold: bold, wide: wide) else {
+        guard let bmp = rasterizer.raster(ch, bold: bold, wide: wide, forceFit: fitted) else {
             regions[key] = .some(nil)
             return nil
         }
         let result: Region? = bmp.isColor
-            ? packColor(bmp).map { Region(uv: $0, isColor: true, overflowCells: bmp.overflowCells) }
-            : packMask(bmp).map { Region(uv: $0, isColor: false, overflowCells: bmp.overflowCells) }
+            ? packColor(bmp).map { Region(uv: $0, isColor: true, overflowCells: bmp.overflowCells,
+                                          overflowLeftAnchored: bmp.overflowLeftAnchored) }
+            : packMask(bmp).map { Region(uv: $0, isColor: false, overflowCells: bmp.overflowCells,
+                                         overflowLeftAnchored: bmp.overflowLeftAnchored) }
         regions[key] = .some(result)
         return result
     }

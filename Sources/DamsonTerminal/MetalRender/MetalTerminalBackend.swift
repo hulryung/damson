@@ -735,12 +735,25 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                             size: SIMD2<Float>(Float(gx1 - gx0), Float(y1 - y0)),
                             uvOrigin: region.uv.origin, uvSize: region.uv.size, color: fgRGBAColor))
                     }
-                } else if cell.char != " ", let region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide) {
-                    // Double-width Nerd icons: the bitmap is a 2-cell box but the
-                    // grid slot is 1 cell — widen the quad symmetrically (centered
-                    // overflow into neighbors), mirroring the ligature-pad path.
+                } else if cell.char != " ", var region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide) {
+                    // Oversized glyphs (bitmap wider than the grid slot):
+                    //  • left-anchored (full-width designs like D2Coding's ①): draw at
+                    //    natural size spilling RIGHT — but only when that neighbor is
+                    //    blank; otherwise swap to the shrink-fitted variant.
+                    //  • centered (double-width Nerd icons): widen symmetrically,
+                    //    mirroring the ligature-pad path.
                     var gOrigin = origin, gSize = size
-                    if region.overflowCells > 0 {
+                    if region.overflowCells > 0, region.overflowLeftAnchored {
+                        let nextCol = col + wcells
+                        let nextBlank = nextCol >= cells.count || cells[nextCol].char == " "
+                        if nextBlank {
+                            let gx1 = snap(inset.width + (CGFloat(col + wcells) + region.overflowCells) * metrics.width)
+                            gSize = SIMD2<Float>(Float(CGFloat(gx1) - CGFloat(gOrigin.x)), Float(y1 - y0))
+                        } else if let fitted = atlas?.region(for: cell.char, bold: cell.attrs.bold,
+                                                             wide: wide, fitted: true) {
+                            region = fitted   // 1-cell shrink; quad stays the slot size
+                        }
+                    } else if region.overflowCells > 0 {
                         let half = region.overflowCells * metrics.width / 2
                         let gx0 = snap(inset.width + CGFloat(col) * metrics.width - half)
                         let gx1 = snap(inset.width + CGFloat(col + wcells) * metrics.width + half)
@@ -1018,10 +1031,23 @@ final class MetalTerminalBackend: TerminalRenderBackend {
 
         guard col < r.count else { return (bg, nil, false) }
         let cell = r[col]
-        guard cell.char != " ", let region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide)
+        guard cell.char != " ", var region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide)
         else { return (bg, nil, false) }
         var gOrigin = origin, gSize = size
-        if region.overflowCells > 0 {
+        if region.overflowCells > 0, region.overflowLeftAnchored {
+            // Same per-instance policy as the base frame: natural size spilling right
+            // when the neighbor is blank, else the shrink-fitted variant (so the cursor
+            // overlay re-tints exactly the sprite the base frame drew).
+            let nextCol = col + wcells
+            let nextBlank = nextCol >= r.count || r[nextCol].char == " "
+            if nextBlank {
+                let gx1 = snap(inset.width + (CGFloat(col + wcells) + region.overflowCells) * metrics.width)
+                gSize = SIMD2<Float>(Float(CGFloat(gx1) - CGFloat(gOrigin.x)), Float(y1 - y0))
+            } else if let fitted = atlas?.region(for: cell.char, bold: cell.attrs.bold,
+                                                 wide: wide, fitted: true) {
+                region = fitted
+            }
+        } else if region.overflowCells > 0 {
             let half = region.overflowCells * metrics.width / 2
             let gx0 = snap(inset.width + CGFloat(col) * metrics.width - half)
             let gx1 = snap(inset.width + CGFloat(col + wcells) * metrics.width + half)
