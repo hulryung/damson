@@ -405,6 +405,14 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     /// Settings change → session.updateConfig → enters here and applies textView/colors/scrollback.
     private func applyConfig(_ config: DamsonConfig) {
         backend.applyConfig(config)
+        // Keep the user's zoom across settings changes. applyConfig above reset the render
+        // font to the base size, but the zoom multiplier is view state — without re-applying
+        // it, the display snaps to the base size while the NEXT Cmd+= still computes from
+        // the stale multiplier, jumping straight past the displayed size.
+        if fontSizeMultiplier != 1.0 {
+            let size = max(6, config.fontSize * fontSizeMultiplier)
+            backend.setRenderFont(fontWithNerdFallback(family: config.fontFamily, size: size))
+        }
         layer?.backgroundColor = Self.hostBackground(config).cgColor
         lastReportedSize = nil
         // Invalidate the dedupe key, then synchronously re-render — so a new
