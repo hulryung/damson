@@ -75,6 +75,8 @@ public final class DamsonSession: ObservableObject {
         self.pty = backend
         self.config = config
         self.currentDirectory = config.cwd
+        // Width policy for EAW-Ambiguous symbols (process-global user setting).
+        Cell.treatAmbiguousAsWide = config.ambiguousWide
         self.grid = Grid(
             cols: 80,
             rows: 24,
@@ -154,6 +156,7 @@ public final class DamsonSession: ObservableObject {
     /// Since `config` is `@Published`, subscribers (the view) react automatically.
     public func updateConfig(_ config: DamsonConfig) {
         self.config = config
+        Cell.treatAmbiguousAsWide = config.ambiguousWide
         grid.maxScrollbackLines = config.scrollbackLines
         // Apply the user's default cursor shape immediately. An app may later
         // override it via DECSCUSR; that takes precedence until the next reset.

@@ -43,6 +43,11 @@ public struct DamsonConfig {
     /// Mono variants size icons to one cell already, so nothing overflows. The
     /// trade-off is icons may overlap immediately-adjacent text. [[ScreenEffect]]-free.
     public var doubleWidthIcons: Bool
+    /// Allocate 2 grid cells to EAW-Ambiguous symbols CJK fonts design full-width
+    /// (①…⑳, Ⓐⓐ, ※★→ …) so they render at their designed size even in consecutive
+    /// runs. Default off — apps assuming wcwidth(ambiguous)=1 would misalign.
+    /// Applied via `Cell.treatAmbiguousAsWide` (process-global, at cell-write time).
+    public var ambiguousWide: Bool
     /// Terminal background opacity (0.2~1.0). 1.0 is fully opaque (the existing behavior). Below 1,
     /// only the background/selection/cursor fills become that translucent (text, emoji, and underlines
     /// stay opaque) and what's behind the window shows through. The window's isOpaque/blur is matched
@@ -95,6 +100,7 @@ public struct DamsonConfig {
         ligatures: Bool = false,
         showScrollbar: Bool = false,
         doubleWidthIcons: Bool = true,
+        ambiguousWide: Bool = false,
         backgroundOpacity: CGFloat = 1.0,
         backgroundBlur: Bool = false,
         padding: NSSize = NSSize(width: 4, height: 4),
@@ -121,6 +127,7 @@ public struct DamsonConfig {
         self.ligatures = ligatures
         self.showScrollbar = showScrollbar
         self.doubleWidthIcons = doubleWidthIcons
+        self.ambiguousWide = ambiguousWide
         self.backgroundOpacity = backgroundOpacity
         self.backgroundBlur = backgroundBlur
         self.padding = padding

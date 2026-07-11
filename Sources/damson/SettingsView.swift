@@ -17,6 +17,7 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.cursorShape") private var cursorShapeRaw: String = Grid.CursorShape.block.rawValue
     @AppStorage("damson.ligatures") private var ligatures: Bool = false
     @AppStorage("damson.doubleWidthIcons") private var doubleWidthIcons: Bool = true
+    @AppStorage("damson.ambiguousWide") private var ambiguousWide: Bool = false
     @AppStorage("damson.showScrollbar") private var showScrollbar: Bool = false
     @AppStorage("damson.tabTransition") private var tabTransitionRaw: String = TabTransitionStyle.slide.rawValue
     @AppStorage("damson.activePaneIndicator") private var activePaneRaw: String = ActivePaneIndicator.accentBorder.rawValue
@@ -62,6 +63,7 @@ struct DamsonSettingsView: View {
         .onChange(of: cursorShapeRaw) { _ in postChanged() }
         .onChange(of: ligatures) { _ in postChanged() }
         .onChange(of: doubleWidthIcons) { _ in postChanged() }
+        .onChange(of: ambiguousWide) { _ in postChanged() }
         .onChange(of: showScrollbar) { _ in postChanged() }
         .onChange(of: activePaneRaw) { _ in postChanged() }
         .onChange(of: backgroundOpacity) { _ in postChanged() }
@@ -127,6 +129,10 @@ struct DamsonSettingsView: View {
                     .foregroundColor(.secondary)
                 Toggle("Double-width icons", isOn: $doubleWidthIcons)
                 Text("Render oversized Nerd Font icons (powerline prompts) at full size across two cells instead of shrinking them into one. Affects non-Mono / Propo font variants; may overlap adjacent text.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Toggle("Ambiguous-width symbols as double width", isOn: $ambiguousWide)
+                Text("Give circled numbers/letters (\u{2460}\u{2461}\u{24B6}), \u{203B}, \u{2605}, arrows and similar CJK-font full-width symbols two cells so they show at their designed size, even in runs. Apps that assume one cell (most TUIs) may misalign columns; existing lines re-render on new output.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -604,6 +610,7 @@ extension DamsonConfig {
         config.cursorBlink = d.bool(forKey: "damson.cursorBlink")
         config.ligatures = d.bool(forKey: "damson.ligatures")
         config.doubleWidthIcons = d.object(forKey: "damson.doubleWidthIcons") as? Bool ?? true
+        config.ambiguousWide = d.bool(forKey: "damson.ambiguousWide")
         config.showScrollbar = d.bool(forKey: "damson.showScrollbar")
         if let h = d.object(forKey: "damson.paddingH") as? Double {
             config.padding.width = CGFloat(max(0, min(64, h)))

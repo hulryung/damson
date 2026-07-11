@@ -186,6 +186,34 @@ public struct Cell: Equatable {
         return false
     }
 
+    /// User setting (Settings ▸ "Ambiguous-width symbols as double width"): allocate 2
+    /// grid cells to EAW-Ambiguous symbols that CJK fonts design full-width (원숫자
+    /// ①…⑳, 원문자 Ⓐⓐ, ※★→ etc.), so they render at their designed size even in
+    /// consecutive runs. OFF by default: apps compute widths with wcwidth(ambiguous=1),
+    /// and a terminal that disagrees desyncs their cursor math (table borders drift).
+    /// iTerm2/wezterm expose the same trade-off as an option. Applied at cell-write
+    /// time — existing rows keep their old width until rewritten.
+    public static var treatAmbiguousAsWide: Bool = false
+
+    /// Practical subset of EAW=Ambiguous symbol ranges that Korean/Japanese coding
+    /// fonts near-universally design full-width. Deliberately excludes box drawing
+    /// (U+2500…) and prose punctuation so TUI frames/text stay narrow.
+    private static func isAmbiguousFullWidthSymbol(_ v: UInt32) -> Bool {
+        switch v {
+        case 0x203B: return true               // ※
+        case 0x2103, 0x2109, 0x2121, 0x212B: return true   // ℃ ℉ ℡ Å
+        case 0x2160...0x2179: return true      // Roman numerals Ⅰ…ⅹ
+        case 0x2190...0x2199: return true      // arrows ← ↑ → ↓ ↔ …
+        case 0x2460...0x24FF: return true      // enclosed alphanumerics ①…⑳ Ⓐ…ⓩ ⓪
+        case 0x25A0...0x25FF: return true      // geometric shapes ■ □ ▲ ○ ◎ …
+        case 0x2605...0x2606: return true      // ★ ☆
+        case 0x2660...0x266F: return true      // suits / music ♠ ♡ ♪ …
+        case 0x2776...0x2793: return true      // dingbat circled digits ❶…➓
+        case 0x3248...0x324F: return true      // circled ten…eighty on black square
+        default: return false
+        }
+    }
+
     /// True if `ch` occupies 2 terminal cells. Matched to the shell's width model:
     /// a regional-indicator pair (flag) is 2; other emoji/VS16 graphemes use libc
     /// `wcwidth` of the base scalar (so 😀 = 2 but ❤️ via VS16 = 1, lone RI = 1 —
@@ -197,6 +225,11 @@ public struct Cell: Equatable {
         if scalars.count == 2,
            (0x1F1E6...0x1F1FF).contains(scalars[0].value),
            (0x1F1E6...0x1F1FF).contains(scalars[1].value) {
+            return true
+        }
+        // Opt-in full-width treatment for ambiguous symbols (see treatAmbiguousAsWide).
+        if treatAmbiguousAsWide, scalars.count == 1,
+           isAmbiguousFullWidthSymbol(scalars[0].value) {
             return true
         }
         // Emoji / VS16: defer to wcwidth of the base scalar (shell-consistent).
