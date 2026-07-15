@@ -139,14 +139,14 @@ final class ReadinessDetectorTests: XCTestCase {
     func testGenericShellForegroundJobIsWorking() {
         let d = ReadinessDetector(engine: GenericShellEngine())
         d.noteTaskDelivered()
-        _ = d.update(snap(fgJob: true, sinceData: 0.1))
+        _ = d.update(snap(sinceData: 0.1, fgJob: true))
         XCTAssertEqual(d.state, .working)
     }
 
     func testGenericShellReturnsIdleAtPrompt() {
         let d = ReadinessDetector(engine: GenericShellEngine())
         d.noteTaskDelivered()
-        _ = d.update(snap(fgJob: true, sinceData: 0.1))          // running
+        _ = d.update(snap(sinceData: 0.1, fgJob: true))          // running
         XCTAssertEqual(d.state, .working)
         _ = d.update(snap(fgJob: false, newPromptMark: true))    // back at prompt
         _ = d.update(snap(fgJob: false, newPromptMark: true))
