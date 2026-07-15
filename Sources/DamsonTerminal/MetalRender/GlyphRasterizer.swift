@@ -137,7 +137,14 @@ final class GlyphRasterizer {
             // blank; otherwise it re-requests the shrink-fitted variant (`forceFit`).
             // Applies to whichever face would draw the char: the base font, or the
             // pinned CJK fallback when the base lacks the glyph.
-            if !wide, !forceFit {
+            // Gate by the SAME semantic set the width policy uses (Cell.isAmbiguous
+            // FullWidthSymbol): only genuine full-width symbol designs (①…⑳, ※, ★ …)
+            // earn natural-size overflow. Without this, any wide-ink glyph qualifies —
+            // including the geometric shapes/arrows TUIs draw as 1-cell particles and
+            // spinners, which would then render oversized and overlap their neighbors.
+            if !wide, !forceFit,
+               ch.unicodeScalars.count == 1,
+               Cell.isAmbiguousFullWidthSymbol(ch.unicodeScalars.first!.value) {
                 let f = bold ? boldFont : font
                 let face: NSFont? = (fitFactor(ch, in: f, wide: false) != nil)
                     ? f : (bold ? boldCJKFont : cjkFont)
