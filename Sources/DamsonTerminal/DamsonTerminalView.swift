@@ -1224,6 +1224,11 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     private var swipeHorizontal = false
     private var swipeAccumX: CGFloat = 0
     private var swipeVelocity: CGFloat = 0   // smoothed recent dx/event for flick detection
+    // A horizontal swipe's trailing momentum stream keeps arriving after lift-off. Its
+    // residual VERTICAL velocity would otherwise fall through to scrollback and scroll
+    // the terminal (a diagonal flick switches the tab AND scrolls). While set, momentum
+    // events are swallowed until the momentum phase ends.
+    private var swipeInMomentum = false
 
     public override func scrollWheel(with event: NSEvent) {
         // 2-finger horizontal swipe → tab switch (trackpad only, when the app isn't capturing the mouse).
@@ -1284,6 +1289,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             swipeHorizontal = false
             swipeAccumX = 0
             swipeVelocity = 0
+            swipeInMomentum = false
             return false   // .began carries ~0 delta; decide on the first .changed
         case .changed:
             if !swipeDecided {
@@ -1300,11 +1306,19 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             return true
         case .ended, .cancelled:
             defer { swipeDecided = false; swipeHorizontal = false; swipeAccumX = 0; swipeVelocity = 0 }
-            guard swipeHorizontal else { return false }
+            guard swipeHorizontal else { swipeInMomentum = false; return false }
             handler.tabSwipeEnd(translation: swipeAccumX, velocity: swipeVelocity)
+            swipeInMomentum = true   // swallow the trailing momentum (see default:) so it can't scroll
             return true
         default:
-            return swipeHorizontal   // consume trailing/momentum events of a horizontal swipe
+            // Momentum events (phase == []) after a horizontal swipe: consume them —
+            // don't let the flick's residual vertical velocity leak into scrollback —
+            // until the momentum phase itself ends.
+            guard swipeInMomentum else { return false }
+            if event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled) {
+                swipeInMomentum = false
+            }
+            return true
         }
     }
 
