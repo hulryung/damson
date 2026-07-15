@@ -119,6 +119,11 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private var swipeNeighborLayer: CALayer?   // neighbor shown as a snapshot (no hit-test)
     private var swipeNeighborIndex = -1
     private var swipeFromRight = false   // neighbor (next tab) enters from the right
+    // Where the in-flight settle is heading, so a new swipe that interrupts it can
+    // finalize it instantly and chain (flick-flick-flick through tabs "슥슥") instead
+    // of being locked out until the 0.42s arrival finishes.
+    private var swipePendingCommit = false
+    private var swipePendingIndex = -1
 
     /// Bumped on every `animateTabSwitch`. A re-entrant switch (Cmd+arrow again mid-slide)
     /// supersedes the previous one; the prior completion block checks this and bails so it
@@ -689,6 +694,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     /// (a CALayer, so it never intercepts events or steals first responder the way
     /// a live sibling view would). Both follow the accumulated translation.
     func tabSwipeUpdate(translation dx: CGFloat) {
+        // A new swipe arriving mid-settle finalizes the previous one instantly and
+        // then starts fresh from the (now committed) current tab, so successive
+        // flicks flip through tabs without waiting for the arrival animation.
+        if swipeAnimating { finalizeSwipeSettleNow() }
         guard !swipeAnimating, tabs.count > 1 else { return }
         let width = contentContainer.bounds.width
         guard width > 1 else { return }
@@ -746,6 +755,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         let neighborIndex = swipeNeighborIndex
         swipeActive = false
         swipeAnimating = true
+        swipePendingCommit = commit
+        swipePendingIndex = commit ? neighborIndex : currentIndex
 
         // Settle the tab-bar pill onto its target in sync with the content slide
         // (same duration + curve), so the bar finishes exactly when the page does.
@@ -816,6 +827,22 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         swipeActive = false
         swipeAnimating = false
         tabBar.swipePillEnd()   // hand the pill back to the normal selectTab path
+    }
+
+    /// Snap an in-flight settle to its final state immediately (used when the next
+    /// swipe starts before the previous one's arrival animation finishes). Commits
+    /// the pending switch via the normal `selectTab` path — which itself calls
+    /// `abortSwipe()` to clear the settle's layers/translation and then advances
+    /// `currentIndex` — so the new gesture begins cleanly from the committed tab.
+    /// A pending cancel (didn't cross the threshold) just tears the settle down.
+    private func finalizeSwipeSettleNow() {
+        guard swipeAnimating else { return }
+        if swipePendingCommit, swipePendingIndex >= 0, swipePendingIndex < tabs.count,
+           swipePendingIndex != currentIndex {
+            selectTab(swipePendingIndex, transition: .none)
+        } else {
+            abortSwipe()
+        }
     }
 
     /// Tear down an in-flight swipe before a non-swipe path (keyboard/click switch)
