@@ -1051,12 +1051,14 @@ final class PaneTreeView: NSView {
         CATransaction.commit()
 
         // A (the pane the user is moving) rides above B so the crossing reads as "over".
-        let settle = flyCard(old: snapA, arrival: arrivalAtB, from: frameA, to: frameB,
-                             bg: bg, lift: 1.03, shadow: true, z: 10_010,
-                             key: "damson.swap-a", cleanup: &cleanup)
-        _ = flyCard(old: snapB, arrival: arrivalAtA, from: frameB, to: frameA,
-                    bg: bg, lift: 0.97, shadow: false, z: 10_000,
-                    key: "damson.swap-b", cleanup: &cleanup)
+        let settle = flyCard(
+            CardSpec(old: snapA, arrival: arrivalAtB, bg: bg, lift: 1.03,
+                     shadow: true, z: 10_010, key: "damson.swap-a"),
+            from: frameA, to: frameB, cleanup: &cleanup)
+        _ = flyCard(
+            CardSpec(old: snapB, arrival: arrivalAtA, bg: bg, lift: 0.97,
+                     shadow: false, z: 10_000, key: "damson.swap-b"),
+            from: frameB, to: frameA, cleanup: &cleanup)
         DispatchQueue.main.asyncAfter(deadline: .now() + settle) {
             cleanup.forEach { $0.removeFromSuperlayer() }
         }
@@ -1104,9 +1106,22 @@ final class PaneTreeView: NSView {
     ///   arrival: (sizes differ) the re-flowed destination snapshot flying the reverse
     ///            fit (top-left-fitted-in-`from` → full `to`), dissolving in over the last
     ///            ~45% so the card lands matching the live content underneath.
-    private func flyCard(old: NSImage, arrival: NSImage?, from: NSRect, to: NSRect,
-                         bg: CGColor, lift: CGFloat, shadow: Bool, z: CGFloat,
-                         key: String, cleanup: inout [CALayer]) -> TimeInterval {
+    /// Everything one traveling card needs besides its flight rects: the images,
+    /// backdrop color, lift scale, shadow role, stacking order, and animation key.
+    private struct CardSpec {
+        var old: NSImage
+        var arrival: NSImage?
+        var bg: CGColor
+        var lift: CGFloat
+        var shadow: Bool
+        var z: CGFloat
+        var key: String
+    }
+
+    private func flyCard(_ spec: CardSpec, from: NSRect, to: NSRect,
+                         cleanup: inout [CALayer]) -> TimeInterval {
+        let (old, arrival, bg, lift, shadow, z, key) =
+            (spec.old, spec.arrival, spec.bg, spec.lift, spec.shadow, spec.z, spec.key)
         let scaleFactor = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
 
         let base = CALayer()
