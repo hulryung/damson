@@ -156,15 +156,21 @@ final class MultiRowURLDetectorTests: XCTestCase {
     // MARK: - Segments (hover ranges)
 
     func testSegmentsCoverEachRowsPortion() {
+        // cols: 22 makes the upper row flush with the right edge — the hard-wrap
+        // join requires that (a URL ending mid-line with trailing blanks was not
+        // wrapped and must not swallow the next line; see the joins() doc).
         let rows = [
             "  https://e.com/issue-",
             "    42 tail",
         ]
-        let m = probe(rows: rows, at: (0, 8))
-        XCTAssertEqual(m?.segments.count, 2)
-        XCTAssertEqual(m?.segments[0].row, 0)
-        XCTAssertEqual(m?.segments[0].cols, 2..<22)
-        XCTAssertEqual(m?.segments[1].row, 1)
-        XCTAssertEqual(m?.segments[1].cols, 4..<6)
+        let m = probe(rows: rows, cols: 22, at: (0, 8))
+        XCTAssertEqual(m?.url.absoluteString, "https://e.com/issue-42")
+        guard let segs = m?.segments, segs.count == 2 else {
+            return XCTFail("expected 2 segments, got \(m?.segments.count ?? 0)")
+        }
+        XCTAssertEqual(segs[0].row, 0)
+        XCTAssertEqual(segs[0].cols, 2..<22)
+        XCTAssertEqual(segs[1].row, 1)
+        XCTAssertEqual(segs[1].cols, 4..<6)
     }
 }

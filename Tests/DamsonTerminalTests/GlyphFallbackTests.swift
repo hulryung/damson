@@ -185,24 +185,30 @@ extension GlyphFallbackTests {
         }
     }
 
-    /// The fallback glyph must be CONTAINED in its cell (shrink-to-fit) — a
-    /// full-square ④ from a CJK face must not spill into the neighbor cell.
+    /// Two variants of a full-width fallback symbol in a narrow slot:
+    /// the NATURAL variant renders on a 2-cell canvas with the overflow flags the
+    /// per-instance renderer keys on, and the FITTED variant (used when the right
+    /// neighbor is occupied) must be contained in exactly one cell.
     func testFallbackSymbolFitsCell() throws {
         let size: CGFloat = 17
         let base = NSFont(name: "Menlo", size: size) ?? NSFont.systemFont(ofSize: size)
         let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
         let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
+        let oneCellW = Int(ceil(cellW * 2 /* scale */))
 
-        let wide = Cell.isWide("④")
-        guard let bmp = r.raster("④", bold: false, wide: wide) else {
+        // Natural variant: full-width design honored on a 2-cell, left-anchored canvas.
+        guard let natural = r.raster("④", bold: false, wide: false) else {
             return XCTFail("④ did not render")
         }
-        // Bitmap is exactly the cell box (1 or 2 cells) — ink reaching the bitmap
-        // is by construction inside the cell; just sanity-check dimensions.
-        let expectedW = Int(ceil((wide ? cellW * 2 : cellW) * 2 /* scale */))
-        XCTAssertEqual(bmp.width, expectedW, "bitmap must be exactly the cell box")
-        // Ink must also exist in the horizontal center region (a clipped-off glyph
-        // would leave only edge artifacts).
+        XCTAssertEqual(natural.width, Int(ceil(cellW * 2 * 2)), "natural variant spans 2 cells")
+        XCTAssertEqual(natural.overflowCells, 1, "flags the extra cell for the renderer")
+        XCTAssertTrue(natural.overflowLeftAnchored, "spills rightward only")
+
+        // Fitted variant: shrink-to-fit, exactly the 1-cell box, ink in the center.
+        guard let bmp = r.raster("④", bold: false, wide: false, forceFit: true) else {
+            return XCTFail("④ fitted variant did not render")
+        }
+        XCTAssertEqual(bmp.width, oneCellW, "fitted bitmap must be exactly the cell box")
         var centerInk = false
         let cx0 = bmp.width / 4, cx1 = bmp.width * 3 / 4
         for y in 0..<bmp.height {
@@ -322,32 +328,45 @@ extension GlyphFallbackTests {
         let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
         let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
 
+        let oneCellW = Int(ceil(cellW * 2 /* scale */))
         for ch in ["①", "②", "④"] as [Character] {
-            let bmp = try XCTUnwrap(r.raster(ch, bold: false, wide: Cell.isWide(ch)),
-                                    "\(ch) must render")
-            var minX = bmp.width, maxX = -1
-            var leftMass = 0, rightMass = 0
-            for y in 0..<bmp.height {
-                let row = y * bmp.width
-                for x in 0..<bmp.width {
-                    let v = Int(bmp.bytes[row + x])
-                    guard v != 0 else { continue }
-                    if x < minX { minX = x }
-                    if x > maxX { maxX = x }
-                    if x < bmp.width / 2 { leftMass += v } else { rightMass += v }
+            func inkStats(_ bmp: GlyphRasterizer.Bitmap) -> (minX: Int, maxX: Int, l: Int, r: Int) {
+                var minX = bmp.width, maxX = -1, l = 0, r = 0
+                for y in 0..<bmp.height {
+                    let row = y * bmp.width
+                    for x in 0..<bmp.width {
+                        let v = Int(bmp.bytes[row + x])
+                        guard v != 0 else { continue }
+                        if x < minX { minX = x }
+                        if x > maxX { maxX = x }
+                        if x < bmp.width / 2 { l += v } else { r += v }
+                    }
                 }
+                return (minX, maxX, l, r)
             }
-            // (a) Fitted+centered ink never touches the bitmap edge.
-            XCTAssertGreaterThan(minX, 0,
-                "\(ch) ink flush with the LEFT edge — glyph not centered (w=\(bmp.width))")
-            XCTAssertLessThan(maxX, bmp.width - 1,
-                "\(ch) ink flush with the RIGHT edge — glyph clipped (w=\(bmp.width))")
-            // (b) The circle dominates the ink: halves must be near-equal. A
-            // complete render measures ≤ ~1.3 (pixel snapping at tiny sizes adds
-            // some skew); the half-clipped bug measured 1.49 (①) to 1.82 (②).
-            let hi = max(leftMass, rightMass), lo = max(min(leftMass, rightMass), 1)
+
+            // NATURAL variant: 2-cell canvas, ink at the designed size — it must
+            // extend past the first cell (the half-clipped bug stopped at the cell
+            // edge) and still not touch the canvas edges.
+            let nat = try XCTUnwrap(r.raster(ch, bold: false, wide: Cell.isWide(ch)),
+                                    "\(ch) must render")
+            let n = inkStats(nat)
+            XCTAssertGreaterThan(n.minX, 0, "\(ch) natural ink flush with the LEFT edge")
+            XCTAssertLessThan(n.maxX, nat.width - 1, "\(ch) natural ink clipped at the RIGHT edge")
+            XCTAssertGreaterThan(n.maxX, oneCellW,
+                "\(ch) natural ink stops at the 1-cell edge (w=\(nat.width)) — half the glyph is missing")
+
+            // FITTED variant: contained in 1 cell, centered → near-equal ink halves.
+            // A complete render measures ≤ ~1.3 (pixel snapping adds some skew);
+            // the half-clipped bug measured 1.49 (①) to 1.82 (②).
+            let fit = try XCTUnwrap(r.raster(ch, bold: false, wide: false, forceFit: true),
+                                    "\(ch) fitted variant must render")
+            let f = inkStats(fit)
+            XCTAssertGreaterThan(f.minX, 0, "\(ch) fitted ink flush with the LEFT edge")
+            XCTAssertLessThan(f.maxX, fit.width - 1, "\(ch) fitted ink flush with the RIGHT edge")
+            let hi = max(f.l, f.r), lo = max(min(f.l, f.r), 1)
             XCTAssertLessThan(Double(hi) / Double(lo), 1.4,
-                "\(ch) ink mass asymmetric (L=\(leftMass) R=\(rightMass)) — half the glyph is missing")
+                "\(ch) fitted ink mass asymmetric (L=\(f.l) R=\(f.r)) — half the glyph is missing")
         }
     }
 
