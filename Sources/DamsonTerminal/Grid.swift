@@ -785,23 +785,20 @@ public final class Grid {
     private func resizeTrimPad(toCols newCols: Int, toRows newRows: Int) {
         var source = cells
         var fromRows = rows
-        if newRows > rows, !isAltScreenActive, !scrollback.isEmpty {
-            // Discount the pull by the existing bottom gap: only when the cursor or
-            // content sits at the bottom does the full growth pull history back in
-            // (ghostty's TUI protection, generalized). A cleared/half-empty screen
-            // keeps its top anchor — growing never resurrects lines the user
-            // cleared away, and never shoves history under a mid-screen cursor.
-            // ALWAYS bottom-anchor on grow (iTerm2/wezterm semantics): pull the full
-            // growth back from scrollback. Bottom-anchored TUIs (Claude Code/Ink)
-            // lay their frame out from the BOTTOM edge; if the terminal leaves the
-            // content top-anchored instead, their post-SIGWINCH re-render walks the
-            // frame down and the first row of the old render survives as a stale
-            // duplicate. (An earlier version discounted the pull by the blank
-            // bottom gap — Claude Code keeps one blank row under its status line,
-            // so a live drag's +1-row steps were each fully absorbed and the pull
-            // never fired; repro'd via DAMSON_RESIZE_LOG showing pulled=0.)
-            // Two hard caps remain, both correctness-first (the shortfall just pads
-            // blank at the bottom instead):
+        if newRows > rows, !isAltScreenActive, !scrollback.isEmpty, cursorRow == rows - 1 {
+            // Bottom-anchor on grow ONLY when the cursor sits on the LAST row (a
+            // shell prompt hugging the bottom) — ghostty's guard. A full-screen TUI
+            // parks its cursor rows above the bottom (Claude Code: input line with
+            // status/blank below), and — verified from a DAMSON_DUMP_OUTPUT capture
+            // of the reported artifact — its post-SIGWINCH repaint erases from
+            // CUP-home and rewrites the WHOLE viewport top-aligned from its own
+            // model. Pulling under such an app is futile and lossy: the pulled
+            // history line flashes at the top, is overwritten by the repaint one
+            // frame later ("appears, then reverts"), and — having been consumed
+            // from scrollback — is permanently gone. The app itself fills the
+            // taller viewport, so no bottom gap is left either.
+            // Two hard caps on the pull, both correctness-first (the shortfall just
+            // pads blank at the bottom instead):
             //  • ≤ pushCount, so the decrement below is always exact — a saturating
             //    clamp would permanently offset the prompt-mark mapping after a
             //    narrowing reflow left count > pushCount.
@@ -871,9 +868,11 @@ public final class Grid {
             var savedSource = saved.cells
             var savedFromRows = savedSource.count
             let savedCols = savedSource.first?.count ?? 0
-            if newRows > savedFromRows, !saved.scrollback.isEmpty {
-                // Same policy as the live path: always bottom-anchor, capped by an
-                // exact pushCount decrement and the wider-line guard.
+            if newRows > savedFromRows, !saved.scrollback.isEmpty,
+               saved.cursorRow == savedFromRows - 1 {
+                // Same policy as the live path: bottom-anchor only for a last-row
+                // cursor, capped by an exact pushCount decrement and the wider-line
+                // guard.
                 let wanted = min(newRows - savedFromRows, saved.scrollback.count,
                                  Int(min(saved.scrollbackPushCount, UInt64(Int.max))))
                 var pull = 0

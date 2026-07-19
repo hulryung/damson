@@ -166,25 +166,33 @@ final class VerticalResizeTests: XCTestCase {
                        "primary content intact after alt-screen row changes")
     }
 
-    func testGrowAlwaysBottomAnchorsEvenWithABottomGap() {
-        // Bottom-anchor is UNCONDITIONAL on grow (iTerm2/wezterm semantics): even
-        // with blank rows below the content, history pulls back in and the content
-        // slides down. Claude Code keeps one blank row under its status line — an
-        // earlier gap-discount variant absorbed every +1-row drag step into that
-        // gap, never pulled, and Ink's bottom-anchored re-render then left a stale
-        // duplicate row behind (the reported artifact).
+    func testGrowDoesNotPullUnderAMidScreenCursor() {
+        // Ghostty's guard: pull on grow ONLY when the cursor sits on the last row
+        // (a bottom-hugging shell). A full-screen TUI parks its cursor above the
+        // bottom and — per a captured Claude Code session — repaints the WHOLE
+        // viewport top-aligned after SIGWINCH, so a pulled line would flash at the
+        // top, be overwritten a frame later, and be permanently lost to scrollback.
         let g = filledGrid()
-        g.eraseInDisplay(mode: 2)          // cleared screen: content blanked in place
+        g.eraseInDisplay(mode: 2)
         g.setCursor(row: 1, col: 1)
-        write(g, "prompt$")
+        write(g, "prompt$")                // cursor on row 0 — far from the bottom
         let sb = g.scrollback.count
 
         g.resize(cols: g.cols, rows: 16)   // +6 rows
 
-        XCTAssertEqual(g.scrollback.count, sb - 6, "history pulls back in (Terminal.app-style)")
-        XCTAssertEqual(rowText(g.row(6)), "prompt$", "prompt slid down with the pull")
-        XCTAssertEqual(g.cursorRow, 6)
-        XCTAssertEqual(rowText(g.row(5)), "line20", "pulled history sits above the prompt")
+        XCTAssertEqual(g.scrollback.count, sb, "no pull — the app owns the viewport")
+        XCTAssertEqual(rowText(g.row(0)), "prompt$", "top anchor kept")
+        XCTAssertEqual(g.cursorRow, 0)
+    }
+
+    func testGrowPullsForABottomHuggingCursor() {
+        // The shell case: cursor on the last row → bottom-anchor via pull.
+        let g = filledGrid()               // cursor ends on the last row
+        XCTAssertEqual(g.cursorRow, g.rows - 1)
+        let sb = g.scrollback.count
+        g.resize(cols: g.cols, rows: 14)   // +4
+        XCTAssertEqual(g.scrollback.count, sb - 4, "pulled for the bottom-hugging shell")
+        XCTAssertEqual(g.cursorRow, g.rows - 1, "cursor stays glued to the bottom")
     }
 
     func testGrowWithShortScrollbackLinesDoesNotCrash() {
