@@ -455,8 +455,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         self.lastState = state
         self.lastTotalRows = grid.scrollback.count + grid.rows
         // Keep the scroll clamp current as content grows/shrinks (re-clamps if the
-        // viewport now extends past the new bottom).
-        scroll.maxY = max(0, contentHeight - viewportHeight)
+        // viewport now extends past the new bottom). Includes the follow anchor —
+        // re-clamping to the bare natural ceiling here undid the TUI grid-top
+        // anchor one render later, bobbing the content during window drags.
+        scroll.maxY = scrollCeiling
 
         let layer = metalView.metalLayer
         // During resize, present synchronously with the layout transaction — no rate limit.
@@ -1162,19 +1164,37 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     var contentHeight: CGFloat { CGFloat(lastTotalRows) * max(metrics.height, 1) + inset.height * 2 }
     var viewportHeight: CGFloat { metalView.bounds.height }
 
+    /// The follow-anchor scroll position the host last requested via `alignScroll`
+    /// (0 = none). Folded into the scroll clamp ceiling: a TUI's grid-top anchor
+    /// (`scrollback.count * cellH + inset`) sits ABOVE the natural bottom clamp
+    /// (`contentHeight − viewportHeight`) by the top inset PLUS the window's
+    /// fractional extra height — real window drags almost never land on an exact
+    /// cell multiple. Clamping the anchor to the natural ceiling scrolled the view
+    /// up to ~2 rows short of the grid top, exposing the scrollback tail above the
+    /// live TUI ("duplicated" stale rows) and re-clamping every render made the
+    /// content bob vertically during drags. Cleared when the user takes over
+    /// (wheel) or on a plain `setScrollY` jump, so history browsing clamps to the
+    /// true content bottom as before.
+    private var followAnchorY: CGFloat = 0
+    private var scrollCeiling: CGFloat {
+        max(0, max(contentHeight - viewportHeight, followAnchorY))
+    }
+
     /// Jump to `y` and refresh scroll geometry WITHOUT presenting a frame. The
     /// caller renders immediately after, so the followed position lands in that one
     /// frame. `totalRows` primes `lastTotalRows` (which `render()` normally sets)
     /// so the maxY clamp matches the content height of the frame about to be drawn.
     func alignScroll(to y: CGFloat, totalRows: Int) {
         lastTotalRows = totalRows
-        scroll.maxY = max(0, contentHeight - viewportHeight)
+        followAnchorY = y            // the anchor may exceed the natural bottom clamp
+        scroll.maxY = scrollCeiling
         animLink.stop()              // a hard jump cancels any in-flight ease
         scroll.jump(to: y)
         onScrollGeometryChanged?()
     }
 
     func setScrollY(_ y: CGFloat, animated: Bool) {
+        followAnchorY = 0            // plain jump — browsing clamps to the content bottom
         scroll.maxY = max(0, contentHeight - viewportHeight)
         guard animated else {
             // Hard jump cancels any in-flight ease.
@@ -1201,6 +1221,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// (and its momentum) ends. Always returns true (Metal owns the wheel; the host
     /// won't fall through to a no-op `super.scrollWheel`).
     func handleScrollWheel(_ event: NSEvent) -> Bool {
+        followAnchorY = 0            // user takes over — browse with the natural clamp
         scroll.maxY = max(0, contentHeight - viewportHeight)
         // applyWheel sets animating=false to cancel any in-flight ease (direct input wins).
         let moved = scroll.applyWheel(deltaY: event.scrollingDeltaY,

@@ -473,7 +473,12 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         backend.ensureLayout()
         let viewportTop = CGFloat(session.grid.scrollback.count) * cellMetrics.height
             + backend.contentInset.height
-        backend.setScrollY(viewportTop, animated: false)
+        // alignScroll, not setScrollY: this is the TUI grid-top ANCHOR, which may
+        // exceed the natural bottom clamp by the top inset + the window's fractional
+        // extra cell height — setScrollY would clamp it short, exposing the
+        // scrollback tail above the live TUI during window drags.
+        backend.alignScroll(to: viewportTop,
+                            totalRows: session.grid.scrollback.count + session.grid.rows)
     }
 
     private func scrollViewportToBottom() {
