@@ -77,4 +77,82 @@ final class OutputDumpReplayTests: XCTestCase {
         }
         XCTAssertTrue(hits.isEmpty, "U+FFFD cells found:\n" + hits.joined(separator: "\n"))
     }
+
+    /// Replay a capture WITH its .events side-channel: each `<offset> resize <cols> <rows>`
+    /// line applies a resize before the byte at that offset — reproducing resize races
+    /// (window drags over a live TUI) deterministically. Writes the visible grid after
+    /// every resize (plus the seam: the last scrollback rows) into DAMSON_REPLAY_OUT.
+    ///
+    ///   DAMSON_REPLAY_DUMP=…/session-X.bin DAMSON_REPLAY_EVENTS=…/session-X.events \
+    ///   DAMSON_REPLAY_OUT=/tmp/replay-out swift test --filter testReplayCapturedDumpWithEvents
+    func testReplayCapturedDumpWithEvents() throws {
+        guard let path = ProcessInfo.processInfo.environment["DAMSON_REPLAY_DUMP"],
+              let evPath = ProcessInfo.processInfo.environment["DAMSON_REPLAY_EVENTS"],
+              !path.isEmpty, !evPath.isEmpty else {
+            throw XCTSkip("set DAMSON_REPLAY_DUMP + DAMSON_REPLAY_EVENTS to replay with resizes")
+        }
+        let outDir = ProcessInfo.processInfo.environment["DAMSON_REPLAY_OUT"] ?? "/tmp/replay-out"
+        try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        // Parse events: "<offset> resize <cols> <rows>"
+        var events: [(off: Int, cols: Int, rows: Int)] = []
+        for line in try String(contentsOfFile: evPath, encoding: .utf8).split(separator: "\n") {
+            let p = line.split(separator: " ")
+            if p.count == 4, p[1] == "resize",
+               let o = Int(p[0]), let c = Int(p[2]), let r = Int(p[3]) {
+                events.append((o, c, r))
+            }
+        }
+        let backend = FakeBackend()
+        let session = DamsonSession(config: DamsonConfig(), backend: backend)
+
+        func gridText(_ g: Grid) -> [String] {
+            (0..<g.rows).map { r in
+                var line = ""
+                for c in g.row(r) where !c.isContinuation && !c.isWideSpacer { line.append(c.char) }
+                while line.hasSuffix(" ") { line.removeLast() }
+                return line
+            }
+        }
+        func snapshot(_ step: Int, _ label: String) {
+            let g = session.grid
+            var out = "== \(label) | grid \(g.cols)x\(g.rows) sb=\(g.scrollback.count) cursor=\(g.cursorRow) ==\n"
+            let seam = g.scrollback.suffix(6)
+            for (i, l) in seam.enumerated() {
+                var text = ""
+                for c in l.cells where !c.isContinuation && !c.isWideSpacer { text.append(c.char) }
+                while text.hasSuffix(" ") { text.removeLast() }
+                out += String(format: "sb%+d|%@\n", i - seam.count, text)
+            }
+            for (n, line) in gridText(g).enumerated() { out += String(format: "%3d|%@\n", n, line) }
+            try? out.write(toFile: String(format: "%@/replay-%03d-%@.txt", outDir, step, label),
+                           atomically: true, encoding: .utf8)
+        }
+
+        var i = 0, s = 0, step = 0
+        var evIdx = 0
+        // Apply any offset-0 events (initial size) before feeding.
+        while evIdx < events.count, events[evIdx].off == 0 {
+            session.resize(cols: events[evIdx].cols, rows: events[evIdx].rows)
+            evIdx += 1
+        }
+        let strides = [4096, 7, 65536, 1, 131072, 3, 1024]
+        while i < bytes.count {
+            var n = min(strides[s % strides.count], bytes.count - i)
+            if evIdx < events.count { n = min(n, events[evIdx].off - i) }
+            if n > 0 {
+                backend.onData?(bytes.subdata(in: i..<(i + n)))
+                i += n
+                s += 1
+            }
+            while evIdx < events.count, events[evIdx].off == i {
+                step += 1
+                session.resize(cols: events[evIdx].cols, rows: events[evIdx].rows)
+                snapshot(step, "r\(events[evIdx].cols)x\(events[evIdx].rows)")
+                evIdx += 1
+            }
+        }
+        snapshot(step + 1, "final")
+        print("replayed \(bytes.count) bytes, \(events.count) resizes → \(outDir)")
+    }
 }
