@@ -109,11 +109,16 @@ jobs:
           VERSION="${{ steps.ver.outputs.version }}"
           TAG="${{ steps.ver.outputs.tag }}"
           DMG="dist/Damson-$VERSION.dmg"
+          # A stable, version-less copy so damson.app can link straight to the DMG
+          # via releases/latest/download/Damson.dmg without a per-release site edit.
+          # (The versioned asset stays — the Sparkle appcast points at it.)
+          STABLE="dist/Damson.dmg"
+          cp "$DMG" "$STABLE"
           # Create the release if absent (tag included — the workflow_dispatch path); otherwise just refresh assets.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$DMG" --clobber
+            gh release upload "$TAG" "$DMG" "$STABLE" --clobber
           else
-            gh release create "$TAG" "$DMG" \
+            gh release create "$TAG" "$DMG" "$STABLE" \
               --title "Damson $VERSION" \
               --generate-notes \
               --target "$GITHUB_SHA"
