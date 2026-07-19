@@ -478,7 +478,8 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // extra cell height — setScrollY would clamp it short, exposing the
         // scrollback tail above the live TUI during window drags.
         backend.alignScroll(to: viewportTop,
-                            totalRows: session.grid.scrollback.count + session.grid.rows)
+                            totalRows: session.grid.scrollback.count + session.grid.rows,
+                            animated: inLiveResize)
     }
 
     private func scrollViewportToBottom() {
@@ -2250,14 +2251,15 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             // Alt screen uses the viewport top anchor; otherwise (normal shell/
             // Claude Code, etc.) the cursor-visible policy. followTargetY() computes both cases uniformly.
             if !isSnappingToCursor, let targetY = followTargetY() {
-                backend.alignScroll(to: targetY, totalRows: totalRows)
+                backend.alignScroll(to: targetY, totalRows: totalRows,
+                                    animated: inLiveResize)
             }
         } else if evictedSinceLast > 0 {
             // The user is scrolled up viewing history — scroll up by the amount of
             // scrollback evicted so the line they're viewing stays at the same on-screen position (content-anchor).
             let curY = backend.scrollYPixels
             let adjusted = max(0, curY - CGFloat(evictedSinceLast) * cellMetrics.height)
-            backend.alignScroll(to: adjusted, totalRows: totalRows)
+            backend.alignScroll(to: adjusted, totalRows: totalRows, animated: false)
         }
         // else: leave the position the user scrolled up to as-is (no forced bottom pinning).
 

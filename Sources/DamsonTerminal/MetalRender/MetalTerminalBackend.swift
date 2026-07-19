@@ -1184,10 +1184,19 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// caller renders immediately after, so the followed position lands in that one
     /// frame. `totalRows` primes `lastTotalRows` (which `render()` normally sets)
     /// so the maxY clamp matches the content height of the frame about to be drawn.
-    func alignScroll(to y: CGFloat, totalRows: Int) {
+    func alignScroll(to y: CGFloat, totalRows: Int, animated: Bool = false) {
         lastTotalRows = totalRows
         followAnchorY = y            // the anchor may exceed the natural bottom clamp
         scroll.maxY = scrollCeiling
+        if animated {
+            // Glide to the new anchor (live-resize cell crossings): successive
+            // crossings retarget the same ease, so history slides in smoothly
+            // instead of the content lurching a full cell per crossing.
+            scroll.animate(to: y)
+            if scroll.animating { ensureRenderLoop() }
+            onScrollGeometryChanged?()
+            return
+        }
         animLink.stop()              // a hard jump cancels any in-flight ease
         scroll.jump(to: y)
         onScrollGeometryChanged?()
