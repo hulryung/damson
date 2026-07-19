@@ -59,8 +59,14 @@ public final class Grid {
     /// Past `maxScrollbackLines`, the oldest are evicted first.
     public private(set) var scrollback: [Line] = []
 
-    /// Cumulative scrollback push count. Monotonically increasing even across evicts,
-    /// so the host can compute "lines added since then" / whether eviction happened.
+    /// Cumulative scrollback push count — equivalently, the absolute line number of
+    /// the first viewport row (prompt marks are recorded as `pushCount + cursorRow`
+    /// and mapped back as `scrollback.count + abs − pushCount`, so this equivalence
+    /// is load-bearing). Evictions never decrease it; the one decrement is a row-GROW
+    /// resize pulling lines back out of scrollback into the viewport (`resizeTrimPad`),
+    /// which must decrement by the pulled count to keep both the mark mapping and
+    /// `linesEvictedFromTop` (content-anchor while scrolled up) unchanged — the
+    /// pulled lines didn't move in unified (scrollback+viewport) coordinates.
     public private(set) var scrollbackPushCount: UInt64 = 0
 
     /// Cumulative lines evicted from the top of scrollback this session (`pushCount - current count`).
@@ -733,6 +739,12 @@ public final class Grid {
     public func resize(cols newCols: Int, rows newRows: Int, preservePromptBlock: Bool = true) {
         precondition(newCols > 0 && newRows > 0)
         if newCols == cols && newRows == rows { return }
+        if ProcessInfo.processInfo.environment["DAMSON_RESIZE_LOG"] != nil {
+            let path = (!isAltScreenActive && newCols != cols) ? "reflow" : "trimpad"
+            let msg = "[resize] \(cols)x\(rows) → \(newCols)x\(newRows) path=\(path) "
+                + "alt=\(isAltScreenActive) preservePrompt=\(preservePromptBlock)\n"
+            FileHandle.standardError.write(Data(msg.utf8))
+        }
 
         if !isAltScreenActive && newCols != cols {
             // Primary screen with a column change → reflow. Rejoins soft-wrapped
@@ -757,41 +769,142 @@ public final class Grid {
 
     /// Simple trim/pad resize. Used for the alt screen or width-preserving row changes.
     /// At call time `cols`/`rows` still hold the old values (the shared tail updates them).
+    ///
+    /// Row GROW (primary): pull lines back from the scrollback tail so content stays
+    /// bottom-anchored (kitty/ghostty/iTerm2 behavior) instead of opening a blank gap
+    /// at the bottom. The cursor rides down with the content, so a TUI's post-SIGWINCH
+    /// relative-move redraw lands exactly on its old block.
+    ///
+    /// Row SHRINK: trim trailing rows that are blank AND below the cursor first; only
+    /// the remaining excess pushes from the top into scrollback. A plain shell (nothing
+    /// below the prompt) thus never pushes — no prompt pile-up — while a TUI's
+    /// status/footer rows below the cursor (Claude Code) survive instead of being
+    /// truncated. Together with grow-pull this makes grow→shrink a lossless round trip:
+    /// the same lines come back out of / go back into scrollback, so the TUI's redraw
+    /// can't leave stale duplicates above the viewport.
     private func resizeTrimPad(toCols newCols: Int, toRows newRows: Int) {
-        // On shrink, which rows to cut — decided by the cursor.
-        //   Cursor fits the new viewport (cursorRow < newRows) → trim the bottom.
-        //     The prompt (above the cursor) stays; only the empty bottom goes → avoids the "prompt pile-up" regression.
-        //   Doesn't fit → push the excess top rows to scrollback.
-        let rowOffset: Int
-        if newRows < rows {
-            if cursorRow < newRows {
-                rowOffset = 0
-            } else {
-                rowOffset = cursorRow - (newRows - 1)
+        var source = cells
+        var fromRows = rows
+        if newRows > rows, !isAltScreenActive, !scrollback.isEmpty {
+            // Discount the pull by the existing bottom gap: only when the cursor or
+            // content sits at the bottom does the full growth pull history back in
+            // (ghostty's TUI protection, generalized). A cleared/half-empty screen
+            // keeps its top anchor — growing never resurrects lines the user
+            // cleared away, and never shoves history under a mid-screen cursor.
+            // ALWAYS bottom-anchor on grow (iTerm2/wezterm semantics): pull the full
+            // growth back from scrollback. Bottom-anchored TUIs (Claude Code/Ink)
+            // lay their frame out from the BOTTOM edge; if the terminal leaves the
+            // content top-anchored instead, their post-SIGWINCH re-render walks the
+            // frame down and the first row of the old render survives as a stale
+            // duplicate. (An earlier version discounted the pull by the blank
+            // bottom gap — Claude Code keeps one blank row under its status line,
+            // so a live drag's +1-row steps were each fully absorbed and the pull
+            // never fired; repro'd via DAMSON_RESIZE_LOG showing pulled=0.)
+            // Two hard caps remain, both correctness-first (the shortfall just pads
+            // blank at the bottom instead):
+            //  • ≤ pushCount, so the decrement below is always exact — a saturating
+            //    clamp would permanently offset the prompt-mark mapping after a
+            //    narrowing reflow left count > pushCount.
+            //  • stop at the first tail line WIDER than the viewport (alt-screen col
+            //    shrinks and session restore leave those) — pulling one would clip
+            //    it to the current width and the loss would be permanent, whereas in
+            //    scrollback a later widening reflow rejoins it losslessly.
+            let wanted = min(newRows - rows, scrollback.count,
+                             Int(min(scrollbackPushCount, UInt64(Int.max))))
+            var pull = 0
+            while pull < wanted, scrollback[scrollback.count - 1 - pull].count <= newCols {
+                pull += 1
             }
+            if pull > 0 {
+                source = Array(scrollback.suffix(pull)) + source
+                scrollback.removeLast(pull)
+                // Keep pushCount == absolute line number of the first viewport row
+                // (see its doc). Exact by construction: pull ≤ pushCount.
+                scrollbackPushCount -= UInt64(pull)
+                fromRows += pull
+                cursorRow += pull
+                // DECSC state rides down with the content too (xterm adjusts its
+                // saved cursor the same way) — a later DECRC must land on the row
+                // it was saved against, not `pull` rows above it.
+                savedCursorRow = min(savedCursorRow + pull, newRows - 1)
+            }
+        }
+        let rowOffset: Int
+        if newRows < fromRows {
+            // Trailing blanks below both the cursor and the content trim first.
+            var lastKeep = cursorRow
+            for r in stride(from: fromRows - 1, through: 0, by: -1) {
+                if !isBlankRow(source[r]) { lastKeep = max(lastKeep, r); break }
+            }
+            let trimmable = fromRows - 1 - lastKeep
+            // Capped at cursorRow: the cursor's own row must stay in the viewport
+            // even when content below the cursor overflows the new height (that
+            // overflow bottom-trims instead — the app redraws it after SIGWINCH).
+            rowOffset = min(max(0, (fromRows - newRows) - trimmable), cursorRow)
         } else {
             rowOffset = 0
         }
         if rowOffset > 0 && !isAltScreenActive {
             for r in 0..<rowOffset {
-                pushToScrollback(cells[r])
+                pushToScrollback(source[r])
             }
         }
         cells = Self.resizeCellsArray(
-            cells, fromCols: cols, fromRows: rows,
+            source, fromCols: cols, fromRows: fromRows,
             toCols: newCols, toRows: newRows, rowOffset: rowOffset, pen: pen
         )
+        if ProcessInfo.processInfo.environment["DAMSON_RESIZE_LOG"] != nil {
+            let pulled = fromRows - rows
+            let trimmed = max(0, (fromRows - newRows) - rowOffset)
+            let msg = "[resize] rows \(rows)→\(newRows) pulled=\(pulled) pushed=\(rowOffset) "
+                + "bottomTrimmed=\(trimmed) sb=\(scrollback.count) push#=\(scrollbackPushCount) "
+                + "cursor=\(cursorRow)→\(max(0, min(newRows - 1, cursorRow - rowOffset)))\n"
+            FileHandle.standardError.write(Data(msg.utf8))
+        }
         cursorRow = max(0, min(newRows - 1, cursorRow - rowOffset))
         cursorCol = max(0, min(newCols - 1, cursorCol))
 
-        // If there's a saved primary, resize it too (keeps the same size + pushes to its own scrollback on shrink).
+        // If there's a saved primary, resize it too, with the same symmetric policy:
+        // grow pulls back from its own scrollback (bottom-anchor), shrink trims
+        // trailing blanks below its cursor first and pushes only the rest.
         if var saved = savedPrimary {
-            let savedRows = saved.cells.count
-            let savedCols = saved.cells.first?.count ?? 0
-            let savedRowOffset = newRows < savedRows ? savedRows - newRows : 0
+            var savedSource = saved.cells
+            var savedFromRows = savedSource.count
+            let savedCols = savedSource.first?.count ?? 0
+            if newRows > savedFromRows, !saved.scrollback.isEmpty {
+                // Same policy as the live path: always bottom-anchor, capped by an
+                // exact pushCount decrement and the wider-line guard.
+                let wanted = min(newRows - savedFromRows, saved.scrollback.count,
+                                 Int(min(saved.scrollbackPushCount, UInt64(Int.max))))
+                var pull = 0
+                while pull < wanted,
+                      saved.scrollback[saved.scrollback.count - 1 - pull].count <= newCols {
+                    pull += 1
+                }
+                if pull > 0 {
+                    savedSource = Array(saved.scrollback.suffix(pull)) + savedSource
+                    saved.scrollback.removeLast(pull)
+                    saved.scrollbackPushCount -= UInt64(pull)
+                    savedFromRows += pull
+                    saved.cursorRow += pull
+                    saved.savedCursorRow = min(saved.savedCursorRow + pull, newRows - 1)
+                }
+            }
+            let savedRowOffset: Int
+            if newRows < savedFromRows {
+                var lastKeep = saved.cursorRow
+                for r in stride(from: savedFromRows - 1, through: 0, by: -1) {
+                    if !isBlankRow(savedSource[r]) { lastKeep = max(lastKeep, r); break }
+                }
+                let trimmable = savedFromRows - 1 - lastKeep
+                savedRowOffset = min(max(0, (savedFromRows - newRows) - trimmable),
+                                     saved.cursorRow)
+            } else {
+                savedRowOffset = 0
+            }
             if savedRowOffset > 0 {
                 for r in 0..<savedRowOffset {
-                    saved.scrollback.append(saved.cells[r])
+                    saved.scrollback.append(savedSource[r])
                     saved.scrollbackPushCount &+= 1
                 }
                 // Clamp once after the batch (a resize pushes at most a screenful, but
@@ -801,7 +914,7 @@ public final class Grid {
                 }
             }
             saved.cells = Self.resizeCellsArray(
-                saved.cells, fromCols: savedCols, fromRows: savedRows,
+                savedSource, fromCols: savedCols, fromRows: savedFromRows,
                 toCols: newCols, toRows: newRows, rowOffset: savedRowOffset, pen: saved.pen
             )
             saved.cursorRow = max(0, min(newRows - 1, saved.cursorRow - savedRowOffset))
@@ -1021,17 +1134,24 @@ public final class Grid {
             var newRow: [Cell] = []
             newRow.reserveCapacity(toCols)
             let srcRow = r + rowOffset
-            // Phase 1: column trim/pad carries the source row's wrap flag along.
-            // Phase 2 replaces this whole path with real reflow.
-            let wrapped = (srcRow >= 0 && srcRow < fromRows) ? source[srcRow].wrapped : false
+            let src: Line? = (srcRow >= 0 && srcRow < fromRows) ? source[srcRow] : nil
+            // Column trim/pad carries the source row's flags along (wrap AND the
+            // OSC 133 prompt mark — dropping the mark would break the reflow
+            // prompt-block preservation for rows that went through a row resize).
+            // Bound by the row's ACTUAL cell count, not fromCols: rows pulled back
+            // from scrollback can be narrower (SessionRestore seeds trimmed lines —
+            // indexing at fromCols would trap) or wider (a saved primary whose
+            // scrollback kept its pre-zoom width) than the viewport; the 0..<toCols
+            // loop already clips to the target width.
             for c in 0..<toCols {
-                if srcRow >= 0, srcRow < fromRows, c < fromCols {
-                    newRow.append(source[srcRow][c])
+                if let src, c < src.count {
+                    newRow.append(src[c])
                 } else {
                     newRow.append(blank)
                 }
             }
-            newCells.append(Line(newRow, wrapped: wrapped))
+            newCells.append(Line(newRow, wrapped: src?.wrapped ?? false,
+                                 isPromptStart: src?.isPromptStart ?? false))
         }
         return newCells
     }
