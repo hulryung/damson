@@ -1172,9 +1172,11 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// cell multiple. Clamping the anchor to the natural ceiling scrolled the view
     /// up to ~2 rows short of the grid top, exposing the scrollback tail above the
     /// live TUI ("duplicated" stale rows) and re-clamping every render made the
-    /// content bob vertically during drags. Cleared when the user takes over
-    /// (wheel) or on a plain `setScrollY` jump, so history browsing clamps to the
-    /// true content bottom as before.
+    /// content bob vertically during drags. Also used as the BOTTOM clamp for the
+    /// wheel / `setScrollY`, so the user can't park a TUI below its grid-top rest
+    /// position and get snapped back up by the next follow re-pin. Refreshed each
+    /// followed render via `alignScroll`; for a normal shell it equals the natural
+    /// content bottom, so it never widens the browsable range there.
     private var followAnchorY: CGFloat = 0
     private var scrollCeiling: CGFloat {
         max(0, max(contentHeight - viewportHeight, followAnchorY))
@@ -1184,9 +1186,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// caller renders immediately after, so the followed position lands in that one
     /// frame. `totalRows` primes `lastTotalRows` (which `render()` normally sets)
     /// so the maxY clamp matches the content height of the frame about to be drawn.
-    func alignScroll(to y: CGFloat, totalRows: Int, animated: Bool = false) {
+    func alignScroll(to y: CGFloat, totalRows: Int, animated: Bool = false, floor: CGFloat = 0) {
         lastTotalRows = totalRows
         followAnchorY = y            // the anchor may exceed the natural bottom clamp
+        scroll.minY = max(0, floor)  // TUI grid-top anchor: block scroll-up into blank top padding
         scroll.maxY = scrollCeiling
         if animated {
             // Glide to the new anchor (live-resize cell crossings): successive
@@ -1202,9 +1205,29 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         onScrollGeometryChanged?()
     }
 
+    /// Drop any follow anchor so the bottom clamp reverts to the natural content
+    /// bottom (`contentHeight − viewportHeight`). The host calls this whenever the
+    /// current grid is a plain (non-anchored) shell, so a grid-top anchor left over
+    /// from a previous alt-screen / sync-output TUI can't keep the wheel clamp
+    /// `inset + remainder` too low — which let the empty prompt scroll down into
+    /// dead space below the last line. No-op if there's no anchor.
+    func clearFollowAnchor() {
+        guard followAnchorY != 0 || scroll.minY != 0 else { return }
+        followAnchorY = 0
+        scroll.minY = 0                  // drop the TUI top-padding floor
+        scroll.maxY = scrollCeiling      // now the natural bottom; re-clamps current/target
+        onScrollGeometryChanged?()
+    }
+
     func setScrollY(_ y: CGFloat, animated: Bool) {
-        followAnchorY = 0            // plain jump — browsing clamps to the content bottom
-        scroll.maxY = max(0, contentHeight - viewportHeight)
+        // Keep the active follow anchor as the LOWER (bottom) clamp. A TUI's
+        // grid-top anchor sits `inset + fractional-remainder` ABOVE the natural
+        // content bottom, so if the wheel/jump were allowed to park at the natural
+        // bottom, the next follow re-pin (alignScroll) would snap the content up by
+        // that gap — a "half-cell" scroll on click/select. For a normal shell the
+        // anchor equals the cursor-visible bottom (== natural clamp), so this is a
+        // no-op there.
+        scroll.maxY = scrollCeiling
         guard animated else {
             // Hard jump cancels any in-flight ease.
             animLink.stop()
@@ -1230,8 +1253,12 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// (and its momentum) ends. Always returns true (Metal owns the wheel; the host
     /// won't fall through to a no-op `super.scrollWheel`).
     func handleScrollWheel(_ event: NSEvent) -> Bool {
-        followAnchorY = 0            // user takes over — browse with the natural clamp
-        scroll.maxY = max(0, contentHeight - viewportHeight)
+        // Honor the follow anchor as the bottom clamp so a TUI can't be wheeled
+        // BELOW its grid-top rest position (which the follow policy re-pins to) —
+        // otherwise wheeling to the "bottom" parks `inset + remainder` too low and
+        // the next re-pin snaps back up. Scrolling UP toward 0 (into primary
+        // scrollback) is unaffected. Normal shells: anchor == natural bottom.
+        scroll.maxY = scrollCeiling
         // applyWheel sets animating=false to cancel any in-flight ease (direct input wins).
         let moved = scroll.applyWheel(deltaY: event.scrollingDeltaY,
                                       precise: event.hasPreciseScrollingDeltas,

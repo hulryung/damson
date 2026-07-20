@@ -84,6 +84,45 @@ final class ScrollModelTests: XCTestCase {
         XCTAssertFalse(changed, "no movement at the top edge → no redraw needed")
     }
 
+    // MARK: - minY floor (TUI grid-top anchor top padding)
+
+    func testMinYFloorClampsJumpUp() {
+        var m = ScrollModel()
+        m.maxY = 100
+        m.minY = 20              // TUI flush anchor: block scroll-up into top padding
+        m.jump(to: 5)
+        XCTAssertEqual(m.current, 20, "can't scroll above the floor")
+    }
+
+    func testMinYEqualsMaxYLocksScroll() {
+        var m = ScrollModel()
+        m.maxY = 20
+        m.minY = 20              // zero-scrollback TUI: no scroll room at all
+        m.jump(to: 200)
+        XCTAssertEqual(m.current, 20)
+        // Mouse wheel (non-precise) hard-stops — a locked range means no movement.
+        let changed = m.applyWheel(deltaY: 50, precise: false, lineHeight: 16)
+        XCTAssertFalse(changed, "no room between floor and ceiling → no movement")
+        XCTAssertEqual(m.current, 20)
+    }
+
+    func testWheelStopsAtMinYFloor() {
+        var m = ScrollModel()
+        m.maxY = 100
+        m.minY = 20
+        m.jump(to: 40)
+        m.applyWheel(deltaY: 100, precise: false, lineHeight: 16)  // hard scroll up (mouse wheel)
+        XCTAssertEqual(m.current, 20, "hard stop at the floor, not 0")
+    }
+
+    func testRaisingMinYReclampsCurrent() {
+        var m = ScrollModel()
+        m.maxY = 100
+        m.jump(to: 5)
+        m.minY = 20              // e.g. entering a TUI while scrolled near the top
+        XCTAssertEqual(m.current, 20)
+    }
+
     // MARK: - Programmatic ease (increment B)
 
     func testStepWithoutAnimateIsNoop() {

@@ -161,7 +161,16 @@ public protocol TerminalRenderBackend: AnyObject {
     /// `animated` eases to the target instead of jumping — used during live window
     /// resizes, where each scrollback pull moves the TUI grid-top anchor a whole
     /// cell at once and a hard jump reads as the content lurching per cell crossing.
-    func alignScroll(to y: CGFloat, totalRows: Int, animated: Bool)
+    /// `floor` clamps the top of the scroll range (default 0 = scroll to content
+    /// top). A TUI whose grid is anchored flush to the viewport top passes the top
+    /// inset here so the user can't scroll up into the blank padding above the grid
+    /// (a zero-scrollback TUI then has no scroll room).
+    func alignScroll(to y: CGFloat, totalRows: Int, animated: Bool, floor: CGFloat)
+    /// Drop any follow anchor set by `alignScroll`, reverting the bottom scroll
+    /// clamp to the natural content bottom. The host calls this for a plain
+    /// (non-anchored) shell so a grid-top anchor from a prior TUI can't strand the
+    /// clamp below the cursor-visible rest (empty-prompt scroll into dead space).
+    func clearFollowAnchor()
     /// Handle a scroll-wheel/trackpad event. Returns `true` if the backend
     /// consumed it (and scrolled), so the host won't fall through to a no-op
     /// `super.scrollWheel`. The Metal backend applies the delta itself.

@@ -42,8 +42,22 @@ struct ScrollModel {
         }
     }
 
+    /// Minimum offset (top clamp). 0 for the common case (scroll all the way to the
+    /// content top). A TUI whose grid is anchored FLUSH to the viewport top sets this
+    /// to the top inset, so the user can't scroll up into the blank top padding above
+    /// the grid — a zero-scrollback TUI then has no scroll room at all. Re-clamps like
+    /// `maxY`.
+    var minY: CGFloat = 0 {
+        didSet {
+            current = clamp(current)
+            target = clamp(target)
+        }
+    }
+
     func clamp(_ y: CGFloat) -> CGFloat {
-        max(0, min(y, max(0, maxY)))
+        let lo = max(0, minY)
+        let hi = max(lo, maxY)
+        return min(max(y, lo), hi)
     }
 
     /// Jump to an absolute offset, clamped. Cancels any in-flight ease.
@@ -98,10 +112,11 @@ struct ScrollModel {
         // slow → ~3 lines per notch, per convention.
         let pixels = precise ? deltaY : deltaY * lineHeight * ScrollModel.mouseWheelLines
         let raw = current - pixels
-        let hi = max(0, maxY)
+        let lo = max(0, minY)
+        let hi = max(lo, maxY)
         var next = raw
-        if raw < 0 {
-            next = precise ? -ScrollModel.rubberband(-raw, viewport) : 0
+        if raw < lo {
+            next = precise ? lo - ScrollModel.rubberband(lo - raw, viewport) : lo
         } else if raw > hi {
             next = precise ? hi + ScrollModel.rubberband(raw - hi, viewport) : hi
         }
@@ -114,7 +129,10 @@ struct ScrollModel {
     /// True while scrolled past an edge (rubber-band overshoot in effect); the
     /// backend springs `current` back to `clamp(current)` when this holds at
     /// gesture end.
-    var isOvershooting: Bool { current < 0 || current > max(0, maxY) }
+    var isOvershooting: Bool {
+        let lo = max(0, minY)
+        return current < lo || current > max(lo, maxY)
+    }
 
     /// AppKit-style elastic resistance: maps an unbounded `overshoot` to a bounded,
     /// diminishing displacement (≈ NSScrollView rubber-band). 0 if no dimension.

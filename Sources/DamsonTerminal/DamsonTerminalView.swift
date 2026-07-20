@@ -439,8 +439,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // viewing isn't forced to snap to the bottom. Also don't touch it during
         // a key-input jump animation (isSnappingToCursor).
         if followingBottom && !isSnappingToCursor {
-            if session.grid.isAltScreenActive || session.grid.hasUsedSyncOutput
-                || session.grid.hasContentBelowCursor {
+            if isAnchoredGrid {
                 // grid-top anchor — shows the entire live grid (including the bottom footer).
                 // Claude Code (with a status line residing below the cursor) takes this path, resolving the clipping.
                 scrollViewportToAltTop()
@@ -477,13 +476,20 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // exceed the natural bottom clamp by the top inset + the window's fractional
         // extra cell height — setScrollY would clamp it short, exposing the
         // scrollback tail above the live TUI during window drags.
+        // floor = top inset: the anchor sits the grid flush at the viewport top, so
+        // block scroll-up into the blank padding above it (a zero-scrollback TUI can't
+        // scroll up at all; a TUI with scrollback scrolls up only through real history).
         backend.alignScroll(to: viewportTop,
                             totalRows: session.grid.scrollback.count + session.grid.rows,
-                            animated: inLiveResize)
+                            animated: inLiveResize,
+                            floor: backend.contentInset.height)
     }
 
     private func scrollViewportToBottom() {
         backend.ensureLayout()
+        // Normal-shell path — make sure no grid-top anchor lingers from a prior TUI,
+        // so the bottom clamp is the natural content bottom (not inset+remainder low).
+        backend.clearFollowAnchor()
         let visHeight = backend.viewportHeight
         // "cursor visible" policy — if the cursor is outside the visible area,
         // only bring it in; if it's inside, don't touch it. Called from layout
@@ -1332,13 +1338,23 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         followingBottom = isScrolledToBottom(tolerance: 4.0)
     }
 
+    /// True when the live grid is a TUI that follows via a grid-top anchor (alt
+    /// screen, sticky sync-output like Claude Code, or a footer resident below the
+    /// cursor) rather than the normal cursor-visible bottom. The anchor sits above
+    /// the natural content bottom, so a plain shell must NOT carry a stale one (it
+    /// would let the empty prompt scroll into dead space below the last line).
+    private var isAnchoredGrid: Bool {
+        let grid = session.grid
+        return grid.isAltScreenActive || grid.hasUsedSyncOutput || grid.hasContentBelowCursor
+    }
+
     /// The Y the scroll should settle at while following. Computed identically to
     /// renderNow()'s follow logic so the animated/immediate scroll go to the same
     /// spot. nil if already at the right position (no scroll needed).
     private func followTargetY() -> CGFloat? {
         let grid = session.grid
         let inset = backend.contentInset.height
-        if grid.isAltScreenActive || grid.hasUsedSyncOutput || grid.hasContentBelowCursor {
+        if isAnchoredGrid {
             // Alt-screen / primary-screen TUI (Claude Code, etc.) — anchor grid-top
             // at viewport-top so the entire live grid is visible. (rows*cellH ≤
             // visHeight, so the grid always fits in the viewport → no bottom clipping.)
@@ -2246,20 +2262,28 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         lastEvictedTotal = evictedTotal
 
         let totalRows = grid.scrollback.count + grid.rows
+        // A plain shell must never carry a grid-top anchor left over from a prior
+        // TUI (alt-screen/sync-output) — it would hold the bottom clamp inset+remainder
+        // below the cursor-visible rest, letting the empty prompt scroll into dead
+        // space. Clear it every render for non-anchored grids (covers the case where
+        // followTargetY() returns nil, so alignScroll below wouldn't refresh it).
+        if !isAnchoredGrid { backend.clearFollowAnchor() }
         if followingBottom {
             // During a key-input jump animation, the animation owns the position — don't scroll immediately.
             // Alt screen uses the viewport top anchor; otherwise (normal shell/
             // Claude Code, etc.) the cursor-visible policy. followTargetY() computes both cases uniformly.
             if !isSnappingToCursor, let targetY = followTargetY() {
                 backend.alignScroll(to: targetY, totalRows: totalRows,
-                                    animated: inLiveResize)
+                                    animated: inLiveResize,
+                                    floor: isAnchoredGrid ? backend.contentInset.height : 0)
             }
         } else if evictedSinceLast > 0 {
             // The user is scrolled up viewing history — scroll up by the amount of
             // scrollback evicted so the line they're viewing stays at the same on-screen position (content-anchor).
             let curY = backend.scrollYPixels
             let adjusted = max(0, curY - CGFloat(evictedSinceLast) * cellMetrics.height)
-            backend.alignScroll(to: adjusted, totalRows: totalRows, animated: false)
+            backend.alignScroll(to: adjusted, totalRows: totalRows, animated: false,
+                                floor: isAnchoredGrid ? backend.contentInset.height : 0)
         }
         // else: leave the position the user scrolled up to as-is (no forced bottom pinning).
 
