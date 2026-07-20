@@ -7,6 +7,14 @@
         <language>en</language>
         <item>
             <title>Damson 0.3.8</title>
+            <description><![CDATA[
+                <h3>Fixed</h3>
+                <ul>
+                    <li>Selecting text in a full-screen app (vim, htop, Claude Code, …) no longer nudges the screen up by about half a line.</li>
+                    <li>An empty shell prompt no longer scrolls down into blank space below the last line.</li>
+                    <li>A small full-screen app no longer has extra scroll room above it — scrolling up now reveals only real history.</li>
+                </ul>
+            ]]></description>
             <pubDate>Mon, 20 Jul 2026 03:49:22 +0000</pubDate>
             <sparkle:version>300</sparkle:version>
             <sparkle:shortVersionString>0.3.8</sparkle:shortVersionString>
