@@ -431,6 +431,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         // layers ride along live (the snapshot composited the Metal frame OVER the dim
         // scrim, so inactive panes flashed undimmed during the slide).
         var switchOutgoing: (tree: PaneTreeView, fromIndex: Int)?
+        var reentry = SwitchReentry()
         if case .switch(let fromIndex) = transition,
            Motion.enabled,
            TabTransitionStyle.current != .none,
@@ -439,6 +440,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             // Only animate if that tree is actually the one on screen right now.
             if outgoing.superview === contentContainer {
                 switchOutgoing = (outgoing, fromIndex)
+                // Capture current on-screen positions NOW, before the detach/reset below
+                // clears the incoming tree's in-flight animation — so a reversed switch
+                // continues from where the two trees currently are.
+                reentry.incomingX = inFlightSwitchTranslationX(tabs[index].tree.layer)
+                reentry.outgoingX = inFlightSwitchTranslationX(outgoing.layer)
+                reentry.incomingOpacity = inFlightSwitchOpacity(tabs[index].tree.layer)
+                reentry.outgoingOpacity = inFlightSwitchOpacity(outgoing.layer)
             }
         }
 
@@ -493,7 +501,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         // identical to today.
         if let out = switchOutgoing, out.tree !== tree {
             animateTabSwitch(incoming: tree, outgoing: out.tree,
-                             fromIndex: out.fromIndex, toIndex: index)
+                             fromIndex: out.fromIndex, toIndex: index, reentry: reentry)
         }
     }
 
@@ -564,17 +572,54 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     /// are live NSView backing layers under Auto Layout — an implicit transform animation
     /// gets clobbered by AppKit's layout-driven geometry updates. Hit-testing during the
     /// 0.16s overlap resolves to the incoming view (added later = topmost).
+    /// A layer's current on-screen `transform.translation.x` if a tab-switch slide is in
+    /// flight on it, else nil — used to continue a reversed switch from where it is. Must be
+    /// read BEFORE `selectTab` detaches/resets the incoming tree (which clears its animation).
+    private func inFlightSwitchTranslationX(_ layer: CALayer?) -> CGFloat? {
+        guard let layer,
+              layer.animation(forKey: "switchIn") != nil
+                || layer.animation(forKey: "switchOut") != nil,
+              let x = layer.presentation()?.value(forKeyPath: "transform.translation.x") as? CGFloat
+        else { return nil }
+        return x
+    }
+
+    /// A layer's current on-screen opacity if a tab-switch slide is in flight (crossfade).
+    private func inFlightSwitchOpacity(_ layer: CALayer?) -> Float? {
+        guard let layer,
+              layer.animation(forKey: "switchIn") != nil
+                || layer.animation(forKey: "switchOut") != nil,
+              let pres = layer.presentation() else { return nil }
+        return pres.opacity
+    }
+
+    /// Re-entry state captured before `selectTab` mutates the trees, so a reversed
+    /// mid-slide switch continues from the current on-screen positions.
+    private struct SwitchReentry {
+        var incomingX: CGFloat?
+        var outgoingX: CGFloat?
+        var incomingOpacity: Float?
+        var outgoingOpacity: Float?
+    }
+
     private func animateTabSwitch(incoming tree: PaneTreeView, outgoing: PaneTreeView,
-                                  fromIndex: Int, toIndex: Int) {
+                                  fromIndex: Int, toIndex: Int, reentry: SwitchReentry) {
         guard let incomingLayer = tree.layer, let outgoingLayer = outgoing.layer else { return }
         // Ensure constraints have produced the final frame before we read/animate it.
         contentContainer.layoutSubtreeIfNeeded()
 
         // Re-entrancy: pressing Cmd+arrow again mid-slide reuses one of these layers (the prior
-        // incoming becomes the new outgoing, or vice-versa). Clear any in-flight switch animation
-        // on both so the new translations don't stack with stale ones — stacked translations break
-        // the "glued" invariant and flash the bare (black) container for a frame. Bump the
-        // generation so the previous switch's completion bails instead of fighting this one.
+        // incoming becomes the new outgoing, or vice-versa). `reentry` holds where each layer
+        // was on screen when the caller (`selectTab`) started — captured before it detached/reset
+        // the incoming tree — so a reversed switch (Cmd+Left then Cmd+Right mid-slide) continues
+        // from that position and smoothly changes direction instead of snapping back to the
+        // off-screen start and restarting. Clear the stale animations so the new translations
+        // don't stack with them (which would break the "glued" invariant). Bump the generation
+        // so the previous switch's completion bails.
+        let incomingReentryX = reentry.incomingX
+        let outgoingReentryX = reentry.outgoingX
+        let incomingReentryOpacity = reentry.incomingOpacity
+        let outgoingReentryOpacity = reentry.outgoingOpacity
         clearSwitchAnimations(incomingLayer)
         clearSwitchAnimations(outgoingLayer)
         tabSwitchGeneration += 1
@@ -645,12 +690,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             tree?.layer?.removeAnimation(forKey: "switchIn")
         }
 
-        // Incoming: slide from off-screen to 0 (spring for `slide`, plain + fade for crossfade).
-        let iSlide = tabSlideTranslation(style: style, from: incomingStart, to: 0)
+        // Incoming: slide from off-screen (or its current on-screen x if reversing mid-slide) to 0.
+        let iSlide = tabSlideTranslation(style: style, from: incomingReentryX ?? incomingStart, to: 0)
         var inAnims = [iSlide]
         if fade {
             let iFade = CABasicAnimation(keyPath: "opacity")
-            iFade.fromValue = 0.0
+            iFade.fromValue = incomingReentryOpacity.map(Double.init) ?? 0.0
             iFade.toValue = 1.0
             inAnims.append(iFade)
         }
@@ -660,13 +705,14 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         iGroup.timingFunction = timing
         incomingLayer.add(iGroup, forKey: "switchIn")
 
-        // Outgoing live layer: slide 0 → outgoingEnd. Same spring params as the incoming, so the
-        // two stay rigidly glued. fillMode=.forwards pins the end state until completion detaches it.
-        let oSlide = tabSlideTranslation(style: style, from: 0, to: outgoingEnd)
+        // Outgoing live layer: slide from 0 (or its current on-screen x if reversing mid-slide) →
+        // outgoingEnd. Same spring params as the incoming, so the two stay rigidly glued.
+        // fillMode=.forwards pins the end state until completion detaches it.
+        let oSlide = tabSlideTranslation(style: style, from: outgoingReentryX ?? 0, to: outgoingEnd)
         var outAnims = [oSlide]
         if fade {
             let oFade = CABasicAnimation(keyPath: "opacity")
-            oFade.fromValue = 1.0
+            oFade.fromValue = outgoingReentryOpacity.map(Double.init) ?? 1.0
             oFade.toValue = 0.0
             outAnims.append(oFade)
         }
