@@ -6,15 +6,23 @@
         <description>damson release feed</description>
         <language>en</language>
         <item>
+            <title>Damson 0.3.9</title>
+            <pubDate>Thu, 23 Jul 2026 13:34:16 +0000</pubDate>
+            <sparkle:version>304</sparkle:version>
+            <sparkle:shortVersionString>0.3.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/hulryung/damson/releases/download/v0.3.9/Damson-0.3.9.dmg" type="application/octet-stream" sparkle:edSignature="lrtNog7cPRBzKtpKN7ZKbIAfPBp4TJ+WJgM75EKsb78mH4PKM+99kSm0z1PHUxGpEGV7QcX+XM4iZEveXILbAg==" length="2123118" />
+        </item>
+        <item>
             <title>Damson 0.3.8</title>
-            <description><![CDATA[
-                <h3>Fixed</h3>
-                <ul>
-                    <li>Selecting text in a full-screen app (vim, htop, Claude Code, …) no longer nudges the screen up by about half a line.</li>
-                    <li>An empty shell prompt no longer scrolls down into blank space below the last line.</li>
-                    <li>A small full-screen app no longer has extra scroll room above it — scrolling up now reveals only real history.</li>
-                </ul>
-            ]]></description>
+            <description>
+                &lt;h3&gt;Fixed&lt;/h3&gt;
+                &lt;ul&gt;
+                    &lt;li&gt;Selecting text in a full-screen app (vim, htop, Claude Code, …) no longer nudges the screen up by about half a line.&lt;/li&gt;
+                    &lt;li&gt;An empty shell prompt no longer scrolls down into blank space below the last line.&lt;/li&gt;
+                    &lt;li&gt;A small full-screen app no longer has extra scroll room above it — scrolling up now reveals only real history.&lt;/li&gt;
+                &lt;/ul&gt;
+            </description>
             <pubDate>Mon, 20 Jul 2026 03:49:22 +0000</pubDate>
             <sparkle:version>300</sparkle:version>
             <sparkle:shortVersionString>0.3.8</sparkle:shortVersionString>
