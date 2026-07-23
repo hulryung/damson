@@ -719,6 +719,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
                 neighborTree.frame = contentContainer.bounds
                 neighborTree.layoutSubtreeIfNeeded()
             }
+            // Force each leaf to render its grid so the snapshot has real content: an
+            // offscreen capture reads the backend's `lastGrid`, which is nil for a tab
+            // that has never rendered (freshly restored / never shown) — in that case
+            // the snapshot falls back to the bare view background (a dark, theme-less
+            // blank). repaintAllLeaves populates lastGrid so the capture is real.
+            neighborTree.repaintAllLeaves()
             if let img = Motion.snapshot(of: neighborTree) {
                 swipeNeighborLayer = Motion.overlay(image: img, frame: contentContainer.bounds,
                                                     in: contentContainer)
@@ -839,7 +845,29 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         guard swipeAnimating else { return }
         if swipePendingCommit, swipePendingIndex >= 0, swipePendingIndex < tabs.count,
            swipePendingIndex != currentIndex {
+            // `selectTab` attaches the committed tab as a LIVE tree, but its Metal layer
+            // presents its first on-screen frame a beat late — so a chained swipe that
+            // immediately slides that tree would flash a blank (black) screen. The
+            // neighbor snapshot we're holding is a valid image of exactly this tab (it
+            // was just on screen), so reuse it as a cover parented to the tree's layer:
+            // it rides the next swipe's slide (child of the transformed layer) and hides
+            // the black frame until the live content paints, then removes itself.
+            let cover = swipeNeighborLayer
+            swipeNeighborLayer = nil   // keep it from being torn down by selectTab → abortSwipe
             selectTab(swipePendingIndex, transition: .none)
+            if let cover, let treeLayer = tabs[currentIndex].tree.layer {
+                cover.removeFromSuperlayer()
+                cover.removeAllAnimations()
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                cover.transform = CATransform3DIdentity
+                cover.frame = treeLayer.bounds
+                treeLayer.addSublayer(cover)
+                CATransaction.commit()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak cover] in
+                    cover?.removeFromSuperlayer()
+                }
+            }
         } else {
             abortSwipe()
         }
@@ -914,7 +942,16 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             )
         }
 
-        tabs[index].tree.terminateAllForClose()   // honors a pane dragged out to another window
+        let closingTree = tabs[index].tree
+        closingTree.terminateAllForClose()   // honors a pane dragged out to another window
+        // Detach the closed tree from the container. Without this it lingers as a live
+        // subview BEHIND the current tab: selectTab's detach loop only iterates the
+        // surviving `tabs`, and this tree is already gone from that array, so it's never
+        // removed. A trackpad swipe that slides the current tab aside (especially a
+        // chained double-swipe) then reveals the previously-closed tab underneath.
+        // The close-animation overlay is an independent snapshot layer, so removing the
+        // real view here doesn't affect the fade-out.
+        closingTree.removeFromSuperview()
         tabs.remove(at: index)
 
         if tabs.isEmpty {
