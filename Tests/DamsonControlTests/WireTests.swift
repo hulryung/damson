@@ -159,6 +159,26 @@ final class WireTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(ControlCommand.self, from: data))
     }
 
+    func testDecodeResizeWindowAcceptsPositiveDims() throws {
+        let data = Data(#"{"cmd":"resize-window","args":{"cols":100,"rows":40}}"#.utf8)
+        let cmd = try JSONDecoder().decode(ControlCommand.self, from: data)
+        XCTAssertEqual(cmd.kind, .resizeWindow(cols: 100, rows: 40))
+    }
+
+    func testDecodeResizeWindowRejectsNonPositiveDims() {
+        // A direct socket writer (bypassing the CLI's validation) must not be able to
+        // apply a 0×0 or negative grid.
+        for json in [
+            #"{"cmd":"resize-window","args":{"cols":-5,"rows":24}}"#,
+            #"{"cmd":"resize-window","args":{"cols":80,"rows":0}}"#,
+            #"{"cmd":"resize-window","args":{"cols":0,"rows":0}}"#,
+        ] {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(ControlCommand.self, from: Data(json.utf8)),
+                "must reject non-positive dims: \(json)")
+        }
+    }
+
     func testDecodeResizePaneDefaultsAmountToOne() throws {
         // `amount` is optional on the wire; absent → 1.
         let data = Data(#"{"cmd":"resize-pane","args":{"dir":"left"}}"#.utf8)

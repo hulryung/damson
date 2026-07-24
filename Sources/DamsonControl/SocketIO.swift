@@ -24,6 +24,61 @@ public enum SocketIOError: Error, CustomStringConvertible {
     }
 }
 
+/// Disable SIGPIPE for this socket: a `write()` to a peer that has closed then returns
+/// EPIPE (an errno the write loops handle) instead of raising SIGPIPE, whose default
+/// disposition would terminate the whole process. Without this a `damson-cli` client that
+/// disconnects before reading the reply could crash the damson app mid-response.
+public func disableSIGPIPE(_ fd: Int32) {
+    var on: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+}
+
+/// Outcome of reading one newline-framed message off a socket.
+public enum FramedLineResult {
+    /// A full line was read; payload is the bytes before the newline.
+    case line(Data)
+    /// The stream closed (EOF) before a newline. Payload is whatever preceded it.
+    case eof(Data)
+    /// The peer sent more than `hardCap` bytes without a newline — refused.
+    case tooLong
+    /// A read timed out (SO_RCVTIMEO fired) with no progress.
+    case timeout
+    /// read() failed with this errno.
+    case error(Int32)
+}
+
+/// Read from `fd` until a newline (0x0A) or EOF, into a buffer that grows as needed
+/// so a response larger than any fixed stack buffer isn't silently truncated (e.g. a
+/// `dump-grid` of a large window — CJK cells are 3 bytes each in UTF-8, so a modest
+/// Korean grid easily exceeds 64 KB). `hardCap` bounds memory against an unterminated
+/// or hostile peer. Only the newly read region is scanned for the newline each pass
+/// (not the whole accumulated buffer), so framing stays O(total bytes), not O(n²).
+/// EINTR is retried transparently; a timeout is reported distinctly from EOF/error.
+public func readFramedLine(fd: Int32, hardCap: Int = 16 * 1024 * 1024) -> FramedLineResult {
+    var acc = [UInt8]()
+    var chunk = [UInt8](repeating: 0, count: 65_536)
+    var searchStart = 0
+    while true {
+        let n = chunk.withUnsafeMutableBufferPointer { p -> Int in
+            read(fd, p.baseAddress, p.count)
+        }
+        if n > 0 {
+            acc.append(contentsOf: chunk[0..<n])
+            if let nl = acc[searchStart...].firstIndex(of: 0x0A) {
+                return .line(Data(acc[..<nl]))
+            }
+            searchStart = acc.count
+            if acc.count > hardCap { return .tooLong }
+        } else if n == 0 {
+            return .eof(Data(acc))
+        } else {
+            if errno == EINTR { continue }
+            if errno == EAGAIN || errno == EWOULDBLOCK { return .timeout }
+            return .error(errno)
+        }
+    }
+}
+
 public func sendCommand(
     socketPath: String,
     commandJSON: String,
@@ -34,6 +89,7 @@ public func sendCommand(
         return .failure(.connect("socket() failed: errno=\(errno)"))
     }
     defer { close(fd) }
+    disableSIGPIPE(fd)
 
     if let err = bindOrConnectUnix(fd: fd, path: socketPath, listen: false) {
         return .failure(.connect(err))
@@ -53,25 +109,32 @@ public func sendCommand(
         let n = req.withUnsafeBufferPointer { buf -> Int in
             write(fd, buf.baseAddress!.advanced(by: sent), buf.count - sent)
         }
-        if n <= 0 {
-            return .failure(.write("write() returned \(n), errno=\(errno)"))
+        if n < 0 {
+            if errno == EINTR { continue }   // interrupted before any bytes moved — retry
+            return .failure(.write("write() failed, errno=\(errno)"))
+        }
+        if n == 0 {
+            return .failure(.write("write() returned 0"))
         }
         sent += n
     }
 
-    // Read until \n (or EOF). Only one response, so 64KB is plenty.
-    var buf = [UInt8](repeating: 0, count: 65_536)
-    var got = 0
-    while got < buf.count {
-        let n = buf.withUnsafeMutableBufferPointer { p -> Int in
-            read(fd, p.baseAddress!.advanced(by: got), p.count - got)
-        }
-        if n <= 0 { break }
-        got += n
-        if buf[..<got].contains(0x0A) { break }
+    // Read one newline-framed response into a growable buffer (a large dump-grid can
+    // exceed any fixed size). The 5s SO_RCVTIMEO above surfaces as `.timeout`.
+    let data: Data
+    switch readFramedLine(fd: fd) {
+    case .line(let d):
+        data = d
+    case .eof(let d):
+        guard !d.isEmpty else { return .failure(.read("server closed without response")) }
+        data = d   // stream closed mid-line — try to decode the partial payload
+    case .tooLong:
+        return .failure(.read("response exceeded size limit without a newline"))
+    case .timeout:
+        return .failure(.timeout)
+    case .error(let e):
+        return .failure(.read("read() failed, errno=\(e)"))
     }
-    let endIdx = buf[..<got].firstIndex(of: 0x0A) ?? got
-    let data = Data(buf[..<endIdx])
     guard !data.isEmpty else {
         return .failure(.read("server closed without response"))
     }

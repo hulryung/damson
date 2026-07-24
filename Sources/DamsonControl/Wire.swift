@@ -86,6 +86,14 @@ public struct ControlCommand: Decodable, Equatable, Sendable {
             self.kind = .sendKeys(a.keys)
         case "resize-window":
             let a = try c.decode(ResizeWindowArgs.self, forKey: .args)
+            // The CLI validates positivity, but a direct socket writer can send
+            // {"cols":-5,"rows":0}; reject it here so the server never applies a 0×0
+            // (or negative) grid, which would break resize/rendering.
+            guard a.cols > 0, a.rows > 0 else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .args, in: c,
+                    debugDescription: "resize-window cols/rows must be positive")
+            }
             self.kind = .resizeWindow(cols: a.cols, rows: a.rows)
         case "resize-pane":
             let a = try c.decode(ResizePaneArgs.self, forKey: .args)

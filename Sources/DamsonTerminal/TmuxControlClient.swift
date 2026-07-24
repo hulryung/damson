@@ -240,9 +240,16 @@ public final class TmuxControlClient {
     private func dispatch(_ event: TmuxControlEvent) {
         switch event {
         case .commandReply(let reply):
-            // Replies to OUR commands carry flags≠0; the connect-time guard block is flags 0
-            // and must not consume a queued handler.
-            if reply.flags != "0", !pendingReplies.isEmpty {
+            // tmux sets the low flag bit (flags & 1) on a %begin/%end block that answers a
+            // command read from THIS control client's stdin. The connect-time guard block
+            // and other internal/notification-context blocks have that bit clear (flags 0)
+            // and must NOT consume a queued handler. Parsing the bitmask — rather than a
+            // loose `flags != "0"` — means a multi-bit flags value ("2", "3", …) can't be
+            // mistaken for a client reply and desync the FIFO. (Skipping ALL flag-0 blocks
+            // is also more robust than "skip exactly the first block": a user's ~/.tmux.conf
+            // can make tmux emit several non-command blocks at startup.)
+            let isClientReply = (Int(reply.flags) ?? 0) & 1 != 0
+            if isClientReply, !pendingReplies.isEmpty {
                 let handler = pendingReplies.removeFirst()
                 handler?(reply)
             }
@@ -283,12 +290,26 @@ public final class TmuxControlClient {
         guard !didExit else { return }
         didExit = true
         if let reason = reason { NSLog("tmux: %%exit %@", reason) }
+        failPendingReplies()
         onExit?(nil)
     }
 
     private func handleProcessExit(_ code: Int32) {
         guard !didExit else { return }
         didExit = true
+        failPendingReplies()
         onExit?(code)
+    }
+
+    /// On exit, invoke every still-queued reply handler with a synthesized error so a
+    /// caller awaiting an enumeration/backfill reply resolves instead of hanging forever.
+    /// (`sendCommand` already does this for NEW commands issued after exit.)
+    private func failPendingReplies() {
+        let pending = pendingReplies
+        pendingReplies.removeAll()
+        for handler in pending {
+            handler?(TmuxCommandReply(timestamp: "", commandNumber: "", flags: "",
+                                      lines: [], isError: true))
+        }
     }
 }

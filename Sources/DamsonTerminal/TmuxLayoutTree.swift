@@ -161,7 +161,14 @@ public indirect enum TmuxLayoutTree: Equatable {
         var value = 0
         var any = false
         while i < chars.count, let d = chars[i].wholeNumberValue, chars[i].isNumber {
-            value = value * 10 + d
+            // Overflow-safe: a digit run long enough to overflow Int is malformed layout
+            // output — return nil (honoring the parser's "nil on malformed" contract)
+            // rather than letting `value * 10 + d` trap and crash the app.
+            let (mul, mo) = value.multipliedReportingOverflow(by: 10)
+            guard !mo else { return nil }
+            let (sum, so) = mul.addingReportingOverflow(d)
+            guard !so else { return nil }
+            value = sum
             any = true
             i += 1
         }

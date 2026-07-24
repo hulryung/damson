@@ -16,6 +16,10 @@ import Darwin
 ///      to hop main-actor work onto DispatchQueue.main itself. This class takes no
 ///      responsibility for thread safety.
 final class ControlSocketServer {
+    /// `listenFd` and `stopped` are touched by both `stop()` (main/deinit) and the accept
+    /// thread, so all access to them goes through `stateLock`. The lock is never held
+    /// across the blocking `accept()` — the loop snapshots the fd/flag, then releases.
+    private let stateLock = NSLock()
     private var listenFd: Int32 = -1
     private var socketPath: String = ""
     private var thread: Thread?
@@ -49,7 +53,9 @@ final class ControlSocketServer {
         // Block access by other users.
         chmod(path, 0o600)
 
+        stateLock.lock()
         self.listenFd = fd
+        stateLock.unlock()
         self.socketPath = path
 
         let t = Thread { [weak self] in
@@ -63,12 +69,16 @@ final class ControlSocketServer {
     }
 
     func stop() {
+        stateLock.lock()
+        if stopped { stateLock.unlock(); return }   // idempotent (deinit + explicit stop)
         stopped = true
-        if listenFd >= 0 {
-            // Wake the accept call with shutdown.
-            shutdown(listenFd, SHUT_RDWR)
-            close(listenFd)
-            listenFd = -1
+        let fd = listenFd
+        listenFd = -1
+        stateLock.unlock()
+        if fd >= 0 {
+            // Wake the accept call with shutdown, then close.
+            shutdown(fd, SHUT_RDWR)
+            close(fd)
         }
         if !socketPath.isEmpty {
             unlink(socketPath)
@@ -103,16 +113,25 @@ final class ControlSocketServer {
     }
 
     private func acceptLoop(handler: @escaping Handler) {
-        while !stopped {
+        while true {
+            stateLock.lock()
+            let stopNow = stopped
+            let fd = listenFd
+            stateLock.unlock()
+            if stopNow { return }
+
             var addr = sockaddr_un()
             var len = socklen_t(MemoryLayout<sockaddr_un>.size)
             let conn: Int32 = withUnsafeMutablePointer(to: &addr) { ap in
                 ap.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                    accept(listenFd, sa, &len)
+                    accept(fd, sa, &len)
                 }
             }
             if conn < 0 {
-                if stopped { return }
+                stateLock.lock()
+                let stoppedNow = stopped
+                stateLock.unlock()
+                if stoppedNow { return }
                 if errno == EINTR { continue }
                 if errno == EBADF || errno == EINVAL { return }
                 // Transient error — pause briefly and retry.
@@ -125,6 +144,9 @@ final class ControlSocketServer {
 
     private func handleConnection(fd: Int32, handler: @escaping Handler) {
         defer { close(fd) }
+        // A client that disconnects before reading the reply must not raise SIGPIPE on
+        // our response write() — that would terminate the whole app. EPIPE instead.
+        disableSIGPIPE(fd)
 
         var tv = timeval(tv_sec: 5, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv,
@@ -132,18 +154,21 @@ final class ControlSocketServer {
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv,
                    socklen_t(MemoryLayout.size(ofValue: tv)))
 
-        var buf = [UInt8](repeating: 0, count: 65_536)
-        var got = 0
-        while got < buf.count {
-            let n = buf.withUnsafeMutableBufferPointer { p -> Int in
-                read(fd, p.baseAddress!.advanced(by: got), p.count - got)
-            }
-            if n <= 0 { break }
-            got += n
-            if buf[..<got].contains(0x0A) { break }
+        // Read one newline-framed request into a growable buffer. A large `send-text`
+        // paste can exceed any fixed size; the 5s SO_RCVTIMEO above bounds a slow peer.
+        let payload: Data
+        switch readFramedLine(fd: fd) {
+        case .line(let d):
+            payload = d
+        case .eof(let d):
+            guard !d.isEmpty else { return }
+            payload = d
+        case .tooLong:
+            writeResponse(.err("request exceeded size limit"), to: fd)
+            return
+        case .timeout, .error:
+            return
         }
-        let nlIdx = buf[..<got].firstIndex(of: 0x0A) ?? got
-        let payload = Data(buf[..<nlIdx])
         guard !payload.isEmpty else { return }
 
         let resp: ControlResponse
@@ -153,20 +178,24 @@ final class ControlSocketServer {
         } catch {
             resp = .err("parse error: \(error)")
         }
+        writeResponse(resp, to: fd)
+    }
 
-        var out: Data
-        do {
-            out = try JSONEncoder().encode(resp)
-        } catch {
-            return
-        }
+    /// Encode `resp` as a JSON line and write it all, retrying on EINTR so a
+    /// signal-interrupted partial write doesn't drop the rest of the framed response.
+    private func writeResponse(_ resp: ControlResponse, to fd: Int32) {
+        guard var out = try? JSONEncoder().encode(resp) else { return }
         out.append(0x0A)
-        var sent = 0
         out.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            let p = raw.baseAddress!
+            guard let base = raw.baseAddress else { return }
+            var sent = 0
             while sent < out.count {
-                let n = write(fd, p.advanced(by: sent), out.count - sent)
-                if n <= 0 { return }
+                let n = write(fd, base.advanced(by: sent), out.count - sent)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    return   // real write error — give up on this connection
+                }
+                if n == 0 { return }
                 sent += n
             }
         }

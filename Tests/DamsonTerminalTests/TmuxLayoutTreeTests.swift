@@ -138,4 +138,12 @@ final class TmuxLayoutTreeTests: XCTestCase {
         XCTAssertNil(TmuxLayoutTree.parse("80x24,0,0{40x24,0,0,1"))   // unterminated group
         XCTAssertNil(TmuxLayoutTree.parse("e7b2,80x24,0,0,1,trailing"))  // trailing junk
     }
+
+    /// A digit run long enough to overflow Int must return nil (malformed), not trap and
+    /// crash the app — the parser's "nil on malformed" contract holds even here.
+    func testOverflowingNumberReturnsNilNotCrash() {
+        let huge = String(repeating: "9", count: 25)   // > Int.max (19 digits)
+        XCTAssertNil(TmuxLayoutTree.parse("\(huge)x24,0,0,1"))     // overflow in width
+        XCTAssertNil(TmuxLayoutTree.parse("80x24,0,0,\(huge)"))    // overflow in pane id
+    }
 }
