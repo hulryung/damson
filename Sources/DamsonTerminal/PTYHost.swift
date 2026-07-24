@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 /// Spawns the child shell on a PTY and manages read/write/resize/wait.
 /// Reading runs on a dedicated thread; callbacks hop to the main queue.
@@ -16,7 +17,14 @@ public final class PTYHost: SessionIOBackend {
 
     private var primaryFD: Int32 = -1
     private var childPID: pid_t = -1
-    private var isReading = false
+    /// Loop-control flag written on the main thread (`terminate`) and read on the read
+    /// thread (`startReading`/`enqueueOutput`). Backed by a lock so the cross-thread
+    /// access is a defined atomic op rather than a data race (UB under TSan).
+    private let readingState = OSAllocatedUnfairLock(initialState: false)
+    private var isReading: Bool {
+        get { readingState.withLock { $0 } }
+        set { readingState.withLock { $0 = newValue } }
+    }
 
     private let readQueue = DispatchQueue(label: "damson.pty.read", qos: .userInteractive)
     private let waitQueue = DispatchQueue(label: "damson.pty.wait", qos: .utility)
@@ -25,6 +33,12 @@ public final class PTYHost: SessionIOBackend {
     // between the read thread (append) and the main thread (drain).
     private let pendingLock = NSLock()
     private var pendingOutput = Data()
+    /// Read cursor into `pendingOutput`: bytes before it are already delivered but not yet
+    /// physically removed. Draining advances this instead of `removeFirst`-ing every turn
+    /// (which memmoves the whole remaining backlog each drain → O(n²) over a flood). The
+    /// consumed prefix is compacted only once it grows past the un-drained tail, which
+    /// amortizes the memmove to O(1) per byte. Guarded by `pendingLock`.
+    private var drainOffset = 0
     private var drainScheduled = false
     /// Cap on bytes buffered between the read thread and the main thread. When the main
     /// thread can't keep up with an output flood (e.g. `yes`), the read thread stalls at
@@ -226,7 +240,7 @@ public final class PTYHost: SessionIOBackend {
         pendingOutput.append(contentsOf: bytes)
         let needsSchedule = !drainScheduled
         drainScheduled = true
-        var backlog = pendingOutput.count
+        var backlog = pendingOutput.count - drainOffset
         pendingLock.unlock()
 
         if needsSchedule {
@@ -235,7 +249,7 @@ public final class PTYHost: SessionIOBackend {
         while backlog >= Self.maxPendingBytes && isReading {
             usleep(2_000)
             pendingLock.lock()
-            backlog = pendingOutput.count
+            backlog = pendingOutput.count - drainOffset
             pendingLock.unlock()
         }
     }
@@ -246,14 +260,24 @@ public final class PTYHost: SessionIOBackend {
     /// is being parsed at full speed.
     private func drainPendingOutput() {
         pendingLock.lock()
-        let chunk: Data
-        if pendingOutput.count <= Self.maxDrainBytes {
-            chunk = pendingOutput
-            pendingOutput = Data()
+        let available = pendingOutput.count - drainOffset
+        let take = min(available, Self.maxDrainBytes)
+        let start = pendingOutput.startIndex + drainOffset
+        let chunk = pendingOutput.subdata(in: start..<(start + take))
+        drainOffset += take
+        if drainOffset >= pendingOutput.count {
+            // Fully drained — reset with no memmove.
+            pendingOutput.removeAll(keepingCapacity: true)
+            drainOffset = 0
             drainScheduled = false
         } else {
-            chunk = pendingOutput.prefix(Self.maxDrainBytes)
-            pendingOutput.removeFirst(Self.maxDrainBytes)
+            // Compact the delivered prefix only once it's at least as large as the
+            // remaining tail: the memmove then costs ≤ (bytes since last compaction),
+            // i.e. amortized O(1) per byte instead of O(n) every drain.
+            if drainOffset >= pendingOutput.count - drainOffset {
+                pendingOutput.removeFirst(drainOffset)
+                drainOffset = 0
+            }
             DispatchQueue.main.async { [weak self] in self?.drainPendingOutput() }
         }
         pendingLock.unlock()
