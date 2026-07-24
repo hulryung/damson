@@ -25,6 +25,13 @@ public final class DamsonSession: ObservableObject {
     /// SGR mouse encoding (CSI ?1006h). true uses SGR format, false uses X10 classic.
     public private(set) var mouseSGREncoding: Bool = false
 
+    /// Charset designation (`ESC ( <f>` / `ESC ) <f>`) and the active GL slot (SI/SO).
+    /// `'B'` (0x42) = US-ASCII; `'0'` (0x30) = DEC Special Graphics (line-drawing). When
+    /// the active charset is Special Graphics, printable 0x5F…0x7E map to box/line glyphs.
+    private var g0Charset: UInt8 = 0x42
+    private var g1Charset: UInt8 = 0x42
+    private var activeGL: Int = 0   // 0 = G0, 1 = G1
+
     /// Cell grid (the current viewport).
     public let grid: Grid
 
@@ -536,14 +543,29 @@ public final class DamsonSession: ObservableObject {
 
 extension DamsonSession: VTParserDelegate {
     public func vtParser(_ parser: VTParser, didEmitText text: String) {
-        for ch in text {
-            grid.putChar(ch)
+        // SI/SO flush pending text before switching GL, so the whole run shares one
+        // charset. When it's DEC Special Graphics, translate each cell to its line-glyph.
+        let graphics = (activeGL == 0 ? g0Charset : g1Charset) == 0x30
+        if graphics {
+            for ch in text { grid.putChar(Self.decSpecialGraphic(ch)) }
+        } else {
+            for ch in text { grid.putChar(ch) }
         }
         outputEvents.send(.text(text))
     }
 
+    public func vtParser(_ parser: VTParser, didDesignateCharset slot: Int, charset: UInt8) {
+        switch slot {
+        case 0: g0Charset = charset
+        case 1: g1Charset = charset
+        default: break   // G2/G3 aren't reachable via SI/SO; store nothing.
+        }
+    }
+
     public func vtParser(_ parser: VTParser, didExecute byte: UInt8) {
         switch byte {
+        case 0x0E: activeGL = 1   // SO (shift-out) — invoke G1 into GL
+        case 0x0F: activeGL = 0   // SI (shift-in)  — invoke G0 into GL
         case 0x08: grid.backspace()
         case 0x0A: grid.lineFeed()
         case 0x0D: grid.carriageReturn()
@@ -581,15 +603,41 @@ extension DamsonSession: VTParserDelegate {
         outputEvents.send(.osc(params))
     }
 
+    /// DEC Special Graphics (VT100 line-drawing) for 0x5F…0x7E; other chars pass through.
+    /// Applied when the active charset is `'0'` (`ESC ( 0`, selected via SI/SO).
+    private static let decGraphicsTable: [Character] = [
+        "\u{00A0}", "\u{25C6}", "\u{2592}", "\u{2409}", "\u{240C}", "\u{240D}", "\u{240A}",
+        "\u{00B0}", "\u{00B1}", "\u{2424}", "\u{240B}", "\u{2518}", "\u{2510}", "\u{250C}",
+        "\u{2514}", "\u{253C}", "\u{23BA}", "\u{23BB}", "\u{2500}", "\u{23BC}", "\u{23BD}",
+        "\u{251C}", "\u{2524}", "\u{2534}", "\u{252C}", "\u{2502}", "\u{2264}", "\u{2265}",
+        "\u{03C0}", "\u{2260}", "\u{00A3}", "\u{00B7}",
+    ]
+
+    private static func decSpecialGraphic(_ ch: Character) -> Character {
+        guard ch.unicodeScalars.count == 1, let v = ch.unicodeScalars.first?.value,
+              (0x5F...0x7E).contains(v) else { return ch }
+        return decGraphicsTable[Int(v - 0x5F)]
+    }
+
     public func vtParser(_ parser: VTParser, didEmitESC finalByte: UInt8) {
         switch finalByte {
         case 0x37: // '7' — DECSC: save cursor + pen
             grid.saveCursor()
         case 0x38: // '8' — DECRC: restore cursor + pen
             grid.restoreCursor()
-        case 0x63: // 'c' — RIS: reset screen + state (simplified version)
-            grid.eraseInDisplay(mode: 2)
-            grid.setCursor(row: 1, col: 1)
+        case 0x63: // 'c' — RIS: reset the terminal to its power-on state.
+            grid.fullReset()
+            // Reset session-level private modes an app may have left on, so a program
+            // using RIS to recover isn't stranded with mouse reporting / bracketed paste
+            // / sync-output still active. (hasUsedSyncOutput is a sticky per-session hint
+            // and intentionally not reset.)
+            bracketedPasteEnabled = false
+            mouseReportingMode = 0
+            mouseSGREncoding = false
+            grid.inSyncOutputMode = false
+            g0Charset = 0x42
+            g1Charset = 0x42
+            activeGL = 0
         case 0x3D, 0x3E: // '=' / '>' — application/normal keypad mode (ignored in M3.9)
             break
         default:

@@ -1140,4 +1140,33 @@ final class GridTests: XCTestCase {
         XCTAssertEqual(g.cursorRow, 3)
         XCTAssertEqual(g.cursorCol, 3)
     }
+
+    /// unifiedRow maps 0..<scrollback.count to scrollback then the live viewport, and
+    /// returns [] out of range — the mapping the selection/hit-test/render paths share.
+    func testUnifiedRowSpansScrollbackThenViewport() {
+        let g = makeGrid(cols: 3, rows: 2)
+        for ch in "abc" { g.putChar(ch) }        // viewport row 0
+        g.lineFeed(); g.carriageReturn()
+        for ch in "def" { g.putChar(ch) }        // viewport row 1
+        g.lineFeed(); g.carriageReturn()          // scroll: "abc" → scrollback
+        XCTAssertEqual(g.scrollback.count, 1)
+        XCTAssertEqual(String(g.unifiedRow(0).map { $0.char }), "abc", "row 0 = scrollback")
+        XCTAssertEqual(String(g.unifiedRow(1).map { $0.char }), "def", "row 1 = viewport top")
+        XCTAssertEqual(g.unifiedRow(-1), [], "negative → empty")
+        XCTAssertEqual(g.unifiedRow(99), [], "past the end → empty")
+    }
+
+    /// A wide char wrapping off the last column while the cursor sits at the scroll-region
+    /// bottom must scroll WITHIN the region (like lineFeed), not push the cursor out of it.
+    func testWideCharWrapAtScrollRegionBottomStaysInRegion() {
+        let g = makeGrid(cols: 4, rows: 6)
+        g.setScrollRegion(top: 0, bottom: 2)   // region rows 0..2; homes the cursor
+        g.setCursor(row: 3, col: 4)            // 1-based → row 2 (= scrollBottom), col 3 (last)
+        XCTAssertEqual(g.cursorRow, 2)
+        g.putChar("한")                        // wide at the last column → must wrap in-region
+        // Before the fix this did `cursorRow += 1` → row 3, OUTSIDE the 0..2 region.
+        XCTAssertEqual(g.cursorRow, 2, "wrap at the region bottom must scroll the region, not leave it")
+        XCTAssertEqual(g.cell(row: 2, col: 0).char, "한",
+                       "the wide char lands at the region bottom's first column after the in-region scroll")
+    }
 }

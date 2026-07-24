@@ -146,6 +146,99 @@ final class VTParserTests: XCTestCase {
     }
 }
 
+// MARK: - Colon-delimited SGR sub-parameters (ISO 8613-6 / ITU-T T.416)
+
+extension VTParserTests {
+    /// Colon-form truecolor `38:2:r:g:b` must normalize to the same flat params the
+    /// semicolon form produces, so the SGR interpreter applies the RGB color. Before the
+    /// fix the colons were dropped and the digits concatenated into one garbage param.
+    func testColonTruecolorForeground() {
+        let events = parse("\u{1B}[38:2:255:0:0mX")
+        XCTAssertEqual(events, [
+            .csi(params: [38, 2, 255, 0, 0], finalByte: 0x6D, privateMarker: nil),
+            .text("X"),
+        ])
+    }
+
+    /// The ISO 8613-6 form carries an (often empty) colorspace id between `2` and R —
+    /// `38:2::r:g:b` — which must be dropped, leaving 5 flat params.
+    func testColonTruecolorWithEmptyColorspace() {
+        let events = parse("\u{1B}[38:2::10:20:30m")
+        XCTAssertEqual(events, [
+            .csi(params: [38, 2, 10, 20, 30], finalByte: 0x6D, privateMarker: nil),
+        ])
+    }
+
+    /// Colon-form indexed color `38:5:n` → `38 ; 5 ; n`.
+    func testColonIndexedColor() {
+        let events = parse("\u{1B}[38:5:200m")
+        XCTAssertEqual(events, [
+            .csi(params: [38, 5, 200], finalByte: 0x6D, privateMarker: nil),
+        ])
+    }
+
+    /// Underline color via colon form (`58:2::r:g:b`).
+    func testColonUnderlineColor() {
+        let events = parse("\u{1B}[58:2::0:255:0m")
+        XCTAssertEqual(events, [
+            .csi(params: [58, 2, 0, 255, 0], finalByte: 0x6D, privateMarker: nil),
+        ])
+    }
+
+    /// `4:3` (curly) and other underline styles must map to plain underline-on (SGR 4),
+    /// never be mis-parsed as `4;3` (underline + italic).
+    func testColonUnderlineStyleMapsToUnderlineOn() {
+        XCTAssertEqual(parse("\u{1B}[4:3m"), [
+            .csi(params: [4], finalByte: 0x6D, privateMarker: nil),
+        ])
+        // style 0 = no underline → SGR 24 (underline off).
+        XCTAssertEqual(parse("\u{1B}[4:0m"), [
+            .csi(params: [24], finalByte: 0x6D, privateMarker: nil),
+        ])
+    }
+
+    /// A mix of plain, underline-style, and colon-truecolor groups in one SGR.
+    func testMixedColonAndSemicolonGroups() {
+        let events = parse("\u{1B}[1;4:3;38:2:10:20:30m")
+        XCTAssertEqual(events, [
+            .csi(params: [1, 4, 38, 2, 10, 20, 30], finalByte: 0x6D, privateMarker: nil),
+        ])
+    }
+
+    /// The plain semicolon truecolor form is unaffected (fast path, no colon).
+    func testSemicolonTruecolorUnchanged() {
+        let events = parse("\u{1B}[38;2;1;2;3m")
+        XCTAssertEqual(events, [
+            .csi(params: [38, 2, 1, 2, 3], finalByte: 0x6D, privateMarker: nil),
+        ])
+    }
+}
+
+// MARK: - Parser-state bounds (unbounded-growth hardening)
+
+extension VTParserTests {
+    /// A flood of `;` in a CSI must not grow `params` without bound — it's capped, and
+    /// the parser still terminates and dispatches on the final byte (no hang/crash).
+    func testCSIParamCountIsCapped() {
+        let flood = "\u{1B}[" + String(repeating: "1;", count: 500) + "m"
+        let events = parse(flood)
+        guard case .csi(let params, let finalByte, _)? = events.first else {
+            return XCTFail("expected a CSI dispatch, got \(events)")
+        }
+        XCTAssertEqual(finalByte, 0x6D)
+        XCTAssertLessThanOrEqual(params.count, 32, "params must be bounded")
+        XCTAssertEqual(events.count, 1)
+    }
+
+    /// A large-but-reasonable OSC (well under the cap) still dispatches intact — the cap
+    /// must not truncate legitimate payloads (e.g. an OSC 52 clipboard set).
+    func testLargeOSCUnderCapDispatchesIntact() {
+        let payload = String(repeating: "a", count: 200_000)
+        let events = parse("\u{1B}]52;c;\(payload)\u{07}")
+        XCTAssertEqual(events, [.osc(["52", "c", payload])])
+    }
+}
+
 // MARK: - DCS / tmux -CC takeover (P3-4)
 
 extension VTParserTests {

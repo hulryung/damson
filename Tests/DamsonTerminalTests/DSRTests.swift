@@ -29,35 +29,48 @@ final class DSRTests: XCTestCase {
 
     private func feed(_ b: CapturingBackend, _ s: String) { b.onData?(Data(s.utf8)) }
 
+    // NOTE: the session must be kept alive across `feed` — `pty.onData` captures the
+    // session weakly (correctly, to avoid a session↔backend retain cycle in the app), so
+    // a discarded session deallocs before the fed bytes are parsed and nothing is written.
+    // Each test binds the session and wraps the feed in `withExtendedLifetime`.
+
     /// `CSI 6 n` at the home position → `ESC [ 1 ; 1 R`.
     func testCursorPositionReportAtHome() {
-        let (_, b) = session()
-        feed(b, "\u{1B}[6n")
-        XCTAssertEqual(String(decoding: b.written, as: UTF8.self), "\u{1B}[1;1R")
+        let (s, b) = session()
+        withExtendedLifetime(s) {
+            feed(b, "\u{1B}[6n")
+            XCTAssertEqual(String(decoding: b.written, as: UTF8.self), "\u{1B}[1;1R")
+        }
     }
 
     /// CPR is 1-based and reflects the current cursor position.
     func testCursorPositionReportAfterMove() {
-        let (_, b) = session()
-        // Move the cursor to row 5, col 10 (CUP is 1-based), then request CPR.
-        feed(b, "\u{1B}[5;10H")
-        b.written.removeAll()
-        feed(b, "\u{1B}[6n")
-        XCTAssertEqual(String(decoding: b.written, as: UTF8.self), "\u{1B}[5;10R")
+        let (s, b) = session()
+        withExtendedLifetime(s) {
+            // Move the cursor to row 5, col 10 (CUP is 1-based), then request CPR.
+            feed(b, "\u{1B}[5;10H")
+            b.written.removeAll()
+            feed(b, "\u{1B}[6n")
+            XCTAssertEqual(String(decoding: b.written, as: UTF8.self), "\u{1B}[5;10R")
+        }
     }
 
     /// `CSI 5 n` (operating-status request) → `ESC [ 0 n` (terminal OK).
     func testOperatingStatusReport() {
-        let (_, b) = session()
-        feed(b, "\u{1B}[5n")
-        XCTAssertEqual(String(decoding: b.written, as: UTF8.self), "\u{1B}[0n")
+        let (s, b) = session()
+        withExtendedLifetime(s) {
+            feed(b, "\u{1B}[5n")
+            XCTAssertEqual(String(decoding: b.written, as: UTF8.self), "\u{1B}[0n")
+        }
     }
 
     /// The private-marker form (`CSI ? 6 n`, DECXCPR) is NOT the ANSI DSR and
     /// must not produce the plain CPR (we only answer the ANSI form).
     func testPrivateDSRIgnored() {
-        let (_, b) = session()
-        feed(b, "\u{1B}[?6n")
-        XCTAssertTrue(b.written.isEmpty, "private CSI ?6n must not yield a plain CPR")
+        let (s, b) = session()
+        withExtendedLifetime(s) {
+            feed(b, "\u{1B}[?6n")
+            XCTAssertTrue(b.written.isEmpty, "private CSI ?6n must not yield a plain CPR")
+        }
     }
 }

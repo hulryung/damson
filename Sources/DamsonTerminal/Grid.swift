@@ -152,6 +152,16 @@ public final class Grid {
         return cells[r].cells
     }
 
+    /// Cells for a row in unified (scrollback-then-viewport) coordinates: `0..<scrollback.count`
+    /// indexes scrollback (oldest first), then the live viewport. Returns `[]` for any
+    /// out-of-range index. Consolidates the identical mapping the selection, hit-testing,
+    /// and render paths each used to reimplement.
+    public func unifiedRow(_ r: Int) -> [Cell] {
+        if r >= 0 && r < scrollback.count { return scrollback[r].cells }
+        let vp = r - scrollback.count
+        return (vp >= 0 && vp < rows) ? cells[vp].cells : []
+    }
+
     /// Whether a viewport row soft-wrapped (continues onto the next row). For renderer/reflow.
     public func rowWrapped(_ r: Int) -> Bool {
         precondition(r >= 0 && r < rows)
@@ -187,7 +197,11 @@ public final class Grid {
         // indicator pair must merge into the preceding cell instead of starting a
         // new one. (printf's single write already clusters via Swift's grapheme
         // breaking; this catches the split-write case.)
-        if mergeGraphemeExtender(ch) { return }
+        //
+        // ASCII can never be a grapheme extender, a regional indicator, or complete a
+        // ZWJ sequence (those merges all require non-ASCII scalars), so an ASCII char
+        // never merges — skip the whole check on the flood path.
+        if !ch.isASCII, mergeGraphemeExtender(ch) { return }
         if pendingWrap {
             pendingWrap = false
             // Soft wrap: the row we're leaving filled to the margin and the text
@@ -212,9 +226,12 @@ public final class Grid {
             // Same soft-wrap case: a wide glyph that won't fit pushes to the next
             // row, so the row it leaves behind is a wrapped continuation.
             cells[cursorRow].wrapped = true
-            if cursorRow >= rows - 1 {
+            // Route through the same scroll-region logic as lineFeed(): at the region
+            // bottom, scroll WITHIN the region (DECSTBM) instead of jumping the cursor
+            // out of it; otherwise move down unless we're at the screen edge.
+            if cursorRow == scrollBottom {
                 scrollUp(count: 1)
-            } else {
+            } else if cursorRow < rows - 1 {
                 cursorRow += 1
             }
             cursorCol = 0
@@ -1255,6 +1272,28 @@ public final class Grid {
     public func setHyperlink(_ uri: String?) {
         currentHyperlink = uri
         // Already-drawn cells are unaffected → don't bump version.
+    }
+
+    /// RIS (`ESC c`) — reset the terminal's screen state to power-on defaults: leave the
+    /// alt screen, clear the screen, restore the default pen, reset the scroll region to
+    /// the full screen, drop the saved cursor (DECSC) and pending wrap, home the cursor,
+    /// and make the cursor visible. Scrollback is preserved (matches the old ED-2 based
+    /// RIS and iTerm2 — `ESC [ 3 J` is the explicit "also drop scrollback" path).
+    public func fullReset() {
+        if isAltScreenActive { leaveAltScreen() }
+        pen = defaultPen
+        cells = Self.makeBlank(rows: rows, cols: cols, attrs: pen)
+        cursorRow = 0
+        cursorCol = 0
+        pendingWrap = false
+        scrollTop = 0
+        scrollBottom = rows - 1
+        savedCursorRow = 0
+        savedCursorCol = 0
+        savedPen = nil
+        currentHyperlink = nil
+        cursorVisible = true
+        bumpVersion()
     }
 
     /// Clear all scrollback (used by ED mode 3 etc.).
