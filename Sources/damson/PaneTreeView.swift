@@ -287,8 +287,17 @@ final class PaneTreeView: NSView {
             a.parent = parent
             b.parent = parent
         }
-        // Set the new active to the first leaf of the promoted sub-tree.
-        activeLeaf = firstLeaf(of: parent)
+        // Only move the active pane if the close actually invalidated it. This
+        // collapse removes exactly two nodes from the tree: the closed `leaf` and the
+        // `sibling` (whose kind is spliced into `parent`; the sibling's own children
+        // are re-parented and stay live). So `activeLeaf` is still valid unless it was
+        // one of those two. Re-deriving it unconditionally would steal focus + first
+        // responder from an unrelated pane whenever a BACKGROUND pane's shell exits
+        // (closeSession → closeLeaf on a non-active leaf), silently redirecting the
+        // user's keystrokes into a different shell.
+        if activeLeaf === leaf || activeLeaf === sibling {
+            activeLeaf = firstLeaf(of: parent)
+        }
         rebuild(animation: animation)
     }
 

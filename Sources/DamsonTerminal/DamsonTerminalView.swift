@@ -221,6 +221,12 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     private var cursorBlinkTimer: Timer?
     private var cursorBlinkVisible = true
 
+    /// Tokens for the block-based NotificationCenter observers registered in init.
+    /// Block observers are NOT auto-removed when their view deallocs, so they must be
+    /// explicitly removed in `deinit` — otherwise every closed tab/pane leaves a dead
+    /// observer (and its captured closure) registered on the default center forever.
+    private var notificationObservers: [NSObjectProtocol] = []
+
     /// The currently applied font zoom multiplier. 1.0 is the default. Changed via Cmd+= / Cmd+- / Cmd+0.
     private var fontSizeMultiplier: CGFloat = 1.0
 
@@ -301,13 +307,13 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             DispatchQueue.main.async { self?.refreshFollowingBottomFlag() }
         }
         // Subscribe to the perf HUD toggle broadcast — when on, this surface also shows the overlay.
-        NotificationCenter.default.addObserver(
+        notificationObservers.append(NotificationCenter.default.addObserver(
             forName: .damsonPerfHUDToggled, object: nil, queue: .main
-        ) { [weak self] _ in self?.applyPerfHUD() }
+        ) { [weak self] _ in self?.applyPerfHUD() })
         if DamsonSurfaceView.isPerfHUDEnabled { applyPerfHUD() }
-        NotificationCenter.default.addObserver(
+        notificationObservers.append(NotificationCenter.default.addObserver(
             forName: .damsonAppleHUDToggled, object: nil, queue: .main
-        ) { [weak self] _ in self?.applyAppleHUD() }
+        ) { [weak self] _ in self?.applyAppleHUD() })
         // Always apply the initial state explicitly — keep the Apple HUD (which
         // MTL_HUD_ENABLED env auto-enables) off at startup (only toggled on via
         // ⌃⌘J). Default isAppleHUDEnabled == false.
@@ -341,6 +347,19 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // Initial one-time render.
         scheduleRender()
         updateBlinkTimer()
+    }
+
+    deinit {
+        // Repeating timers are held by the RunLoop (their [weak self] block keeps
+        // firing as a no-op after the view is gone) and block observers are retained
+        // by the notification center — neither is torn down by ARC, so a closed
+        // tab/pane would leak a live 0.53s timer plus two observers without this.
+        cursorBlinkTimer?.invalidate()
+        autoScrollTimer?.invalidate()
+        zoomBurstTimer?.invalidate()
+        for token in notificationObservers {
+            NotificationCenter.default.removeObserver(token)
+        }
     }
 
     // MARK: - Cursor blink
@@ -788,11 +807,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
 
     private func cellsForTextViewRow(_ row: Int) -> [Cell] {
-        let scrollbackCount = session.grid.scrollback.count
-        if row < scrollbackCount { return session.grid.scrollback[row].cells }
-        let vp = row - scrollbackCount
-        if vp >= 0 && vp < session.grid.rows { return session.grid.row(vp) }
-        return []
+        session.grid.unifiedRow(row)
     }
 
     private func wordBoundsAround(

@@ -828,10 +828,18 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func spawnSingleSessionWindow() {
         let session = DamsonSession(config: DamsonConfig.fromUserDefaults())
         let controller = DamsonWindowController(session: session)
-        NotificationCenter.default.addObserver(
+        // Block observers keyed on `object:` are NOT auto-removed when the window
+        // deallocs, so a discarded token leaks one dead observer per window open/close
+        // cycle. Capture the token and remove it when it fires (once, on window close).
+        let box = ObserverTokenBox()
+        box.token = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: controller.window, queue: .main
         ) { [weak self, weak controller] _ in
+            if let t = box.token {
+                NotificationCenter.default.removeObserver(t)
+                box.token = nil
+            }
             guard let self = self, let controller = controller else { return }
             self.controllers.removeAll { $0 === controller }
         }
@@ -841,16 +849,28 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func spawnCompactWindow(restoring: RestorableWindow? = nil) {
         let controller = CompactWindowController(restoring: restoring)
-        NotificationCenter.default.addObserver(
+        let box = ObserverTokenBox()
+        box.token = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: controller.window, queue: .main
         ) { [weak self, weak controller] _ in
+            if let t = box.token {
+                NotificationCenter.default.removeObserver(t)
+                box.token = nil
+            }
             guard let self = self, let controller = controller else { return }
             self.compactControllers.removeAll { $0 === controller }
         }
         compactControllers.append(controller)
         controller.showWindow(nil)
     }
+}
+
+/// Reference holder so a one-shot NotificationCenter block observer can remove itself
+/// from inside its own handler without the "var mutated after capture by a @Sendable
+/// closure" warning (the closure captures this immutable `let` and mutates its property).
+private final class ObserverTokenBox {
+    var token: NSObjectProtocol?
 }
 
 // MARK: - Minimal menu bar

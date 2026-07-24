@@ -981,10 +981,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     // fg/bg color resolution → see `fgRGBA` / `bgRGBA` (rgba-returning, cached).
 
     private func cellsForRow(grid: Grid, unifiedRow: Int) -> [Cell] {
-        let sc = grid.scrollback.count
-        if unifiedRow < sc { return grid.scrollback[unifiedRow].cells }
-        let vp = unifiedRow - sc
-        return (vp >= 0 && vp < grid.rows) ? grid.row(vp) : []
+        grid.unifiedRow(unifiedRow)
     }
 
     private func selectedColumns(_ state: RenderState, row: Int, cols: Int) -> Range<Int>? {
