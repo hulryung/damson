@@ -113,16 +113,19 @@ public enum SelectionLogic {
         return nil
     }
 
+    // Compiled once — these patterns are compile-time constants (double-click / hover is
+    // user-driven, but there's no reason to recompile the regex on every gesture).
+    private static let urlRegex = try? NSRegularExpression(
+        pattern: #"(https?|file)://[^\s'"()<>\[\]{}]+"#)
+    private static let emailRegex = try? NSRegularExpression(
+        pattern: #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#)
+
     private static func match(rule: SmartRule, chars: [Character], index: Int) -> Range<Int>? {
         switch rule {
         case .url:
-            return regexTokenRange(
-                chars, index,
-                pattern: #"(https?|file)://[^\s'"()<>\[\]{}]+"#)
+            return urlRegex.flatMap { regexTokenRange(chars, index, regex: $0) }
         case .email:
-            return regexTokenRange(
-                chars, index,
-                pattern: #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#)
+            return emailRegex.flatMap { regexTokenRange(chars, index, regex: $0) }
         case .path:
             // ~-, /-, ./- prefixed, or any run containing a slash. Stops at
             // whitespace and shell-unfriendly delimiters.
@@ -156,13 +159,12 @@ public enum SelectionLogic {
         return start..<end
     }
 
-    /// Run `pattern` over the whole string and return the match range (in char
+    /// Run `regex` over the whole string and return the match range (in char
     /// offsets) that contains `index`, if any.
     private static func regexTokenRange(
-        _ chars: [Character], _ index: Int, pattern: String
+        _ chars: [Character], _ index: Int, regex re: NSRegularExpression
     ) -> Range<Int>? {
         let text = String(chars)
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
         let ns = text as NSString
         let full = NSRange(location: 0, length: ns.length)
         for m in re.matches(in: text, range: full) {

@@ -76,7 +76,13 @@ public func isNerdFont(_ family: String) -> Bool {
 /// Returns an arbitrary one of the monospace Nerd Fonts installed on the system, for fallback use.
 /// Prefers the "Mono" variant (one-cell-width glyphs).
 private var cachedNerdFallback: String??
+private let cachedNerdFallbackLock = NSLock()
 public func anyInstalledNerdFont() -> String? {
+    // Guard the memoized cache: this can be reached off the main thread (a glyph
+    // rasterizer computing fallback), and an unsynchronized global read+write is a data
+    // race. The lock also collapses a concurrent first-call race to a single compute.
+    cachedNerdFallbackLock.lock()
+    defer { cachedNerdFallbackLock.unlock() }
     if let cached = cachedNerdFallback { return cached }
     let mgr = NSFontManager.shared
     let mono = mgr.availableFontFamilies.filter { name in

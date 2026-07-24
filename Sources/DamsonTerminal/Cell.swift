@@ -222,6 +222,11 @@ public struct Cell: Equatable {
     /// agreeing with the shell so cursor/erase don't desync); everything else uses
     /// the East-Asian-Wide range table.
     public static func isWide(_ ch: Character) -> Bool {
+        // Hot path: plain ASCII (the bulk of terminal output — `cat`, `yes`, logs,
+        // source code) is never wide. Bail before touching `unicodeScalars`, so the
+        // common per-char case pays no array allocation and no Unicode-property
+        // lookup. `putChar` calls this for every printable, so this is the flood path.
+        if ch.isASCII { return false }
         let scalars = Array(ch.unicodeScalars)
         // Regional-indicator pair → flag → 2 cells.
         if scalars.count == 2,

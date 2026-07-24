@@ -41,6 +41,12 @@ enum MultiRowURLDetector {
     /// Max rows joined in each direction — bounds work and absurd joins (≈ 8×cols chars).
     private static let maxChain = 8
 
+    /// Link detector, built once — constructing an NSDataDetector is not cheap and this
+    /// runs on every hover probe. `.link` type is fixed, so a single shared instance is
+    /// safe (NSDataDetector matching is thread-safe / stateless per call).
+    private static let linkDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue)
+
     /// Probe for a URL at (row, col). `rowAt` returns nil for out-of-range rows.
     static func match(
         at row: Int, col: Int,
@@ -98,9 +104,7 @@ enum MultiRowURLDetector {
         guard let charIndex = probeIndex else { return nil }
 
         // 4. Detect and pick the match containing the probe.
-        guard let detector = try? NSDataDetector(
-            types: NSTextCheckingResult.CheckingType.link.rawValue
-        ) else { return nil }
+        guard let detector = linkDetector else { return nil }
         // NSRange is UTF-16-based; our index is in Characters. Map through the string.
         let chars = Array(text)
         for m in detector.matches(in: text, options: [],

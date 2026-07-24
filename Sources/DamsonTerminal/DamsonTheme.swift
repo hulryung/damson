@@ -118,9 +118,9 @@ public extension DamsonTheme {
                 blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
     }
 
-    /// All built-in presets (Settings picker order). Dark → light.
-    static var presets: [DamsonTheme] {
-        [
+    /// All built-in presets (Settings picker order). Dark → light. `static let` so the
+    /// ~34 themes (each allocating ~19 NSColors) are built once, not on every access.
+    static let presets: [DamsonTheme] = [
             // dark
             .defaultDark, .dracula, .monokai, .oneDark, .nord, .gruvboxDark,
             .solarizedDark, .tokyoNight, .tokyoNightStorm, .catppuccinMocha,
@@ -131,8 +131,7 @@ public extension DamsonTheme {
             // light
             .solarizedLight, .gruvboxLight, .oneLight, .catppuccinLatte,
             .tokyoNightLight, .githubLight, .rosePineDawn, .tomorrow,
-        ]
-    }
+    ]
 
     static func preset(named name: String) -> DamsonTheme? {
         presets.first { $0.name == name }
