@@ -1085,22 +1085,21 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     private func encodeCursorPass(enc: MTLRenderCommandEncoder, uniforms: inout Uniforms,
                                   grid: Grid, state: RenderState) {
         guard let cur = cursorDrawData(grid: grid, state: state) else { return }
-        if let b = withUnsafeBytes(of: cur.bg, {
-            md.device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared)
-        }) {
-            enc.setRenderPipelineState(md.bgPipeline)
-            enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-            enc.setVertexBuffer(b, offset: 0, index: 1)
-            enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
-        }
-        guard let g = cur.glyph,
-              let tex = cur.glyphIsColor ? atlas?.colorTexture : atlas?.texture,
-              let b = withUnsafeBytes(of: g, {
-                  md.device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared)
-              }) else { return }
+        // The cursor draws a single BgInstance (32B) + single GlyphInstance (64B). Pass
+        // them inline via setVertexBytes (the ≤4KB fast path) instead of allocating a
+        // fresh MTLBuffer per frame — this pass runs even on frame-cache hits (a blinking
+        // block cursor at 120Hz), so the old makeBuffer churned ~120 tiny allocs/sec.
+        var bg = cur.bg
+        enc.setRenderPipelineState(md.bgPipeline)
+        enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+        enc.setVertexBytes(&bg, length: MemoryLayout<BgInstance>.stride, index: 1)
+        enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
+
+        guard var g = cur.glyph,
+              let tex = cur.glyphIsColor ? atlas?.colorTexture : atlas?.texture else { return }
         enc.setRenderPipelineState(cur.glyphIsColor ? md.colorGlyphPipeline : md.glyphPipeline)
         enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-        enc.setVertexBuffer(b, offset: 0, index: 1)
+        enc.setVertexBytes(&g, length: MemoryLayout<GlyphInstance>.stride, index: 1)
         enc.setFragmentTexture(tex, index: 0)
         enc.setFragmentSamplerState(md.glyphSampler, index: 0)
         enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
