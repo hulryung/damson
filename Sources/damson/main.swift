@@ -14,7 +14,7 @@ AppBundleTrampoline.relaunchInAppBundleIfNeeded()
 
 /// One window + one pane tree (Standard/Auto mode). Multiple windows are grouped
 /// via native NSWindow tabs, and within each window Cmd+D / Cmd+Shift+D split panes.
-final class DamsonWindowController: NSWindowController, NSWindowDelegate, PaneTreeHosting {
+final class DamsonWindowController: NSWindowController, NSWindowDelegate, PaneTreeHosting, PaneCommandTarget {
     private let tree: PaneTreeView
     private var titleSubscription: AnyCancellable?
     private var tabStyleApplier: TabBarStyleApplier?
@@ -324,15 +324,10 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @MainActor
     private func controlSplit(_ dir: SplitDir) -> ControlResponse {
         let direction: SplitDirection = (dir == .vertical) ? .vertical : .horizontal
-        if let active = activeCompact() {
-            active.splitActive(direction: direction)
-            return .ok()
+        guard withActiveTarget({ $0.splitActive(direction: direction) }) != nil else {
+            return .err("no active window to split")
         }
-        if let single = activeSingleController() {
-            single.splitActive(direction: direction)
-            return .ok()
-        }
-        return .err("no active window to split")
+        return .ok()
     }
 
     @MainActor
@@ -341,15 +336,10 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let names = PaneLayoutTemplate.allCases.map { $0.rawValue }.joined(separator: ", ")
             return .err("unknown layout '\(name)'. options: \(names)")
         }
-        if let active = activeCompact() {
-            active.applyLayout(template)
-            return .ok()
+        guard withActiveTarget({ $0.applyLayout(template) }) != nil else {
+            return .err("no active window")
         }
-        if let single = activeSingleController() {
-            single.applyLayout(template)
-            return .ok()
-        }
-        return .err("no active window")
+        return .ok()
     }
 
     @MainActor
@@ -435,67 +425,44 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @MainActor
     private func controlResizeWindow(cols: Int, rows: Int) -> ControlResponse {
-        if let active = activeCompact() {
-            return active.resizeWindowToGrid(cols: cols, rows: rows)
-                ? .ok() : .err("no active pane to size")
+        guard let ok = withActiveTarget({ $0.resizeWindowToGrid(cols: cols, rows: rows) }) else {
+            return .err("no active window to resize")
         }
-        if let single = activeSingleController() {
-            return single.resizeWindowToGrid(cols: cols, rows: rows)
-                ? .ok() : .err("no active pane to size")
-        }
-        return .err("no active window to resize")
+        return ok ? .ok() : .err("no active pane to size")
     }
 
     @MainActor
     private func controlResizePane(_ dir: PaneDir, _ amount: Int) -> ControlResponse {
         let focusDir = paneFocusDirection(dir)
-        if let active = activeCompact() {
-            return active.resizeActivePane(focusDir, cells: amount)
-                ? .ok() : .err("active pane has no split to resize toward \(dir.rawValue)")
+        guard let ok = withActiveTarget({ $0.resizeActivePane(focusDir, cells: amount) }) else {
+            return .err("no active window")
         }
-        if let single = activeSingleController() {
-            return single.resizeActivePane(focusDir, cells: amount)
-                ? .ok() : .err("active pane has no split to resize toward \(dir.rawValue)")
-        }
-        return .err("no active window")
+        return ok ? .ok() : .err("active pane has no split to resize toward \(dir.rawValue)")
     }
 
     @MainActor
     private func controlFocusPane(_ dir: PaneDir) -> ControlResponse {
         let focusDir = paneFocusDirection(dir)
-        if let active = activeCompact() {
-            active.focusActivePane(focusDir)
-            return .ok()
+        guard withActiveTarget({ $0.focusActivePane(focusDir) }) != nil else {
+            return .err("no active window")
         }
-        if let single = activeSingleController() {
-            single.focusActivePane(focusDir)
-            return .ok()
-        }
-        return .err("no active window")
+        return .ok()
     }
 
     @MainActor
     private func controlClosePane() -> ControlResponse {
-        if let active = activeCompact() {
-            active.closeActivePane()
-            return .ok()
+        guard withActiveTarget({ $0.closeActivePane() }) != nil else {
+            return .err("no active window")
         }
-        if let single = activeSingleController() {
-            single.closeActivePane()
-            return .ok()
-        }
-        return .err("no active window")
+        return .ok()
     }
 
     @MainActor
     private func controlListPanes() -> ControlResponse {
-        if let active = activeCompact() {
-            return .panes(active.paneList())
+        guard let list = withActiveTarget({ $0.paneList() }) else {
+            return .err("no active window")
         }
-        if let single = activeSingleController() {
-            return .panes(single.paneList())
-        }
-        return .err("no active window")
+        return .panes(list)
     }
 
     @MainActor
@@ -567,7 +534,20 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let keyWindow = NSApp.keyWindow else {
             return controllers.first
         }
-        return controllers.first(where: { $0.window === keyWindow }) ?? controllers.first
+        // No `?? controllers.first` fallback: when the key window is a non-terminal window
+        // (Settings/About), return nil so control commands error out rather than silently
+        // applying to an arbitrary background terminal. Mirrors activeCompact().
+        return controllers.first(where: { $0.window === keyWindow })
+    }
+
+    /// Dispatch a pane-level command to whichever controller kind owns the active window
+    /// (compact first, then single-session). Returns nil when there's no active window —
+    /// the one place the "try compact, else single, else none" resolution lives.
+    @MainActor
+    private func withActiveTarget<T>(_ body: (PaneCommandTarget) -> T) -> T? {
+        if let compact = activeCompact() { return body(compact) }
+        if let single = activeSingleController() { return body(single) }
+        return nil
     }
 
     /// The list of windows in the native tab group (Standard/Auto mode).

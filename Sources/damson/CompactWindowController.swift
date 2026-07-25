@@ -49,7 +49,7 @@ final class CompactWindow: NSWindow {
 /// row with the traffic lights.
 ///
 /// Borrows the MainWindowController structure from hiterm (`~/dev/hiterm`).
-final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSwipeHandler, PaneTreeHosting {
+final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSwipeHandler, PaneTreeHosting, PaneCommandTarget {
     /// A tab = (PaneTreeView, a subscription to the title of that tree's first leaf session).
     /// Splitting within a tab via Cmd+D / Cmd+Shift+D adds a leaf to that tab's tree.
     private struct Tab {
