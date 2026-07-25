@@ -40,6 +40,14 @@ public final class Grid {
     /// DECSTBM scroll region bottom (0-based, inclusive). Defaults to rows - 1.
     public private(set) var scrollBottom: Int = 0
 
+    /// ANSI insert mode (IRM, `CSI 4 h` / `CSI 4 l`). When on, a printed char shifts the
+    /// rest of the line right (chars fall off the end) instead of overwriting in place.
+    public private(set) var insertMode: Bool = false
+
+    /// Horizontal tab stops (0-based columns). Defaults to every 8th column; HTS (`ESC H`)
+    /// sets one at the cursor, TBC (`CSI g` / `CSI 3 g`) clears one / all.
+    private var tabStops: Set<Int> = Set(stride(from: 8, through: 1000, by: 8))
+
     /// Cursor + pen snapshot saved by DECSC/DECRC (or CSI s/u).
     /// Each buffer (primary/alt) needs its own saved state — included in the alt screen snapshot.
     private var savedCursorRow: Int = 0
@@ -237,6 +245,10 @@ public final class Grid {
             cursorCol = 0
         }
 
+        // IRM (insert mode): open a gap by shifting the rest of the line right before
+        // writing, so the new char is inserted rather than overwriting what's there.
+        if insertMode { shiftRightForInsert(row: cursorRow, at: cursorCol, count: wide ? 2 : 1) }
+
         // Overwriting only one cell of a wide char leaves its partner orphaned and a
         // broken half glyph on screen (happens when TUIs like Claude Code move the
         // cursor and partially redraw). Blank the partner of any straddling wide char
@@ -360,6 +372,44 @@ public final class Grid {
             cursorCol -= 1
             bumpVersion()
         }
+    }
+
+    // MARK: - Tab stops & insert mode
+
+    /// IRM toggle (`CSI 4 h/l`).
+    public func setInsertMode(_ on: Bool) {
+        if insertMode == on { return }
+        insertMode = on
+        bumpVersion()
+    }
+
+    /// HTS (`ESC H`) — set a tab stop at the current column.
+    public func setTabStop() { tabStops.insert(cursorCol) }
+
+    /// TBC 0 (`CSI g`) — clear the tab stop at the current column.
+    public func clearTabStop() { tabStops.remove(cursorCol) }
+
+    /// TBC 3 (`CSI 3 g`) — clear every tab stop.
+    public func clearAllTabStops() { tabStops.removeAll() }
+
+    /// HT (`\t`) — move the cursor to the next tab stop, or the right margin if none.
+    public func tabForward() {
+        let next = tabStops.filter { $0 > cursorCol }.min().map { min($0, cols - 1) } ?? (cols - 1)
+        cursorCol = min(max(next, 0), cols - 1)
+        pendingWrap = false
+        bumpVersion()
+    }
+
+    /// IRM helper: shift the row right by `count` from `col` (the last `count` cells fall
+    /// off), opening a gap the incoming char is written into. Cursor is not moved here.
+    private func shiftRightForInsert(row: Int, at col: Int, count: Int) {
+        guard count > 0, row >= 0, row < rows, col >= 0, col < cols else { return }
+        var r = cells[row]
+        let blank = Cell.empty(attrs: pen)
+        var c = cols - 1
+        while c >= col + count { r[c] = r[c - count]; c -= 1 }
+        for cc in col..<min(col + count, cols) { r[cc] = blank }
+        cells[row] = r
     }
 
     // MARK: - Scrolling
@@ -1293,6 +1343,8 @@ public final class Grid {
         savedPen = nil
         currentHyperlink = nil
         cursorVisible = true
+        insertMode = false
+        tabStops = Set(stride(from: 8, through: 1000, by: 8))
         bumpVersion()
     }
 

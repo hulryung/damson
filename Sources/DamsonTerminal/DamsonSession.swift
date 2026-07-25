@@ -454,9 +454,20 @@ public final class DamsonSession: ObservableObject {
                 }
                 grid.setCursorShape(shape)
             }
+        case 0x67:                          // g — TBC (tab clear)
+            if privateMarker == nil { applyTabClear(params) }
         default: return false
         }
         return true
+    }
+
+    /// TBC (`CSI g`): 0 clears the tab stop at the cursor, 3 clears every stop.
+    private func applyTabClear(_ params: [Int]) {
+        switch params.first ?? 0 {
+        case 0: grid.clearTabStop()
+        case 3: grid.clearAllTabStops()
+        default: break
+        }
     }
 
     /// CSIs that write a reply back to the program: device attributes (DA1/DA2)
@@ -497,7 +508,12 @@ public final class DamsonSession: ObservableObject {
     }
 
     private func applyModeChange(params: [Int], privateMarker: UInt8?, set: Bool) {
-        // Handle DEC private mode (`?`) only. ANSI mode is rarely used.
+        // ANSI (non-private) modes. The only one we implement is IRM (mode 4).
+        if privateMarker == nil {
+            for p in params where p == 4 { grid.setInsertMode(set) }
+            return
+        }
+        // DEC private modes (`?`).
         guard privateMarker == 0x3F else { return }
         for p in params where p > 0 {
             switch p {
@@ -570,10 +586,8 @@ extension DamsonSession: VTParserDelegate {
         case 0x0A: grid.lineFeed()
         case 0x0D: grid.carriageReturn()
         case 0x09:
-            // TAB — move to the next 8-column stop (move the cursor only, don't fill with spaces)
-            let next = ((grid.cursorCol / 8) + 1) * 8
-            let target = min(next, grid.cols - 1)
-            grid.cursorForward(max(target - grid.cursorCol, 1))
+            // HT (TAB) — move the cursor to the next tab stop (respects HTS/TBC edits).
+            grid.tabForward()
         case 0x07:
             onBell?()
         default:
@@ -625,6 +639,8 @@ extension DamsonSession: VTParserDelegate {
             grid.saveCursor()
         case 0x38: // '8' — DECRC: restore cursor + pen
             grid.restoreCursor()
+        case 0x48: // 'H' — HTS: set a horizontal tab stop at the cursor column
+            grid.setTabStop()
         case 0x63: // 'c' — RIS: reset the terminal to its power-on state.
             grid.fullReset()
             // Reset session-level private modes an app may have left on, so a program

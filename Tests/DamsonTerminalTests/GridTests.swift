@@ -1141,6 +1141,36 @@ final class GridTests: XCTestCase {
         XCTAssertEqual(g.cursorCol, 3)
     }
 
+    /// IRM (insert mode): a printed char shifts the rest of the line right instead of
+    /// overwriting; the char at the right margin falls off.
+    func testInsertModeShiftsLineRight() {
+        let g = makeGrid(cols: 6, rows: 1)
+        for ch in "ABCDEF" { g.putChar(ch) }   // fills the row
+        g.setCursorColumn(1)                    // 1-based → col 0
+        g.setInsertMode(true)
+        g.putChar("X")                          // insert at col 0 → "XABCDE", F falls off
+        XCTAssertEqual(String(g.row(0).map { $0.char }), "XABCDE")
+    }
+
+    /// TAB uses the default every-8 stops and stops at the right margin when none remain.
+    func testTabForwardDefaultStops() {
+        let g = makeGrid(cols: 30, rows: 1)
+        g.tabForward(); XCTAssertEqual(g.cursorCol, 8)
+        g.tabForward(); XCTAssertEqual(g.cursorCol, 16)
+        g.tabForward(); XCTAssertEqual(g.cursorCol, 24)
+        g.tabForward(); XCTAssertEqual(g.cursorCol, 29, "no stop at 32 within 30 cols → right margin")
+    }
+
+    /// HTS sets a stop at the cursor; TBC 3 clears all. TAB then honors the custom stop.
+    func testCustomTabStopsViaHTSAndTBC() {
+        let g = makeGrid(cols: 30, rows: 1)
+        g.clearAllTabStops()                    // TBC 3
+        g.setCursorColumn(6); g.setTabStop()    // HTS at col 5 (1-based 6)
+        g.setCursorColumn(1)                    // back to col 0
+        g.tabForward(); XCTAssertEqual(g.cursorCol, 5, "TAB jumps to the custom stop")
+        g.tabForward(); XCTAssertEqual(g.cursorCol, 29, "no further stop → right margin")
+    }
+
     /// unifiedRow maps 0..<scrollback.count to scrollback then the live viewport, and
     /// returns [] out of range — the mapping the selection/hit-test/render paths share.
     func testUnifiedRowSpansScrollbackThenViewport() {

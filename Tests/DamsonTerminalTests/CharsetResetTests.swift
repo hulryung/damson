@@ -58,6 +58,31 @@ final class CharsetResetTests: XCTestCase {
         }
     }
 
+    /// IRM via `CSI 4 h`: text typed at the cursor inserts (shifts the rest right).
+    func testInsertModeViaCSI() {
+        let (s, b) = session()
+        withExtendedLifetime(s) {
+            feed(b, "ABCDE")          // type ABCDE (flushed by the next ESC)
+            feed(b, "\u{1B}[5D")      // CUB 5 → col 0
+            feed(b, "\u{1B}[4h")      // IRM on
+            feed(b, "X\u{1B}[m")      // insert X, trailing ESC flushes
+            XCTAssertTrue(row0(s).hasPrefix("XABCDE"), "got: \(row0(s).debugDescription)")
+        }
+    }
+
+    /// HTS (`ESC H`) + TBC (`CSI 3 g`): a custom tab stop drives where `\t` lands.
+    func testCustomTabStopViaESCandCSI() {
+        let (s, b) = session()
+        withExtendedLifetime(s) {
+            feed(b, "\u{1B}[3g")          // clear all tab stops
+            feed(b, "\u{1B}[6G\u{1B}H")   // cursor to col 6 (CHA), HTS sets a stop there
+            feed(b, "\u{1B}[1G")          // back to col 1
+            feed(b, "\tX\u{1B}[m")        // TAB → col 6, print X
+            // X should land at column 5 (0-based) → 5 leading spaces then X.
+            XCTAssertTrue(row0(s).hasPrefix("     X"), "got: \(row0(s).debugDescription)")
+        }
+    }
+
     /// RIS resets the scroll region to full-screen and the charset back to ASCII.
     func testRISResetsCharsetAndScrollRegion() {
         let (s, b) = session()
