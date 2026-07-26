@@ -9,13 +9,21 @@ import DamsonTerminal
 /// `tabs` / `currentIndex` LIVE at every use (never caches them) because the tab array can
 /// be mutated — reordered, closed — between an animation's start and its completion block.
 ///
-/// Ownership: `host` is `unowned` because the controller owns the coordinator through a
-/// single strong `lazy var` and nothing else stores it, so the two die together; a completion
-/// block that outlives the controller finds `self` (the coordinator) already nil and returns
-/// before it can touch `host`. Corollary rule for the animation bodies below: an escaping
-/// closure must never capture a `host` local — reach the controller only as `self.host`
-/// under an existing `if let self`, or a 0.42s CA animation would keep the window controller
-/// (and its PTYs) alive past window close.
+/// Ownership: `host` is `unowned`, which is safe for two reasons that must both keep holding.
+/// (1) The controller owns the coordinator through a single `private(set) lazy var` and nothing
+/// else stores it, so a completion block outliving the controller finds `self` (the coordinator)
+/// already nil and returns before it can touch `host`. (2) The controller cannot be deallocated
+/// *inside* a coordinator call: its strong owners are the app delegate's `compactControllers`
+/// and TmuxIntegrationController, and removal from the former happens in a
+/// `willCloseNotification` block enqueued on the main queue, never within the current call
+/// stack — and the gesture entry points are invoked on a `windowController` the engine is
+/// holding for the duration of the call. So a `guard let self` here yields a live coordinator
+/// AND a live `host`, exactly as it yielded a live controller before the extraction.
+///
+/// Corollary rule for the bodies below, which nothing enforces: an escaping closure must never
+/// capture a `host` local — reach the controller only as `self.host` under an existing
+/// `if let self`. A captured `host` would put a strong controller reference inside a 0.42s CA
+/// animation and keep the window (and its PTYs) alive past close.
 ///
 /// The `tabSlide*` motion constants deliberately stay on `CompactWindowController`: the tab
 /// bar's selection pill reads them too (CompactTabBarView), and both must animate off the

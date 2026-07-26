@@ -72,10 +72,15 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private(set) var tabs: [Tab] = []
     private(set) var currentIndex: Int = 0
 
-    /// Tab cross-slide / create motion (and, from the next step, the trackpad swipe).
-    /// `lazy` so it can capture `self` without an init-ordering dance; this is the ONLY
-    /// strong reference to it, which is what makes its `unowned host` safe.
-    lazy var tabTransitions = TabTransitionCoordinator(host: self)
+    /// Tab cross-slide / create motion and the interactive trackpad swipe.
+    ///
+    /// `private(set)` is load-bearing, not style: the coordinator's `unowned host` is safe only
+    /// because this is the ONLY strong reference to it, so no other file may alias or replace it.
+    /// `lazy` lets it capture `self` without an init-ordering dance; it first materialises in
+    /// `selectTab`, which runs after `setupViews()`. `selectTab` is therefore main-thread-only in
+    /// a newly load-bearing way — a concurrent first call could torn-initialise a lazy var into
+    /// two coordinators and split the swipe state.
+    private(set) lazy var tabTransitions = TabTransitionCoordinator(host: self)
 
     /// Session representation for external list-tabs / switch-tab, etc.
     /// Each tab's root pane (first leaf) session — used to track the tab title.
