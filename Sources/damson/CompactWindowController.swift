@@ -102,7 +102,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return nil
     }
 
-    private var tabBar: CompactTabBarView!
+    private(set) var tabBar: CompactTabBarView!
     private var tabBarBackground: NSVisualEffectView!   // for transparent (frosted) mode
     private var tabBarSolid: NSView!                    // for solid (theme-colored) mode — over the vibrancy
     private(set) var contentContainer: NSView!
@@ -115,20 +115,6 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     /// look like two rows — and since the menu bar is normally hidden in full screen and
     /// only briefly overlaps on top-edge hover per standard macOS behavior, a single row is preferred.)
     private var fullScreenTopInset: CGFloat { 0 }
-
-    // Interactive 2-finger swipe (TabSwipeHandler). During a horizontal swipe the
-    // neighbor tab's live tree is added beside the current one and both follow the
-    // finger; on release past a threshold the switch commits, else it snaps back.
-    private var swipeActive = false
-    private var swipeAnimating = false
-    private var swipeNeighborLayer: CALayer?   // neighbor shown as a snapshot (no hit-test)
-    private var swipeNeighborIndex = -1
-    private var swipeFromRight = false   // neighbor (next tab) enters from the right
-    // Where the in-flight settle is heading, so a new swipe that interrupts it can
-    // finalize it instantly and chain (flick-flick-flick through tabs "슥슥") instead
-    // of being locked out until the 0.42s arrival finishes.
-    private var swipePendingCommit = false
-    private var swipePendingIndex = -1
 
     // Tab-slide motion. The trackpad swipe settle uses the longer duration: the
     // finger has already dragged the content most of the way, so the 0.42s is
@@ -421,7 +407,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     func selectTab(_ index: Int, transition: TabTransition = .none) {
         guard index >= 0, index < tabs.count else { return }
-        if swipeActive || swipeAnimating { abortSwipe() }
+        tabTransitions.abortSwipeIfNeeded()
 
         // Cross-slide the LIVE outgoing tree instead of a snapshot. Snapshotting was the
         // visible pre-animation hitch: cacheDisplay + one offscreen Metal re-render and
@@ -512,213 +498,16 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     // MARK: - Interactive 2-finger swipe (TabSwipeHandler)
 
-    /// Live finger-tracking. The current tab stays a live view (it remains the sole
-    /// scroll/event target — its layer transform is visual-only and doesn't move
-    /// its hit-test frame), while the neighbor is shown as a **snapshot layer**
-    /// (a CALayer, so it never intercepts events or steals first responder the way
-    /// a live sibling view would). Both follow the accumulated translation.
+    // The gesture lives in TabTransitionCoordinator; these two are only the protocol
+    // witnesses. The conformance has to stay on the window controller because the engine
+    // resolves the handler with `window?.windowController as? TabSwipeHandler`
+    // (DamsonTerminalView) — so they forward instead of moving.
     func tabSwipeUpdate(translation dx: CGFloat) {
-        // A new swipe arriving mid-settle finalizes the previous one instantly and
-        // then starts fresh from the (now committed) current tab, so successive
-        // flicks flip through tabs without waiting for the arrival animation.
-        if swipeAnimating { finalizeSwipeSettleNow() }
-        guard !swipeAnimating, tabs.count > 1 else { return }
-        let width = contentContainer.bounds.width
-        guard width > 1 else { return }
-
-        if !swipeActive {
-            guard abs(dx) > 1 else { return }   // wait for a clear direction
-            let goPrev = dx > 0                 // swipe fingers right → previous tab
-            let neighborIndex = goPrev ? (currentIndex - 1 + tabs.count) % tabs.count
-                                       : (currentIndex + 1) % tabs.count
-            guard neighborIndex != currentIndex else { return }
-            swipeActive = true
-            swipeFromRight = !goPrev            // next tab enters from the right
-            swipeNeighborIndex = neighborIndex
-
-            // Snapshot the neighbor (detached). Size it to the content area first so
-            // its Metal surfaces lay out and render at the right resolution.
-            let neighborTree = tabs[neighborIndex].tree
-            if neighborTree.superview == nil {
-                neighborTree.frame = contentContainer.bounds
-                neighborTree.layoutSubtreeIfNeeded()
-            }
-            // Force each leaf to render its grid so the snapshot has real content: an
-            // offscreen capture reads the backend's `lastGrid`, which is nil for a tab
-            // that has never rendered (freshly restored / never shown) — in that case
-            // the snapshot falls back to the bare view background (a dark, theme-less
-            // blank). repaintAllLeaves populates lastGrid so the capture is real.
-            neighborTree.repaintAllLeaves()
-            if let img = Motion.snapshot(of: neighborTree) {
-                swipeNeighborLayer = Motion.overlay(image: img, frame: contentContainer.bounds,
-                                                    in: contentContainer)
-            }
-        }
-
-        let neighborStart = swipeFromRight ? width : -width
-        setSwipeTranslation(tabs[currentIndex].tree.layer, dx)
-        setSwipeTranslation(swipeNeighborLayer, neighborStart + dx)
-
-        // Track the tab-bar selection pill to the swipe progress so it moves with
-        // the finger (like the keyboard switch animation) instead of snapping only
-        // after the settle completes.
-        let fraction = min(1, abs(dx) / width)
-        tabBar.swipePillTrack(fromIndex: currentIndex, toIndex: swipeNeighborIndex,
-                              fraction: fraction)
+        tabTransitions.tabSwipeUpdate(translation: dx)
     }
 
-    /// Release: commit the switch if dragged past ~20% of the width in the locked
-    /// direction, otherwise snap back. Commit hands off to the normal `selectTab`
-    /// path (same as keyboard) once the slide finishes, so focus + tab-bar stay
-    /// consistent; the snapshot layer is removed after the live tab is in place.
     func tabSwipeEnd(translation dx: CGFloat, velocity: CGFloat) {
-        guard swipeActive else { return }
-        let width = contentContainer.bounds.width
-        let neighborStart = swipeFromRight ? width : -width
-        // Commit on distance OR a fast flick. swipeFromRight (next) commits on a
-        // negative drag/flick; prev on positive. The flick check makes a quick
-        // short swipe switch immediately instead of needing to drag 1/8 of the width.
-        let distThreshold = width * 0.12
-        let velThreshold: CGFloat = 6
-        let commit = swipeFromRight ? (dx < -distThreshold || velocity < -velThreshold)
-                                    : (dx > distThreshold || velocity > velThreshold)
-        let neighborIndex = swipeNeighborIndex
-        swipeActive = false
-        swipeAnimating = true
-        swipePendingCommit = commit
-        swipePendingIndex = commit ? neighborIndex : currentIndex
-
-        // Settle the tab-bar pill onto its target in sync with the content slide
-        // (same duration + curve), so the bar finishes exactly when the page does.
-        tabBar.swipePillSettle(toIndex: commit ? neighborIndex : currentIndex,
-                               duration: Self.tabSlideDuration, timing: Self.tabSlideTiming())
-
-        // Settle both layers from the release offset to the target: commit →
-        // dx = -neighborStart (neighbor reaches 0, current slides fully off);
-        // cancel → dx = 0 (current back, neighbor back off-screen).
-        let targetDx: CGFloat = commit ? -neighborStart : 0
-        startSwipeSettle(from: dx, to: targetDx, neighborStart: neighborStart) { [weak self] in
-            guard let self else { return }
-            if commit {
-                self.setSwipeTranslation(self.tabs[self.currentIndex].tree.layer, 0)
-                self.endSwipe()
-                // Real switch (instant) — same path as keyboard nav, so first
-                // responder, title, and tab-bar selection are all correct. The live
-                // neighbor lands at center under the snapshot; then drop the snapshot.
-                self.selectTab(neighborIndex, transition: .none)
-                self.swipeNeighborLayer?.removeFromSuperlayer()
-                self.swipeNeighborLayer = nil
-            } else {
-                self.swipeNeighborLayer?.removeFromSuperlayer()
-                self.swipeNeighborLayer = nil
-                self.setSwipeTranslation(self.tabs[self.currentIndex].tree.layer, 0)
-                self.endSwipe()
-            }
-        }
-    }
-
-    /// Settle the swipe to its target with the SHARED tab-slide motion (same
-    /// duration + curve as the keyboard/click cross-slide), so both decelerate
-    /// identically. Explicit CABasicAnimations on the current tree layer and the
-    /// neighbor snapshot; `done` runs on the transaction completion (guarded by
-    /// `swipeAnimating` so an abort that already cleaned up wins).
-    private func startSwipeSettle(from dx: CGFloat, to targetDx: CGFloat,
-                                  neighborStart: CGFloat, done: @escaping () -> Void) {
-        let currentLayer = tabs[currentIndex].tree.layer
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak self] in
-            guard let self, self.swipeAnimating else { return }
-            done()
-        }
-        slideSwipeLayer(currentLayer, from: dx, to: targetDx)
-        slideSwipeLayer(swipeNeighborLayer, from: neighborStart + dx, to: neighborStart + targetDx)
-        CATransaction.commit()
-    }
-
-    /// Animate a layer's translation.x from→to with the shared tab-slide motion.
-    /// Explicit (plays on the presentation layer regardless of the model); the
-    /// model is left at the final value.
-    private func slideSwipeLayer(_ layer: CALayer?, from: CGFloat, to: CGFloat) {
-        guard let layer else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer.transform = CATransform3DMakeTranslation(to, 0, 0)
-        CATransaction.commit()
-        let a = CABasicAnimation(keyPath: "transform.translation.x")
-        a.fromValue = from
-        a.toValue = to
-        a.duration = Self.tabSlideDuration
-        a.timingFunction = Self.tabSlideTiming()
-        layer.add(a, forKey: "swipeSettle")
-    }
-
-    private func endSwipe() {
-        swipeNeighborIndex = -1
-        swipeActive = false
-        swipeAnimating = false
-        tabBar.swipePillEnd()   // hand the pill back to the normal selectTab path
-    }
-
-    /// Snap an in-flight settle to its final state immediately (used when the next
-    /// swipe starts before the previous one's arrival animation finishes). Commits
-    /// the pending switch via the normal `selectTab` path — which itself calls
-    /// `abortSwipe()` to clear the settle's layers/translation and then advances
-    /// `currentIndex` — so the new gesture begins cleanly from the committed tab.
-    /// A pending cancel (didn't cross the threshold) just tears the settle down.
-    private func finalizeSwipeSettleNow() {
-        guard swipeAnimating else { return }
-        if swipePendingCommit, swipePendingIndex >= 0, swipePendingIndex < tabs.count,
-           swipePendingIndex != currentIndex {
-            // `selectTab` attaches the committed tab as a LIVE tree, but its Metal layer
-            // presents its first on-screen frame a beat late — so a chained swipe that
-            // immediately slides that tree would flash a blank (black) screen. The
-            // neighbor snapshot we're holding is a valid image of exactly this tab (it
-            // was just on screen), so reuse it as a cover parented to the tree's layer:
-            // it rides the next swipe's slide (child of the transformed layer) and hides
-            // the black frame until the live content paints, then removes itself.
-            let cover = swipeNeighborLayer
-            swipeNeighborLayer = nil   // keep it from being torn down by selectTab → abortSwipe
-            selectTab(swipePendingIndex, transition: .none)
-            if let cover, let treeLayer = tabs[currentIndex].tree.layer {
-                cover.removeFromSuperlayer()
-                cover.removeAllAnimations()
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                cover.transform = CATransform3DIdentity
-                cover.frame = treeLayer.bounds
-                treeLayer.addSublayer(cover)
-                CATransaction.commit()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak cover] in
-                    cover?.removeFromSuperlayer()
-                }
-            }
-        } else {
-            abortSwipe()
-        }
-    }
-
-    /// Tear down an in-flight swipe before a non-swipe path (keyboard/click switch)
-    /// takes over, so nothing is left offset.
-    private func abortSwipe() {
-        // endSwipe() clears swipeAnimating first, so any in-flight settle's
-        // completion block early-returns (its `done` won't fire after this).
-        endSwipe()
-        swipeNeighborLayer?.removeAnimation(forKey: "swipeSettle")
-        swipeNeighborLayer?.removeFromSuperlayer()
-        swipeNeighborLayer = nil
-        if currentIndex >= 0, currentIndex < tabs.count {
-            let layer = tabs[currentIndex].tree.layer
-            layer?.removeAnimation(forKey: "swipeSettle")
-            setSwipeTranslation(layer, 0)
-        }
-    }
-
-    private func setSwipeTranslation(_ layer: CALayer?, _ x: CGFloat) {
-        guard let layer else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer.transform = CATransform3DMakeTranslation(x, 0, 0)
-        CATransaction.commit()
+        tabTransitions.tabSwipeEnd(translation: dx, velocity: velocity)
     }
 
     /// Move a tab from one position to another (drag-to-reorder).
