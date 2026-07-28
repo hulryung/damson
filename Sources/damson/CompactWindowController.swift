@@ -382,6 +382,9 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private func addTab(tree: PaneTreeView, transition: TabTransition = .none,
                         customTitle: String? = nil) {
         tree.translatesAutoresizingMaskIntoConstraints = false
+        // Layer-backed from the start: the swipe pins a tree's offset onto its layer BEFORE
+        // attaching it, and a tab that has never been shown would otherwise have no layer yet.
+        tree.wantsLayer = true
         tree.host = self   // cross-window pane drop reveals this tab via PaneTreeHosting.revealTree
         // Close this tab when its last pane closes. Must be found by tree reference, not by
         // the current index into the tabs array (stays correct even if tabs are reordered).
@@ -442,23 +445,37 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         }
 
         currentIndex = index
-        // Keep the animating outgoing tree attached; everything else detaches as before.
-        for t in tabs where t.tree !== switchOutgoing?.tree { t.tree.removeFromSuperview() }
         let tree = tabs[index].tree
+        // Keep the animating outgoing tree attached; everything else detaches as before —
+        // EXCEPT the incoming tree, which may already be in the container as a swipe preview.
+        // Detaching it would be the whole bug: off-window, a surface loses its drawable (see
+        // the repaint comment below), so re-adding it would leave the tab blank for the frame
+        // or two until it paints again. Leaving it attached means the commit reveals nothing
+        // — the tab has been live and painting since the gesture began.
+        for t in tabs where t.tree !== switchOutgoing?.tree && t.tree !== tree {
+            t.tree.removeFromSuperview()
+        }
         // The pane last used in this tab. When addSubview attaches the tree to the window,
         // each surface's viewDidMoveToWindow → makeFirstResponder → onFocus fires synchronously
         // and overwrites activeLeaf (with the last pane in traversal order), so we capture the
         // intended value *up front* and restore it afterward.
         let restoreTarget = tree.activeLeaf
-        contentContainer.addSubview(tree)
-        NSLayoutConstraint.activate([
-            tree.topAnchor.constraint(equalTo: contentContainer.topAnchor),
-            tree.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
-            tree.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
-            tree.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
-        ])
-        // Restore active + first responder to the last-used pane (undoing the onFocus clobber above).
+        if tree.superview !== contentContainer {
+            contentContainer.addSubview(tree)
+            NSLayoutConstraint.activate([
+                tree.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+                tree.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+                tree.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+                tree.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            ])
+        }
+        // This tab is now the real one, whatever it was a moment ago.
+        tree.isSwipePreview = false
+        // Restore active + first responder to the last-used pane (undoing the onFocus clobber
+        // above). `focusActiveLeaf` covers the already-attached case, where there was no
+        // clobber to undo and so nothing has moved first responder off the outgoing tab.
         tree.setActive(restoreTarget)
+        tree.focusActiveLeaf()
         // Every pane in the incoming tab must repaint its current grid — not just the
         // focused one. Output that arrived while the tab was backgrounded couldn't be
         // drawn (the surfaces were off-window, so Metal had no drawable), and only the
@@ -479,8 +496,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         clearSwitchAnimations(tree.layer)
+        // A swipe committed mid-settle (a chained flick) leaves the settle still playing on
+        // this very tree — it is the incoming side now, not a separate snapshot layer — and it
+        // would drag the tab back off-screen from under the identity transform set below.
+        tree.layer?.removeAnimation(forKey: "swipeSettle")
         tree.layer?.opacity = 1
-        tree.layer?.transform = CATransform3DIdentity
+        tree.swipeTranslationX = 0
         CATransaction.commit()
 
         if case .create = transition, Motion.enabled {
@@ -513,6 +534,91 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     func tabSwipeEnd(translation dx: CGFloat, velocity: CGFloat) {
         tabTransitions.tabSwipeEnd(translation: dx, velocity: velocity)
+    }
+
+    /// Put the swipe's incoming tab in the container as a LIVE tree, translated to `offset` so
+    /// it starts off-screen, and hand input straight back to the tab the user is still on.
+    ///
+    /// Live rather than a snapshot, because a snapshot is what created the blank this used to
+    /// paper over: the tab had to be attached for real at commit, and a just-attached surface
+    /// has no drawable yet. A tree that has been attached since the gesture began is already
+    /// painting when the commit lands, so there is no first frame to wait for.
+    func attachSwipePreview(_ tree: PaneTreeView, offset: CGFloat) {
+        // Offset it BEFORE it enters the hierarchy. This is what makes the swipe structurally
+        // the same as ⌘←/⌘→: that path attaches the incoming tree and then slides it, and
+        // position 0 is harmless there because 0 is where the tab is going. For a swipe,
+        // position 0 is the neighbour covering the tab the user is still on — so the tree must
+        // never be composited there at all, not even for the frame before the offset lands.
+        // `swipeTranslationX` is carried by a filled animation on the layer, which exists
+        // independently of the hierarchy, so it can be set while detached.
+        tree.swipeTranslationX = offset
+        tree.isSwipePreview = true
+
+        // Usually detached, but not always: a keyboard/click cross-slide keeps its OUTGOING
+        // tree in the container for the 0.42s animation, and a swipe started in that window
+        // can pick exactly that tab as its neighbor. Adopt it rather than re-adding it —
+        // re-adding means removeFromSuperview first, which costs it its drawable.
+        if tree.superview !== contentContainer {
+            contentContainer.addSubview(tree)
+            NSLayoutConstraint.activate([
+                tree.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+                tree.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+                tree.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+                tree.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            ])
+            // Each surface's viewDidMoveToWindow grabs first responder as it enters the
+            // window. Harmless when attaching a tab the user just switched to; here they have
+            // not switched yet, so hand input back to the tab they are still on. Re-asserting
+            // the current tab unconditionally rather than restoring a captured responder:
+            // capturing left focus stranded on the preview whenever there was nothing to
+            // capture, and detaching that preview later then left the window with a dead
+            // first responder — keyboard input silently stopped working.
+        } else {
+            // Whatever motion it was under belongs to the switch it is being pulled out of.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            clearSwitchAnimations(tree.layer)
+            tree.layer?.opacity = 1
+            CATransaction.commit()
+        }
+        // Size the Metal drawables to the content area before asking for pixels, exactly as
+        // the real attach in `selectTab` does.
+        refocusCurrentTab()
+        contentContainer.layoutSubtreeIfNeeded()
+        tree.repaintAllLeaves()
+        SwipeLog.log("swipe.PREVIEW_PARKED",
+                     String(format: "offset=%.0f pinned=%@ frame=(%.0f,%.0f %.0fx%.0f)",
+                            offset,
+                            tree.layer?.animation(forKey: PaneTreeView.swipeOffsetKey) != nil
+                                ? "yes" : "NO",
+                            tree.frame.origin.x, tree.frame.origin.y,
+                            tree.frame.width, tree.frame.height))
+    }
+
+    /// Put keyboard focus back on the tab the user is actually on.
+    ///
+    /// The swipe puts a second live tree in the window, and both attaching and detaching it
+    /// can move first responder off the current tab — attaching because entering the window
+    /// makes a surface grab it, detaching because the holder disappears.
+    private func refocusCurrentTab() {
+        guard tabs.indices.contains(currentIndex) else { return }
+        tabs[currentIndex].tree.focusActiveLeaf()
+    }
+
+    /// Take a swipe preview back out — the gesture was cancelled, or something else took over.
+    /// Only ever called for a tree that did NOT become current; the committed one stays.
+    func detachSwipePreview(_ tree: PaneTreeView) {
+        guard tree.isSwipePreview else { return }
+        tree.isSwipePreview = false
+        tree.removeFromSuperview()
+        // Removing a view that holds first responder leaves the window without one, and
+        // nothing puts it back — every keystroke goes nowhere from then on.
+        refocusCurrentTab()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        tree.layer?.removeAnimation(forKey: "swipeSettle")
+        tree.swipeTranslationX = 0
+        CATransaction.commit()
     }
 
     /// Move a tab from one position to another (drag-to-reorder).

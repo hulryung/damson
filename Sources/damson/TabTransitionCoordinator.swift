@@ -45,8 +45,12 @@ final class TabTransitionCoordinator {
     // finger; on release past a threshold the switch commits, else it snaps back.
     private var swipeActive = false
     private var swipeAnimating = false
-    private var swipeNeighborLayer: CALayer?   // neighbor shown as a snapshot (no hit-test)
+    /// The incoming tab, attached live and excluded from hit-testing (`isSwipePreview`).
+    /// Non-nil exactly while a preview is in the container.
+    private var swipeNeighborTree: PaneTreeView?
     private var swipeNeighborIndex = -1
+    /// Gesture updates since the preview was attached — trace-only, see `PREVIEW_TX_LOST`.
+    private var swipeUpdatesSinceAttach = 0
     private var swipeFromRight = false   // neighbor (next tab) enters from the right
     // Where the in-flight settle is heading, so a new swipe that interrupts it can
     // finalize it instantly and chain (flick-flick-flick through tabs "슥슥") instead
@@ -285,11 +289,16 @@ final class TabTransitionCoordinator {
 
     // MARK: - Interactive 2-finger swipe (TabSwipeHandler)
 
-    /// Live finger-tracking. The current tab stays a live view (it remains the sole
-    /// scroll/event target — its layer transform is visual-only and doesn't move
-    /// its hit-test frame), while the neighbor is shown as a **snapshot layer**
-    /// (a CALayer, so it never intercepts events or steals first responder the way
-    /// a live sibling view would). Both follow the accumulated translation.
+    /// Live finger-tracking. Both tabs are live trees and both follow the accumulated
+    /// translation. The current one remains the sole scroll/event target — its layer
+    /// transform is visual-only and doesn't move its hit-test frame — and the incoming one
+    /// is marked `isSwipePreview`, which takes it out of hit-testing for the same reason.
+    ///
+    /// The neighbor used to be a snapshot layer instead, to keep a live sibling view from
+    /// intercepting events or stealing first responder. That bought event isolation at the
+    /// cost of the tab not existing until commit, which is where the blank came from — so the
+    /// isolation is now explicit (`isSwipePreview` + a first-responder handback in
+    /// `attachSwipePreview`) and the tab is real for the whole gesture.
     func tabSwipeUpdate(translation dx: CGFloat) {
         // A new swipe arriving mid-settle finalizes the previous one instantly and
         // then starts fresh from the (now committed) current tab, so successive
@@ -301,36 +310,46 @@ final class TabTransitionCoordinator {
 
         if !swipeActive {
             guard abs(dx) > 1 else { return }   // wait for a clear direction
-            let goPrev = dx > 0                 // swipe fingers right → previous tab
-            let neighborIndex = goPrev ? (host.currentIndex - 1 + host.tabs.count) % host.tabs.count
-                                       : (host.currentIndex + 1) % host.tabs.count
-            guard neighborIndex != host.currentIndex else { return }
+            guard aimSwipe(goPrev: dx > 0, width: width) else { return }
             swipeActive = true
-            swipeFromRight = !goPrev            // next tab enters from the right
-            swipeNeighborIndex = neighborIndex
-
-            // Snapshot the neighbor (detached). Size it to the content area first so
-            // its Metal surfaces lay out and render at the right resolution.
-            let neighborTree = host.tabs[neighborIndex].tree
-            if neighborTree.superview == nil {
-                neighborTree.frame = host.contentContainer.bounds
-                neighborTree.layoutSubtreeIfNeeded()
-            }
-            // Force each leaf to render its grid so the snapshot has real content: an
-            // offscreen capture reads the backend's `lastGrid`, which is nil for a tab
-            // that has never rendered (freshly restored / never shown) — in that case
-            // the snapshot falls back to the bare view background (a dark, theme-less
-            // blank). repaintAllLeaves populates lastGrid so the capture is real.
-            neighborTree.repaintAllLeaves()
-            if let img = Motion.snapshot(of: neighborTree) {
-                swipeNeighborLayer = Motion.overlay(image: img, frame: host.contentContainer.bounds,
-                                                    in: host.contentContainer)
-            }
+        } else if abs(dx) > 1, (dx > 0) == swipeFromRight {
+            // The finger crossed back through zero and is now heading the other way. Re-aim at
+            // the neighbor on THAT side instead of holding the one picked at gesture start:
+            // only one neighbor is ever attached, so keeping the original would push the
+            // current tab off the bare side of the container — a grey band where no tab is.
+            // Clamping the drag instead was the first attempt, and it made reversing a swipe
+            // feel stuck, which is worse than the band it prevented.
+            _ = aimSwipe(goPrev: dx > 0, width: width)
         }
 
         let neighborStart = swipeFromRight ? width : -width
-        setSwipeTranslation(host.tabs[host.currentIndex].tree.layer, dx)
-        setSwipeTranslation(swipeNeighborLayer, neighborStart + dx)
+        // Regression detector for the flash, sampled BEFORE the write below overwrites it.
+        //
+        // The preview's offset has to survive AppKit's layout pass, which runs at the end of
+        // the runloop turn the attach happened in — after every log the attach itself could
+        // write. When it did not survive, the tab was composited at x=0 for the single frame
+        // between that pass and this update: the incoming tab flashing over the current one at
+        // the start of a swipe. `PaneTreeView.swipeTranslationX` holds the offset in a filled
+        // animation for exactly this reason, so a hit here means that stopped working.
+        // Sample from the SECOND update on: on the attach's own turn CA has not committed yet,
+        // so the presentation layer still reads the pre-attach value and every sample would be
+        // a false alarm. (This must not `return` — the translation below has to run on every
+        // update, including the ones this skips.)
+        if SwipeLog.enabled, let preview = swipeNeighborTree, swipeUpdatesSinceAttach < 5 {
+            swipeUpdatesSinceAttach += 1
+            // The PRESENTATION layer: the offset is held by a filled animation and the model
+            // transform stays identity, so `layer.transform` would read 0 even when correct.
+            let observed = preview.layer?.presentation()?
+                .value(forKeyPath: "transform.translation.x") as? CGFloat ?? 0
+            if swipeUpdatesSinceAttach > 1, abs(observed - preview.swipeTranslationX) > 1 {
+                SwipeLog.log("swipe.PREVIEW_TX_LOST",
+                             String(format: "update=%d observed=%.1f expected=%.1f",
+                                    swipeUpdatesSinceAttach, observed,
+                                    preview.swipeTranslationX))
+            }
+        }
+        setSwipeTranslation(host.tabs[host.currentIndex].tree, dx)
+        setSwipeTranslation(swipeNeighborTree, neighborStart + dx)
 
         // Track the tab-bar selection pill to the swipe progress so it moves with
         // the finger (like the keyboard switch animation) instead of snapping only
@@ -374,50 +393,81 @@ final class TabTransitionCoordinator {
         startSwipeSettle(from: dx, to: targetDx, neighborStart: neighborStart) { [weak self] in
             guard let self else { return }
             if commit {
-                self.setSwipeTranslation(self.host.tabs[self.host.currentIndex].tree.layer, 0)
+                self.setSwipeTranslation(self.host.tabs[self.host.currentIndex].tree, 0)
                 self.endSwipe()
                 // Real switch (instant) — same path as keyboard nav, so first
-                // responder, title, and tab-bar selection are all correct. The live
-                // neighbor lands at center under the snapshot; then drop the snapshot.
-                self.host.selectTab(neighborIndex, transition: .none)
-                self.swipeNeighborLayer?.removeFromSuperlayer()
-                self.swipeNeighborLayer = nil
+                // responder, title, and tab-bar selection are all correct.
+                self.commitToTab(neighborIndex)
             } else {
-                self.swipeNeighborLayer?.removeFromSuperlayer()
-                self.swipeNeighborLayer = nil
-                self.setSwipeTranslation(self.host.tabs[self.host.currentIndex].tree.layer, 0)
+                self.detachNeighborPreview()
+                self.setSwipeTranslation(self.host.tabs[self.host.currentIndex].tree, 0)
                 self.endSwipe()
             }
         }
     }
 
+    /// Point the gesture at the neighbor on the side the finger is heading, attaching it live
+    /// and parked just off that edge. Returns false if there is no distinct tab to aim at.
+    ///
+    /// Used both to lock the direction at gesture start and to re-aim when the finger reverses
+    /// through zero. With exactly two tabs the previous and next neighbor are the SAME tree, so
+    /// a reversal re-parks the tab already attached instead of detaching and re-adding it —
+    /// which matters, because a detach costs its surfaces their drawables.
+    private func aimSwipe(goPrev: Bool, width: CGFloat) -> Bool {
+        let count = host.tabs.count
+        let neighborIndex = goPrev ? (host.currentIndex - 1 + count) % count
+                                   : (host.currentIndex + 1) % count
+        guard neighborIndex != host.currentIndex else { return false }
+        swipeFromRight = !goPrev            // next tab enters from the right
+        swipeNeighborIndex = neighborIndex
+        let offset = swipeFromRight ? width : -width
+
+        let neighborTree = host.tabs[neighborIndex].tree
+        if neighborTree === swipeNeighborTree {
+            SwipeLog.log("swipe.PREVIEW_REAIM", "neighbor=\(neighborIndex) offset=\(Int(offset))")
+            neighborTree.swipeTranslationX = offset
+            return true
+        }
+        if let old = swipeNeighborTree {
+            SwipeLog.log("swipe.PREVIEW_SWAP", "neighbor=\(neighborIndex) replaces the other side")
+            swipeNeighborTree = nil
+            host.detachSwipePreview(old)
+        }
+        SwipeLog.log("swipe.PREVIEW_ATTACH", "neighbor=\(neighborIndex)")
+        host.attachSwipePreview(neighborTree, offset: offset)
+        swipeNeighborTree = neighborTree
+        swipeUpdatesSinceAttach = 0
+        return true
+    }
+
     /// Settle the swipe to its target with the SHARED tab-slide motion (same
     /// duration + curve as the keyboard/click cross-slide), so both decelerate
     /// identically. Explicit CABasicAnimations on the current tree layer and the
-    /// neighbor snapshot; `done` runs on the transaction completion (guarded by
+    /// neighbor preview; `done` runs on the transaction completion (guarded by
     /// `swipeAnimating` so an abort that already cleaned up wins).
     private func startSwipeSettle(from dx: CGFloat, to targetDx: CGFloat,
                                   neighborStart: CGFloat, done: @escaping () -> Void) {
-        let currentLayer = host.tabs[host.currentIndex].tree.layer
+        let current = host.tabs[host.currentIndex].tree
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self] in
             guard let self, self.swipeAnimating else { return }
             done()
         }
-        slideSwipeLayer(currentLayer, from: dx, to: targetDx)
-        slideSwipeLayer(swipeNeighborLayer, from: neighborStart + dx, to: neighborStart + targetDx)
+        slideSwipeTree(current, from: dx, to: targetDx)
+        slideSwipeTree(swipeNeighborTree, from: neighborStart + dx, to: neighborStart + targetDx)
         CATransaction.commit()
     }
 
-    /// Animate a layer's translation.x from→to with the shared tab-slide motion.
-    /// Explicit (plays on the presentation layer regardless of the model); the
-    /// model is left at the final value.
-    private func slideSwipeLayer(_ layer: CALayer?, from: CGFloat, to: CGFloat) {
-        guard let layer else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer.transform = CATransform3DMakeTranslation(to, 0, 0)
-        CATransaction.commit()
+    /// Animate a tree's translation.x from→to with the shared tab-slide motion.
+    /// Explicit (plays on the presentation layer regardless of the model); the model is left
+    /// at the final value, via `swipeTranslationX` so a layout pass mid-settle cannot drop it.
+    private func slideSwipeTree(_ tree: PaneTreeView?, from: CGFloat, to: CGFloat) {
+        guard let tree, let layer = tree.layer else { return }
+        // Pin the destination FIRST, then add the settle on top: CA applies non-additive
+        // animations on a key path in the order they were added, so the settle drives the
+        // slide while it runs and the pin takes over the moment it is removed. Reversing
+        // these two lines would freeze the tree at its destination with no animation.
+        tree.swipeTranslationX = to
         let a = CABasicAnimation(keyPath: "transform.translation.x")
         a.fromValue = from
         a.toValue = to
@@ -443,29 +493,7 @@ final class TabTransitionCoordinator {
         guard swipeAnimating else { return }
         if swipePendingCommit, swipePendingIndex >= 0, swipePendingIndex < host.tabs.count,
            swipePendingIndex != host.currentIndex {
-            // `selectTab` attaches the committed tab as a LIVE tree, but its Metal layer
-            // presents its first on-screen frame a beat late — so a chained swipe that
-            // immediately slides that tree would flash a blank (black) screen. The
-            // neighbor snapshot we're holding is a valid image of exactly this tab (it
-            // was just on screen), so reuse it as a cover parented to the tree's layer:
-            // it rides the next swipe's slide (child of the transformed layer) and hides
-            // the black frame until the live content paints, then removes itself.
-            let cover = swipeNeighborLayer
-            swipeNeighborLayer = nil   // keep it from being torn down by selectTab → abortSwipe
-            host.selectTab(swipePendingIndex, transition: .none)
-            if let cover, let treeLayer = host.tabs[host.currentIndex].tree.layer {
-                cover.removeFromSuperlayer()
-                cover.removeAllAnimations()
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                cover.transform = CATransform3DIdentity
-                cover.frame = treeLayer.bounds
-                treeLayer.addSublayer(cover)
-                CATransaction.commit()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak cover] in
-                    cover?.removeFromSuperlayer()
-                }
-            }
+            commitToTab(swipePendingIndex)
         } else {
             abortSwipe()
         }
@@ -477,22 +505,58 @@ final class TabTransitionCoordinator {
         // endSwipe() clears swipeAnimating first, so any in-flight settle's
         // completion block early-returns (its `done` won't fire after this).
         endSwipe()
-        swipeNeighborLayer?.removeAnimation(forKey: "swipeSettle")
-        swipeNeighborLayer?.removeFromSuperlayer()
-        swipeNeighborLayer = nil
+        detachNeighborPreview()
         if host.currentIndex >= 0, host.currentIndex < host.tabs.count {
-            let layer = host.tabs[host.currentIndex].tree.layer
-            layer?.removeAnimation(forKey: "swipeSettle")
-            setSwipeTranslation(layer, 0)
+            let tree = host.tabs[host.currentIndex].tree
+            tree.layer?.removeAnimation(forKey: "swipeSettle")
+            setSwipeTranslation(tree, 0)
         }
     }
 
-    private func setSwipeTranslation(_ layer: CALayer?, _ x: CGFloat) {
-        guard let layer else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer.transform = CATransform3DMakeTranslation(x, 0, 0)
-        CATransaction.commit()
+    /// Take the preview back out of the container — the gesture did not commit to it.
+    ///
+    /// Never call this for a tree that just BECAME current: `selectTab` clears its preview
+    /// flag, so this no-ops on it, but the intent matters more than the guard. Detaching the
+    /// committed tab is precisely the thing this whole design exists to stop doing.
+    private func detachNeighborPreview() {
+        guard let tree = swipeNeighborTree else { return }
+        swipeNeighborTree = nil
+        SwipeLog.log("swipe.PREVIEW_DETACH", "")
+        host.detachSwipePreview(tree)
+    }
+
+    /// Make the swipe's preview the real current tab.
+    ///
+    /// There is nothing to reveal here, which is the point. The tab has been attached and
+    /// painting since the gesture began, so by the time this runs its surfaces already hold
+    /// presented frames in their final on-screen position; `selectTab` only has to move the
+    /// bookkeeping — current index, first responder, window title, tab bar — and drop the
+    /// preview flag. Crucially `selectTab` leaves an already-attached tree attached: taking
+    /// it out and putting it back would cost it its drawable and reintroduce the blank frame
+    /// this design removes.
+    private func commitToTab(_ index: Int) {
+        SwipeLog.log("commit.BEGIN", "index=\(index) preview=\(swipeNeighborTree != nil)")
+        // Hand the preview off to `selectTab` rather than detaching it. If we are committing
+        // to some OTHER tab than the one previewed — `selectTab` ignores an out-of-range
+        // index, and `reorderTab` can renumber tabs during the 0.42s settle — the preview is
+        // not the incoming tab and has to come out, or it would stay pinned over the window.
+        let preview = swipeNeighborTree
+        swipeNeighborTree = nil
+        if let preview, host.tabs.indices.contains(index), host.tabs[index].tree !== preview {
+            let previewIndex = host.tabs.firstIndex { $0.tree === preview } ?? -1
+            SwipeLog.log("commit.PREVIEW_MISMATCH",
+                         "committing index=\(index) but the preview is tab \(previewIndex)")
+            host.detachSwipePreview(preview)
+        }
+        host.selectTab(index, transition: .none)
+        SwipeLog.log("commit.DONE", "index=\(host.currentIndex)")
+    }
+
+    /// Offset a tree horizontally for the gesture. Goes through `swipeTranslationX` rather than
+    /// the backing layer, so the tree re-asserts it after any layout pass — writing the layer
+    /// directly is exactly what `animateTabSwitch` warns about above.
+    private func setSwipeTranslation(_ tree: PaneTreeView?, _ x: CGFloat) {
+        tree?.swipeTranslationX = x
     }
 }
 

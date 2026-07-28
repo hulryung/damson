@@ -1258,6 +1258,85 @@ final class PaneTreeView: NSView {
         walk(self)
     }
 
+    /// True while this tree is in the window ONLY as the incoming side of an interactive
+    /// swipe — visible, live and painting, but not yet the tab the user is on.
+    ///
+    /// A preview must not take input. The current tab is still the one the user is typing
+    /// into and clicking on: its layer transform is visual-only and deliberately does not
+    /// move its hit-test frame, so during a swipe both trees overlap in hit-test space and
+    /// the preview would win by being on top. (The snapshot layer this replaced could not be
+    /// hit-tested at all, which is where the requirement comes from.)
+    var isSwipePreview = false
+
+    /// Swallow hit-testing wholesale while previewing — including the pane wrappers'
+    /// modifier-click handling, which would otherwise act on a tab that is not current.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        isSwipePreview ? nil : super.hitTest(point)
+    }
+
+    /// Horizontal offset this tree is DISPLAYED at, independent of its layout frame. The
+    /// interactive swipe slides both the current tab and its incoming preview through here.
+    ///
+    /// It is held by a filled, never-removed animation rather than by the model transform,
+    /// for the reason `animateTabSwitch` already documents: AppKit owns a layer-backed view's
+    /// geometry and rebuilds the backing layer on layout, discarding whatever was written to
+    /// `layer.transform` directly. The current tab got away with a direct write only because
+    /// nothing laid it out mid-gesture. Attaching a live preview activates constraints, which
+    /// schedules a layout pass — and that pass dropped the preview back to x = 0 for the one
+    /// frame between itself and the next gesture update, i.e. the incoming tab flashing over
+    /// the current one at the start of a swipe. Re-asserting the model from `layout()` did not
+    /// help either: AppKit writes the geometry after `layout()` returns, so the re-assertion
+    /// was simply overwritten in turn. (Both confirmed from the trace — the offset read back
+    /// as 0 on the update after every single attach, in both attempts.)
+    ///
+    /// The model transform is left at identity throughout; read the presentation layer, not
+    /// `layer.transform`, to observe where the tree actually is.
+    var swipeTranslationX: CGFloat = 0 {
+        didSet { applySwipeTranslation() }
+    }
+
+    /// Animation key for the offset pin. The settle adds its own animation on the same key path
+    /// AFTER this one, so it wins while it runs (CA applies non-additive animations in the
+    /// order added); when it completes and is removed, the pin holds the final value.
+    static let swipeOffsetKey = "swipeOffset"
+
+    private func applySwipeTranslation() {
+        guard let layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard swipeTranslationX != 0 else {
+            layer.removeAnimation(forKey: Self.swipeOffsetKey)
+            layer.transform = CATransform3DIdentity
+            return
+        }
+        // Finite and already over, so it holds `toValue` by FILLING — the same idiom
+        // `animateTabSwitch` uses. A never-ending animation is not equivalent: it stays at
+        // fraction 0 forever, and replacing it then leaves the presentation layer pinned to
+        // the first value it was ever given. (Observed: the preview froze at its parked
+        // offset while the finger moved on.)
+        let pin = CABasicAnimation(keyPath: "transform.translation.x")
+        pin.fromValue = swipeTranslationX
+        pin.toValue = swipeTranslationX
+        pin.duration = 0.001
+        pin.fillMode = .forwards
+        pin.isRemovedOnCompletion = false
+        layer.add(pin, forKey: Self.swipeOffsetKey)
+    }
+
+    /// Put first responder on this tree's active pane unconditionally.
+    ///
+    /// `setActive` only re-grabs it when the active leaf actually changed, which is right for
+    /// focus moves inside a tab but not for a tab switch: the incoming tree usually returns
+    /// with the same active leaf it left with, and first responder is currently sitting on the
+    /// OUTGOING tab's surface. Attaching a tree used to fix this as a side effect (its
+    /// surfaces' `viewDidMoveToWindow` grabs first responder); a tree that is already attached
+    /// — the swipe preview being committed — never runs that, so the move has to be explicit.
+    func focusActiveLeaf() {
+        guard case .leaf(_, let surface) = activeLeaf.kind else { return }
+        if window?.firstResponder !== surface { window?.makeFirstResponder(surface) }
+    }
+
     /// Force every leaf surface to repaint its current grid right now.
     ///
     /// Called when this tree is re-shown (tab return). While a tab is backgrounded

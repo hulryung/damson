@@ -479,6 +479,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         if throttled, !syncPresent {
             let since = CACurrentMediaTime() - lastPresentTime
             if since < minRenderInterval {
+                SwipeLog.log("render.THROTTLED",
+                             String(format: "since=%.2fms min=%.2fms coalesced=%@",
+                                    since * 1000, minRenderInterval * 1000,
+                                    coalesceScheduled ? "already" : "scheduled"))
                 if !coalesceScheduled {
                     coalesceScheduled = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + (minRenderInterval - since)) { [weak self] in
@@ -500,6 +504,8 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let opacity = max(0.2, min(1.0, config.backgroundOpacity))
         layer.isOpaque = opacity >= 1.0
         guard layer.drawableSize.width > 0, let drawable = layer.nextDrawable() else {
+            SwipeLog.log("render.NO_DRAWABLE",
+                         String(format: "drawableW=%.0f", layer.drawableSize.width))
             return
         }
 
@@ -629,6 +635,14 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         // old drawable gets stretched to the new bounds before this frame lands
         // (visible flicker / stretched text). Outside resize, async present keeps
         // typing latency minimal.
+        if SwipeLog.enabled {
+            let queued = SwipeLog.now()
+            SwipeLog.log("frame.ENCODED", String(format: "sync=%@", syncPresent ? "yes" : "no"))
+            drawable.addPresentedHandler { _ in
+                SwipeLog.log("frame.ON_SCREEN",
+                             String(format: "%.2fms after encode", SwipeLog.now() - queued))
+            }
+        }
         if syncPresent {
             cmd.commit()
             cmd.waitUntilScheduled()
@@ -1406,6 +1420,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// last grid/state at the live view size + scroll into an offscreen texture.
     /// `cacheDisplay` can't read a `CAMetalLayer` framebuffer, so tab/pane
     /// transition snapshots route through here instead of going blank.
+    ///
     func captureImage() -> CGImage? {
         guard let grid = lastGrid else { return nil }
         return offscreenImage(scale: metalView.metalLayer.contentsScale,
