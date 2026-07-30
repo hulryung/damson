@@ -1266,7 +1266,16 @@ final class PaneTreeView: NSView {
     /// move its hit-test frame, so during a swipe both trees overlap in hit-test space and
     /// the preview would win by being on top. (The snapshot layer this replaced could not be
     /// hit-tested at all, which is where the requirement comes from.)
-    var isSwipePreview = false
+    var isSwipePreview = false {
+        didSet {
+            guard isSwipePreview != oldValue else { return }
+            // Keep the panes from grabbing first responder as they enter the window. Doing it
+            // here rather than putting focus back afterwards matters for IME: resigning the
+            // current pane commits its in-progress composition, so a swipe started mid-syllable
+            // would finish the syllable for the user.
+            for (_, surface) in root.leaves() { surface.suppressFocusOnAppear = isSwipePreview }
+        }
+    }
 
     /// Swallow hit-testing wholesale while previewing — including the pane wrappers'
     /// modifier-click handling, which would otherwise act on a tab that is not current.

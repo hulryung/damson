@@ -317,6 +317,17 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         notificationObservers.append(NotificationCenter.default.addObserver(
             forName: .damsonAppleHUDToggled, object: nil, queue: .main
         ) { [weak self] _ in self?.applyAppleHUD() })
+        // Switching apps (or to another window) leaves first responder exactly where it is, so
+        // `resignFirstResponder` never fires — but the input context is deactivated and an
+        // in-progress composition is dropped all the same. Catch that case here too.
+        // Observing every window and filtering by identity: this view's window changes over its
+        // lifetime (tab detach, pane move), and a re-registering observer would have to track it.
+        notificationObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, let win = note.object as? NSWindow, win === self.window else { return }
+            self.commitMarkedTextForFocusLoss()
+        })
         // Always apply the initial state explicitly — keep the Apple HUD (which
         // MTL_HUD_ENABLED env auto-enables) off at startup (only toggled on via
         // ⌃⌘J). Default isAppleHUDEnabled == false.
@@ -665,6 +676,48 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         return ok
     }
 
+    public override func resignFirstResponder() -> Bool {
+        commitMarkedTextForFocusLoss()
+        return super.resignFirstResponder()
+    }
+
+    /// Send an in-progress IME composition to the PTY instead of leaving a stale preedit behind.
+    ///
+    /// A half-composed Hangul syllable lives in the input method server; `markedText` is only
+    /// our copy of it, kept to draw the preedit. When focus leaves — an alert steals it, or the
+    /// user switches app, window, tab or pane — that server-side state is torn down, but
+    /// nothing clears our copy. The half-typed syllable therefore stays ON SCREEN while no
+    /// longer existing anywhere: typing the next jamo starts a fresh syllable instead of
+    /// completing the visible one, so the user has to notice and retype. The screen was lying.
+    ///
+    /// Committing makes what is drawn match what is real. Resuming the composition instead
+    /// would be better still, but is not achievable: no API puts a composition back into the
+    /// input method (`NSTextInputContext` offers only activate / deactivate / handleEvent /
+    /// discardMarkedText), and macOS itself does not do it — TextEdit commits here too.
+    ///
+    /// No-op unless something is actually being composed, so it costs nothing for Latin input.
+    private func commitMarkedTextForFocusLoss() {
+        guard !markedText.isEmpty, !isWarmingUpIME else { return }
+        let pending = markedText
+        // Clear our copy BEFORE discarding: `discardMarkedText` can re-enter through
+        // `unmarkText`, which would otherwise schedule a second render for the same change.
+        markedText = ""
+        // Drop the IME's own copy too. Without this it stays composing, and the same jamo
+        // arrive AGAIN when the context reactivates — the input would be duplicated instead
+        // of lost, which is not an improvement.
+        inputContext?.discardMarkedText()
+        scheduleRender()
+        if let data = pending.data(using: .utf8) { session.write(data) }
+    }
+
+    /// Suppresses the focus grab in `viewDidMoveToWindow`. Set on the panes of a tab that is
+    /// only on screen as an interactive-swipe preview: it is visible and live, but the user
+    /// has not switched to it, so it must not pull focus off the tab they are still typing
+    /// into. Beyond the focus itself, taking it would resign the other pane and thereby COMMIT
+    /// an in-progress IME composition (see `commitMarkedTextForFocusLoss`) — a swipe would
+    /// finish the user's half-typed Hangul syllable for them.
+    public var suppressFocusOnAppear = false
+
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard let window = window else { return }
@@ -673,6 +726,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // Force a fresh draw of the current grid so the latest output shows on appear,
         // for every pane — not just the one that becomes first responder below.
         repaintNow()
+        guard !suppressFocusOnAppear else { return }
         window.makeFirstResponder(self)
         inputContext?.activate()
         warmupIMEIfNeeded()
