@@ -1295,8 +1295,8 @@ final class PaneTreeView: NSView {
     /// frame between itself and the next gesture update, i.e. the incoming tab flashing over
     /// the current one at the start of a swipe. Re-asserting the model from `layout()` did not
     /// help either: AppKit writes the geometry after `layout()` returns, so the re-assertion
-    /// was simply overwritten in turn. (Both confirmed from the trace — the offset read back
-    /// as 0 on the update after every single attach, in both attempts.)
+    /// was simply overwritten in turn. (Both were measured, not assumed: the offset read back
+    /// as 0 on the gesture update after every single attach, in both attempts.)
     ///
     /// The model transform is left at identity throughout; read the presentation layer, not
     /// `layer.transform`, to observe where the tree actually is.
@@ -1307,7 +1307,7 @@ final class PaneTreeView: NSView {
     /// Animation key for the offset pin. The settle adds its own animation on the same key path
     /// AFTER this one, so it wins while it runs (CA applies non-additive animations in the
     /// order added); when it completes and is removed, the pin holds the final value.
-    static let swipeOffsetKey = "swipeOffset"
+    private static let swipeOffsetKey = "swipeOffset"
 
     private func applySwipeTranslation() {
         guard let layer else { return }

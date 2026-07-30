@@ -586,13 +586,6 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         refocusCurrentTab()
         contentContainer.layoutSubtreeIfNeeded()
         tree.repaintAllLeaves()
-        SwipeLog.log("swipe.PREVIEW_PARKED",
-                     String(format: "offset=%.0f pinned=%@ frame=(%.0f,%.0f %.0fx%.0f)",
-                            offset,
-                            tree.layer?.animation(forKey: PaneTreeView.swipeOffsetKey) != nil
-                                ? "yes" : "NO",
-                            tree.frame.origin.x, tree.frame.origin.y,
-                            tree.frame.width, tree.frame.height))
     }
 
     /// Put keyboard focus back on the tab the user is actually on.

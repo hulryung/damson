@@ -49,8 +49,6 @@ final class TabTransitionCoordinator {
     /// Non-nil exactly while a preview is in the container.
     private var swipeNeighborTree: PaneTreeView?
     private var swipeNeighborIndex = -1
-    /// Gesture updates since the preview was attached — trace-only, see `PREVIEW_TX_LOST`.
-    private var swipeUpdatesSinceAttach = 0
     private var swipeFromRight = false   // neighbor (next tab) enters from the right
     // Where the in-flight settle is heading, so a new swipe that interrupts it can
     // finalize it instantly and chain (flick-flick-flick through tabs "슥슥") instead
@@ -323,31 +321,6 @@ final class TabTransitionCoordinator {
         }
 
         let neighborStart = swipeFromRight ? width : -width
-        // Regression detector for the flash, sampled BEFORE the write below overwrites it.
-        //
-        // The preview's offset has to survive AppKit's layout pass, which runs at the end of
-        // the runloop turn the attach happened in — after every log the attach itself could
-        // write. When it did not survive, the tab was composited at x=0 for the single frame
-        // between that pass and this update: the incoming tab flashing over the current one at
-        // the start of a swipe. `PaneTreeView.swipeTranslationX` holds the offset in a filled
-        // animation for exactly this reason, so a hit here means that stopped working.
-        // Sample from the SECOND update on: on the attach's own turn CA has not committed yet,
-        // so the presentation layer still reads the pre-attach value and every sample would be
-        // a false alarm. (This must not `return` — the translation below has to run on every
-        // update, including the ones this skips.)
-        if SwipeLog.enabled, let preview = swipeNeighborTree, swipeUpdatesSinceAttach < 5 {
-            swipeUpdatesSinceAttach += 1
-            // The PRESENTATION layer: the offset is held by a filled animation and the model
-            // transform stays identity, so `layer.transform` would read 0 even when correct.
-            let observed = preview.layer?.presentation()?
-                .value(forKeyPath: "transform.translation.x") as? CGFloat ?? 0
-            if swipeUpdatesSinceAttach > 1, abs(observed - preview.swipeTranslationX) > 1 {
-                SwipeLog.log("swipe.PREVIEW_TX_LOST",
-                             String(format: "update=%d observed=%.1f expected=%.1f",
-                                    swipeUpdatesSinceAttach, observed,
-                                    preview.swipeTranslationX))
-            }
-        }
         setSwipeTranslation(host.tabs[host.currentIndex].tree, dx)
         setSwipeTranslation(swipeNeighborTree, neighborStart + dx)
 
@@ -424,19 +397,15 @@ final class TabTransitionCoordinator {
 
         let neighborTree = host.tabs[neighborIndex].tree
         if neighborTree === swipeNeighborTree {
-            SwipeLog.log("swipe.PREVIEW_REAIM", "neighbor=\(neighborIndex) offset=\(Int(offset))")
             neighborTree.swipeTranslationX = offset
             return true
         }
         if let old = swipeNeighborTree {
-            SwipeLog.log("swipe.PREVIEW_SWAP", "neighbor=\(neighborIndex) replaces the other side")
             swipeNeighborTree = nil
             host.detachSwipePreview(old)
         }
-        SwipeLog.log("swipe.PREVIEW_ATTACH", "neighbor=\(neighborIndex)")
         host.attachSwipePreview(neighborTree, offset: offset)
         swipeNeighborTree = neighborTree
-        swipeUpdatesSinceAttach = 0
         return true
     }
 
@@ -521,7 +490,6 @@ final class TabTransitionCoordinator {
     private func detachNeighborPreview() {
         guard let tree = swipeNeighborTree else { return }
         swipeNeighborTree = nil
-        SwipeLog.log("swipe.PREVIEW_DETACH", "")
         host.detachSwipePreview(tree)
     }
 
@@ -535,7 +503,6 @@ final class TabTransitionCoordinator {
     /// it out and putting it back would cost it its drawable and reintroduce the blank frame
     /// this design removes.
     private func commitToTab(_ index: Int) {
-        SwipeLog.log("commit.BEGIN", "index=\(index) preview=\(swipeNeighborTree != nil)")
         // Hand the preview off to `selectTab` rather than detaching it. If we are committing
         // to some OTHER tab than the one previewed — `selectTab` ignores an out-of-range
         // index, and `reorderTab` can renumber tabs during the 0.42s settle — the preview is
@@ -543,13 +510,9 @@ final class TabTransitionCoordinator {
         let preview = swipeNeighborTree
         swipeNeighborTree = nil
         if let preview, host.tabs.indices.contains(index), host.tabs[index].tree !== preview {
-            let previewIndex = host.tabs.firstIndex { $0.tree === preview } ?? -1
-            SwipeLog.log("commit.PREVIEW_MISMATCH",
-                         "committing index=\(index) but the preview is tab \(previewIndex)")
             host.detachSwipePreview(preview)
         }
         host.selectTab(index, transition: .none)
-        SwipeLog.log("commit.DONE", "index=\(host.currentIndex)")
     }
 
     /// Offset a tree horizontally for the gesture. Goes through `swipeTranslationX` rather than
