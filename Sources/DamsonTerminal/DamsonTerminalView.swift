@@ -246,6 +246,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     private var cmdKeyDown: Bool = false
     private var hoveredURL: (url: URL, segments: [(row: Int, colRange: Range<Int>)])?
     private var mouseTrackingArea: NSTrackingArea?
+    /// True between grabbing the overlay scrollbar thumb and releasing it, so the drag drives
+    /// scrolling instead of a text selection.
+    private var draggingScrollbar = false
 
     /// "Follow live output" tracking flag. Becomes false when the user scrolls
     /// up, true again when they reach the bottom. At layout() time the new frame
@@ -752,6 +755,14 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // Reclaim key input via the click (in case first responder went elsewhere)
         window?.makeFirstResponder(self)
 
+        // Grabbing the overlay scrollbar takes the whole drag — before mouse reporting, since
+        // the bar is the app's own chrome and is only grabbable while it is actually visible
+        // (a TUI in the alt screen has no scrollback, so it never is).
+        if backend.scrollbarDragBegan(at: backend.contentView.convert(event.locationInWindow, from: nil)) {
+            draggingScrollbar = true
+            return
+        }
+
         // If mouse reporting is active and Shift isn't held, forward to the PTY (no selection).
         if isMouseReportingEvent(event) {
             sendMouseEventToPTY(event: event, button: 0, pressed: true)
@@ -913,6 +924,14 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        if draggingScrollbar {
+            backend.scrollbarDragMoved(to: backend.contentView.convert(event.locationInWindow, from: nil))
+            return
+        }
+        // A drag is still the pointer moving, and `.mouseMoved` stops firing during one, so
+        // the scrollbar reveal has to be fed from here too — otherwise dragging a selection
+        // out to the right edge would not bring the bar up.
+        reportPointer(event)
         // In cell-motion / any-motion mode, forward drag to the PTY too.
         if isMouseReportingEvent(event), session.mouseReportingMode >= 1002 {
             // Avoid sending within the same cell (in 1003 mode it does send)
@@ -1035,6 +1054,11 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
 
     public override func mouseUp(with event: NSEvent) {
+        if draggingScrollbar {
+            draggingScrollbar = false
+            backend.scrollbarDragEnded()
+            return
+        }
         stopAutoScroll()
         selectionGranularity = .character
         if isMouseReportingEvent(event) {
@@ -1100,12 +1124,21 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         if cmdKeyDown {
             updateHoverFromCell(convertEventToCell(event))
         }
+        reportPointer(event)
         super.mouseMoved(with: event)
     }
 
     public override func mouseExited(with event: NSEvent) {
         clearHoveredURL()
+        backend.pointerMoved(to: nil)
         super.mouseExited(with: event)
+    }
+
+    /// Hand the pointer position to the backend in ITS coordinate space (the backend draws in
+    /// `contentView`, which is inset from this view), for the overlay scrollbar reveal.
+    private func reportPointer(_ event: NSEvent) {
+        let inContent = backend.contentView.convert(event.locationInWindow, from: nil)
+        backend.pointerMoved(to: inContent)
     }
 
     private func updateHoverFromCurrentMouse() {

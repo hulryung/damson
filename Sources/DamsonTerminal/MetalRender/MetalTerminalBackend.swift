@@ -210,6 +210,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         inset = config.padding
         rgbaCache.removeAll(keepingCapacity: true)   // theme may have changed
         frameCache = nil   // theme / padding / ligatures etc. aren't in the frame key
+        updateScrollbarReveal()   // the always-show toggle may have just flipped
         redrawLast()
     }
 
@@ -604,6 +605,8 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         // Pass 4: the block cursor — a separate pass (on top) so a blink phase
         // toggle reuses the cached base passes above instead of rebuilding.
         encodeCursorPass(enc: enc, uniforms: &uniforms, grid: grid, state: state)
+        // Pass 5: the scrollbar, for the same reason — it fades on its own clock.
+        encodeScrollbarPass(enc: enc, uniforms: &uniforms)
 
         enc.endEncoding()
 
@@ -830,7 +833,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             appendDisappearingGlyphs(first: first, last: last, glyphs: &glyphs,
                                      colorGlyphs: &colorGlyphs)
         }
-        if config.showScrollbar { appendScrollbar(into: &overlay) }
+        // The scrollbar is NOT built here: it fades in and out on its own clock, and these
+        // instances are cached against a key that (correctly) ignores it. It is drawn inline
+        // per frame instead — see `encodeScrollbarPass`.
         return (bg, glyphs, colorGlyphs, overlay)
     }
 
@@ -967,29 +972,23 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         }
     }
 
-    /// Append a right-edge scroll-position indicator (thumb) to the overlay pass.
-    /// Overlay-style: thumb only, shown only when content exceeds the viewport;
-    /// height ∝ visible fraction, position ∝ scroll offset. Display-only (not yet
-    /// draggable).
-    private func appendScrollbar(into overlay: inout [BgInstance]) {
+    /// Geometry of the right-edge scroll-position indicator (thumb) at the current scroll
+    /// offset, or nil when there is nothing to scroll. Height ∝ visible fraction, position ∝
+    /// scroll offset. Also the hit target for a drag — see `scrollbarDragBegan`.
+    private func scrollbarThumbRect() -> NSRect? {
         let viewportH = metalView.bounds.height
         let contentH = contentHeight
-        guard viewportH > 1, contentH > viewportH + 1 else { return }   // nothing to scroll
+        guard viewportH > 1, contentH > viewportH + 1 else { return nil }   // nothing to scroll
 
-        let barW: CGFloat = 6, rightInset: CGFloat = 2
         let trackTop = inset.height
         let trackH = max(viewportH - inset.height * 2, 1)
         let visibleFraction = min(viewportH / contentH, 1)
-        let thumbH = max(24, trackH * visibleFraction)
+        let thumbH = max(Self.scrollbarMinThumbHeight, trackH * visibleFraction)
         let maxScroll = max(contentH - viewportH, 1)
         let t = min(max(scrollY / maxScroll, 0), 1)
-        let thumbY = snap(trackTop + (trackH - thumbH) * t)
-        let x = snap(metalView.bounds.width - barW - rightInset)
-
-        let color = config.foregroundColor.withAlphaComponent(0.35)
-        overlay.append(BgInstance(origin: SIMD2<Float>(Float(x), Float(thumbY)),
-                                  size: SIMD2<Float>(Float(barW), Float(snap(thumbH))),
-                                  color: rgba(color)))
+        return NSRect(x: snap(metalView.bounds.width - Self.scrollbarWidth - Self.scrollbarRightInset),
+                      y: snap(trackTop + (trackH - thumbH) * t),
+                      width: Self.scrollbarWidth, height: snap(thumbH))
     }
 
     // fg/bg color resolution → see `fgRGBA` / `bgRGBA` (rgba-returning, cached).
@@ -1091,6 +1090,146 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             k += ";\(row):\(seg.lowerBound)-\(seg.upperBound)"
         }
         return k
+    }
+
+    // MARK: Scrollbar reveal
+
+    static let scrollbarWidth: CGFloat = 6
+    static let scrollbarRightInset: CGFloat = 2
+    static let scrollbarMinThumbHeight: CGFloat = 24
+    /// How close to the right edge the pointer has to get, in points. Wider than the thumb
+    /// itself so the bar is already there when the pointer arrives, rather than appearing
+    /// under it — the same reason macOS reveals its overlay scrollers from a margin.
+    static let scrollbarRevealBand: CGFloat = 28
+    /// How long the bar stays up after the last scroll, when the pointer is nowhere near it.
+    static let scrollbarActivityHold: CFTimeInterval = 1.2
+    static let scrollbarFadeDuration: CFTimeInterval = 0.18
+    static let scrollbarMaxAlpha: CGFloat = 0.35
+
+    /// Rendered opacity, eased toward `scrollbarTargetAlpha` by `scrollbarFadeLink`.
+    private var scrollbarAlpha: CGFloat = 0
+    private var scrollbarTargetAlpha: CGFloat = 0
+    /// Set while the pointer sits within `scrollbarRevealBand` of the right edge.
+    private var pointerNearScrollbar = false
+    /// Deadline after which recent scrolling stops counting as a reason to be visible.
+    private var scrollbarActivityUntil: CFTimeInterval = 0
+    private lazy var scrollbarFadeLink = AnimationLink(view: metalView)
+
+    /// Pointer y and scroll offset at the moment the thumb was grabbed. Non-nil while dragging.
+    private var scrollbarDrag: (pointerY: CGFloat, scrollY: CGFloat)?
+
+    func scrollbarDragBegan(at point: NSPoint) -> Bool {
+        // Only grabbable while it is actually on screen — otherwise a click near the right
+        // edge of an idle terminal would scroll it.
+        guard scrollbarAlpha > 0.001, let thumb = scrollbarThumbRect() else { return false }
+        // Widen the target: a 6pt-wide thumb is far too small to hit reliably, so accept
+        // anywhere in the reveal band at the thumb's height. Same band the pointer used to
+        // summon it, so "where it appeared" and "where it can be grabbed" agree.
+        let grab = NSRect(x: metalView.bounds.width - Self.scrollbarRevealBand,
+                          y: thumb.origin.y - 2,
+                          width: Self.scrollbarRevealBand, height: thumb.height + 4)
+        guard grab.contains(point) else { return false }
+        scrollbarDrag = (point.y, scrollY)
+        updateScrollbarReveal()
+        return true
+    }
+
+    func scrollbarDragMoved(to point: NSPoint) {
+        guard let drag = scrollbarDrag, let thumb = scrollbarThumbRect() else { return }
+        let viewportH = metalView.bounds.height
+        // Thumb travel, not track height: dragging the thumb to the bottom of its travel must
+        // land exactly at the bottom of the content, so the two ranges have to correspond.
+        let travel = max(max(viewportH - inset.height * 2, 1) - thumb.height, 1)
+        let maxScroll = max(contentHeight - viewportH, 1)
+        // contentView is flipped (MetalContentView), so a downward drag is +y and +scroll.
+        setScrollY(drag.scrollY + (point.y - drag.pointerY) / travel * maxScroll, animated: false)
+        onUserScroll?()          // same as the wheel: this is the user leaving the bottom
+        noteScrollActivity()
+    }
+
+    func scrollbarDragEnded() {
+        guard scrollbarDrag != nil else { return }
+        scrollbarDrag = nil
+        updateScrollbarReveal()
+    }
+
+    /// The pointer moved (nil = it left the surface). Reveals the scrollbar near the edge.
+    func pointerMoved(to point: NSPoint?) {
+        let near: Bool
+        if let point, metalView.bounds.width > 0 {
+            near = point.x >= metalView.bounds.width - Self.scrollbarRevealBand
+                && point.y >= 0 && point.y <= metalView.bounds.height
+        } else {
+            near = false
+        }
+        guard near != pointerNearScrollbar else { return }
+        pointerNearScrollbar = near
+        updateScrollbarReveal()
+    }
+
+    /// Scrolling counts as a reason to show the bar for a moment afterwards — on a trackpad
+    /// that is the only trigger, since the pointer never has to go near the edge.
+    private func noteScrollActivity() {
+        scrollbarActivityUntil = CACurrentMediaTime() + Self.scrollbarActivityHold
+        updateScrollbarReveal()
+    }
+
+    /// Recompute where the fade is heading and run the link until it gets there.
+    private func updateScrollbarReveal() {
+        let visible = config.showScrollbar          // pinned by the setting
+            || pointerNearScrollbar
+            || scrollbarDrag != nil                 // never fade out from under a grab
+            || CACurrentMediaTime() < scrollbarActivityUntil
+        scrollbarTargetAlpha = visible ? Self.scrollbarMaxAlpha : 0
+        guard scrollbarThumbRect() != nil else {
+            // Nothing to scroll: drop it immediately rather than fading something invisible.
+            scrollbarAlpha = 0
+            scrollbarFadeLink.stop()
+            return
+        }
+        guard scrollbarAlpha != scrollbarTargetAlpha || scrollbarActivityUntil > CACurrentMediaTime()
+        else { return }
+        let step = Self.scrollbarMaxAlpha / CGFloat(max(Self.scrollbarFadeDuration, 0.001))
+        let ok = scrollbarFadeLink.start { [weak self] dt in
+            guard let self else { return true }
+            // Re-evaluate every frame: the activity hold expires on the clock, with no event
+            // to notice it, so the fade-out has to start from in here.
+            let visible = self.config.showScrollbar
+                || self.pointerNearScrollbar
+                || self.scrollbarDrag != nil
+                || CACurrentMediaTime() < self.scrollbarActivityUntil
+            self.scrollbarTargetAlpha = visible ? Self.scrollbarMaxAlpha : 0
+            let delta = CGFloat(dt) * step
+            if self.scrollbarAlpha < self.scrollbarTargetAlpha {
+                self.scrollbarAlpha = min(self.scrollbarTargetAlpha, self.scrollbarAlpha + delta)
+            } else {
+                self.scrollbarAlpha = max(self.scrollbarTargetAlpha, self.scrollbarAlpha - delta)
+            }
+            self.redrawLast()
+            // Done only once settled AND with no pending hold left to expire.
+            return self.scrollbarAlpha == self.scrollbarTargetAlpha
+                && CACurrentMediaTime() >= self.scrollbarActivityUntil
+        }
+        // macOS 13 has no display link (see AnimationLink): snap instead of fading.
+        if !ok {
+            scrollbarAlpha = scrollbarTargetAlpha
+            redrawLast()
+        }
+    }
+
+    /// Encode the scrollbar thumb, inline like the cursor. Kept out of the cached instance
+    /// passes on purpose: the alpha changes on frames where nothing else does, and those
+    /// frames are exactly the ones that hit the cache.
+    private func encodeScrollbarPass(enc: MTLRenderCommandEncoder, uniforms: inout Uniforms) {
+        guard scrollbarAlpha > 0.001, let r = scrollbarThumbRect() else { return }
+        var bg = BgInstance(
+            origin: SIMD2<Float>(Float(r.origin.x), Float(r.origin.y)),
+            size: SIMD2<Float>(Float(r.width), Float(r.height)),
+            color: rgba(config.foregroundColor.withAlphaComponent(scrollbarAlpha)))
+        enc.setRenderPipelineState(md.bgPipeline)
+        enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+        enc.setVertexBytes(&bg, length: MemoryLayout<BgInstance>.stride, index: 1)
+        enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
     }
 
     /// Encode the block-cursor pass (cursorColor fill + inverted glyph) into an
@@ -1279,6 +1418,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             scrollRenderPending = true
             ensureRenderLoop()
             onUserScroll?()              // host updates followingBottom
+            noteScrollActivity()
         }
         // Spring a rubber-band overshoot back to the edge once the gesture ends.
         // (A following momentum event cancels this ease via animLink.stop above and

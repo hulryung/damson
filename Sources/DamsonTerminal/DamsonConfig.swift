@@ -34,8 +34,10 @@ public struct DamsonConfig {
     /// Depends on the font's own OpenType liga/calt tables — fonts without ligatures (Menlo, etc.)
     /// show no change even when enabled. Visible with Fira Code / JetBrains Mono / D2CodingLigature, etc.
     public var ligatures: Bool
-    /// Whether to show a scroll-position indicator (thumb) on the right edge. Default OFF.
-    /// Only visible when the scrollback is longer than the viewport.
+    /// Pin the right-edge scroll-position indicator (thumb) on. Default OFF, which does NOT
+    /// mean hidden: the thumb still fades in while scrolling and while the pointer is near the
+    /// right edge, the way macOS overlay scrollers behave. This makes it permanent instead.
+    /// Either way it only appears when the scrollback is longer than the viewport.
     public var showScrollbar: Bool
     /// Render oversized Nerd Font icons (powerline prompts etc.) at natural size
     /// across two cells, centered on their grid slot, instead of shrinking them

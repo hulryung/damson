@@ -184,4 +184,30 @@ public protocol TerminalRenderBackend: AnyObject {
     func ensureLayout()
     /// Flush a programmatic scroll change to the on-screen scroller.
     func reflectScroll()
+
+    /// The pointer moved to `point` in `contentView` coordinates, or left the surface (nil).
+    /// Backends that reveal an overlay scrollbar on proximity use this; the host reports the
+    /// position rather than tracking the edge itself, so the reveal geometry stays with
+    /// whoever draws the bar.
+    ///
+    /// Has a default implementation, so adding it does not break existing conformers.
+    func pointerMoved(to point: NSPoint?)
+
+    /// Try to grab the scrollbar thumb at `point` (`contentView` coordinates). Returns true if
+    /// it took the click, in which case the host must route the rest of the drag here instead
+    /// of to text selection, and must not start a selection.
+    func scrollbarDragBegan(at point: NSPoint) -> Bool
+    /// Continue a grab started by `scrollbarDragBegan`.
+    func scrollbarDragMoved(to point: NSPoint)
+    /// End it. Safe to call when no drag is in progress.
+    func scrollbarDragEnded()
+}
+
+public extension TerminalRenderBackend {
+    /// Default for backends with nothing that reacts to pointer proximity.
+    func pointerMoved(to point: NSPoint?) {}
+    /// Defaults for backends with no draggable scrollbar: never take the click.
+    func scrollbarDragBegan(at point: NSPoint) -> Bool { false }
+    func scrollbarDragMoved(to point: NSPoint) {}
+    func scrollbarDragEnded() {}
 }

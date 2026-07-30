@@ -160,7 +160,10 @@ struct DamsonSettingsView: View {
                 Text("When off (default), the tab bar is a solid theme background color; when on, it's frosted-glass translucent.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Toggle("Show Scrollbar", isOn: $showScrollbar)
+                Toggle("Always Show Scrollbar", isOn: $showScrollbar)
+                Text("When off (default), the scrollbar fades in while you scroll and when the pointer nears the right edge; when on, it stays visible whenever there is scrollback.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 Picker("Tab Transition", selection: $tabTransitionRaw) {
                     ForEach(TabTransitionStyle.allCases, id: \.rawValue) { style in
                         Text(style.displayName).tag(style.rawValue)
