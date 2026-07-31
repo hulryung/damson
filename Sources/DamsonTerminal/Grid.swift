@@ -813,6 +813,12 @@ public final class Grid {
             FileHandle.standardError.write(Data(msg.utf8))
         }
 
+        // The host sets `preservePromptBlock` from "no foreground job is running"
+        // (DamsonSession.resize), so it carries one fact: whether the SHELL owns the
+        // screen. Both the reflow's prompt-block preservation and the grow-pull below
+        // need exactly that, so name it once here and pass it on.
+        let shellOwnsScreen = preservePromptBlock
+
         if !isAltScreenActive && newCols != cols {
             // Primary screen with a column change → reflow. Rejoins soft-wrapped
             // physical rows into logical lines, re-splits at the new width, redistributes
@@ -822,7 +828,7 @@ public final class Grid {
         } else {
             // Alt screen or a pure row change → simple trim/pad. With width unchanged,
             // wrap boundaries don't move, so no reflow needed.
-            resizeTrimPad(toCols: newCols, toRows: newRows)
+            resizeTrimPad(toCols: newCols, toRows: newRows, shellOwnsScreen: shellOwnsScreen)
         }
 
         cols = newCols
@@ -849,12 +855,17 @@ public final class Grid {
     /// truncated. Together with grow-pull this makes grow→shrink a lossless round trip:
     /// the same lines come back out of / go back into scrollback, so the TUI's redraw
     /// can't leave stale duplicates above the viewport.
-    private func resizeTrimPad(toCols newCols: Int, toRows newRows: Int) {
+    private func resizeTrimPad(toCols newCols: Int, toRows newRows: Int, shellOwnsScreen: Bool) {
         var source = cells
         var fromRows = rows
-        if newRows > rows, !isAltScreenActive, !scrollback.isEmpty, cursorRow == rows - 1 {
-            // Bottom-anchor on grow ONLY when the cursor sits on the LAST row (a
-            // shell prompt hugging the bottom) — ghostty's guard. A full-screen TUI
+        if newRows > rows, shellOwnsScreen, !isAltScreenActive, !scrollback.isEmpty,
+           cursorRow == rows - 1 {
+            // Bottom-anchor on grow ONLY when the shell owns the screen AND its cursor
+            // sits on the LAST row (a prompt hugging the bottom) — ghostty's guard, plus
+            // the foreground-job check. A bottom-row cursor alone does NOT mean a shell:
+            // a full-screen pager parks one there too, and `less -FRX` is git's default
+            // pager, so `git log` + a window resize took this path and lost the pulled
+            // lines to the pager's repaint. A full-screen TUI
             // parks its cursor rows above the bottom (Claude Code: input line with
             // status/blank below), and — verified from a DAMSON_DUMP_OUTPUT capture
             // of the reported artifact — its post-SIGWINCH repaint erases from
@@ -928,68 +939,12 @@ public final class Grid {
         cursorRow = max(0, min(newRows - 1, cursorRow - rowOffset))
         cursorCol = max(0, min(newCols - 1, cursorCol))
 
-        // If there's a saved primary, resize it too, with the same symmetric policy:
-        // grow pulls back from its own scrollback (bottom-anchor), shrink trims
-        // trailing blanks below its cursor first and pushes only the rest.
-        if var saved = savedPrimary {
-            var savedSource = saved.cells
-            var savedFromRows = savedSource.count
-            let savedCols = savedSource.first?.count ?? 0
-            if newRows > savedFromRows, !saved.scrollback.isEmpty,
-               saved.cursorRow == savedFromRows - 1 {
-                // Same policy as the live path: bottom-anchor only for a last-row
-                // cursor, capped by an exact pushCount decrement and the wider-line
-                // guard.
-                let wanted = min(newRows - savedFromRows, saved.scrollback.count,
-                                 Int(min(saved.scrollbackPushCount, UInt64(Int.max))))
-                var pull = 0
-                while pull < wanted,
-                      saved.scrollback[saved.scrollback.count - 1 - pull].count <= newCols {
-                    pull += 1
-                }
-                if pull > 0 {
-                    savedSource = Array(saved.scrollback.suffix(pull)) + savedSource
-                    saved.scrollback.removeLast(pull)
-                    saved.scrollbackPushCount -= UInt64(pull)
-                    savedFromRows += pull
-                    saved.cursorRow += pull
-                    saved.savedCursorRow = min(saved.savedCursorRow + pull, newRows - 1)
-                }
-            }
-            let savedRowOffset: Int
-            if newRows < savedFromRows {
-                var lastKeep = saved.cursorRow
-                for r in stride(from: savedFromRows - 1, through: 0, by: -1) {
-                    if !isBlankRow(savedSource[r]) { lastKeep = max(lastKeep, r); break }
-                }
-                let trimmable = savedFromRows - 1 - lastKeep
-                savedRowOffset = min(max(0, (savedFromRows - newRows) - trimmable),
-                                     saved.cursorRow)
-            } else {
-                savedRowOffset = 0
-            }
-            if savedRowOffset > 0 {
-                for r in 0..<savedRowOffset {
-                    saved.scrollback.append(savedSource[r])
-                    saved.scrollbackPushCount &+= 1
-                }
-                // Clamp once after the batch (a resize pushes at most a screenful, but
-                // there's no reason to shift the array per line).
-                if saved.scrollback.count > maxScrollbackLines {
-                    saved.scrollback.removeFirst(saved.scrollback.count - maxScrollbackLines)
-                }
-            }
-            saved.cells = Self.resizeCellsArray(
-                savedSource, fromCols: savedCols, fromRows: savedFromRows,
-                toCols: newCols, toRows: newRows, rowOffset: savedRowOffset, pen: saved.pen
-            )
-            saved.cursorRow = max(0, min(newRows - 1, saved.cursorRow - savedRowOffset))
-            saved.cursorCol = max(0, min(newCols - 1, saved.cursorCol))
-            saved.pendingWrap = false
-            saved.scrollTop = 0
-            saved.scrollBottom = newRows - 1
-            savedPrimary = saved
-        }
+        // The saved primary is deliberately NOT resized here. This is the alt-screen
+        // path, so a width change would trim/pad it — clipping every row at the new
+        // width, permanently — when what it needs is a reflow. It is left exactly as
+        // captured and brought to the current size once, through the normal path, in
+        // `leaveAltScreen`. (This block only ever ran while alt was active: `savedPrimary`
+        // is non-nil only then, and outside alt a width change goes to `reflowPrimary`.)
         pendingWrap = false
     }
 
@@ -1280,11 +1235,22 @@ public final class Grid {
     }
 
     /// Leave alt and restore primary. No-op if there's no snapshot.
+    ///
+    /// The snapshot is restored at the size it was captured at, then resized once to the
+    /// size the window is NOW. Resizing it here rather than on every resize while alt was up
+    /// is what lets a width change reflow: the alt path is trim/pad, which would clip each
+    /// row at the new width and lose the text beyond it for good, and on a widening would
+    /// bake the padding into the line so even a later reflow could not rejoin it.
     public func leaveAltScreen() {
         guard isAltScreenActive, let saved = savedPrimary else {
             isAltScreenActive = false
             return
         }
+        // Size the primary was left at when the app took over, vs. the size the window is now.
+        let restoredRows = saved.cells.count
+        let restoredCols = saved.cells.first?.count ?? cols
+        let liveCols = cols, liveRows = rows
+
         cells = saved.cells
         cursorRow = saved.cursorRow
         cursorCol = saved.cursorCol
@@ -1300,6 +1266,17 @@ public final class Grid {
         savedPen = saved.savedPen
         savedPrimary = nil
         isAltScreenActive = false
+
+        // Catch the primary up to the current window size through the normal path — which
+        // reflows on a width change. `isAltScreenActive` is already false, so `resize` picks
+        // the reflow branch. Guarded on a non-degenerate snapshot: `resize` reads `cols`/`rows`
+        // as the OLD size, and a zero there would be nonsense to reflow from.
+        if restoredRows > 0, restoredCols > 0,
+           restoredCols != liveCols || restoredRows != liveRows {
+            cols = restoredCols
+            rows = restoredRows
+            resize(cols: liveCols, rows: liveRows)
+        }
         bumpVersion()
     }
 
