@@ -113,6 +113,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private(set) var contentContainer: NSView!
     private static let tabBarHeight: CGFloat = 38
     private var tabBarTopConstraint: NSLayoutConstraint!
+    /// Frame observers on the traffic lights — see `observeTrafficLights`.
+    private var trafficLightObservers: [NSObjectProtocol] = []
     private var tabBarBackgroundHeightConstraint: NSLayoutConstraint!
     private var tabBarSolidHeightConstraint: NSLayoutConstraint!
     /// Tab-bar top inset. Kept at 0 even in full screen so the tab bar shows as a single
@@ -201,6 +203,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     deinit {
         for s in sessions { s.terminate() }
+        for token in trafficLightObservers { NotificationCenter.default.removeObserver(token) }
     }
 
     private func setupViews() {
@@ -276,8 +279,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         ])
 
         applyTabBarBackground()
-        // Re-position the traffic lights after the window buttons are laid out. On the next runloop.
-        DispatchQueue.main.async { [weak self] in self?.centerTrafficLights() }
+        // Re-position the traffic lights after the window buttons are laid out. On the next
+        // runloop, since they do not exist yet during setup.
+        DispatchQueue.main.async { [weak self] in
+            self?.centerTrafficLights()
+            self?.observeTrafficLights()
+        }
     }
 
     /// Update the tab-bar top inset and background height on full-screen enter/exit.
@@ -310,7 +317,11 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     /// Vertically center the traffic lights in the tab bar (38pt). The system draws them
     /// centered in the standard titlebar (~28pt), making them sit higher, so we lower the
     /// button origins to align them with the tab labels. In full screen the traffic lights
-    /// are hidden, so this is skipped. Re-applied on resize/full-screen.
+    /// are hidden, so this is skipped.
+    ///
+    /// Idempotent: it returns without touching a button already at its target, which is what
+    /// makes it safe to drive from the buttons' own frame notifications (see
+    /// `observeTrafficLights`) without looping on the change it makes itself.
     func centerTrafficLights() {
         guard let window, !window.styleMask.contains(.fullScreen) else { return }
         let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
@@ -318,7 +329,31 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         guard let container = buttons.first?.superview else { return }
         for b in buttons {
             let y = container.bounds.height - (Self.tabBarHeight + b.frame.height) / 2
+            guard abs(b.frame.origin.y - y) > 0.5 else { continue }
             b.setFrameOrigin(NSPoint(x: b.frame.origin.x, y: y))
+        }
+    }
+
+    /// Re-center the traffic lights whenever AppKit moves them.
+    ///
+    /// AppKit owns these buttons and restores its own layout on any titlebar relayout — not
+    /// just the window resize this used to hook. Becoming key, a title change (which
+    /// `selectTab` does on every tab switch), moving to another screen, an appearance change
+    /// and the tab-bar style toggling `styleMask` all do it. Any one of them not covered left
+    /// the buttons sitting at the system position, higher than the tab labels, until something
+    /// else happened to trigger a re-center.
+    ///
+    /// So react to the buttons MOVING rather than to a list of things that move them: the
+    /// event is the same for every cause, including causes not enumerated here.
+    private func observeTrafficLights() {
+        guard trafficLightObservers.isEmpty, let window else { return }
+        let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { window.standardWindowButton($0) }
+        for b in buttons {
+            b.postsFrameChangedNotifications = true
+            trafficLightObservers.append(NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification, object: b, queue: .main
+            ) { [weak self] _ in self?.centerTrafficLights() })
         }
     }
 
