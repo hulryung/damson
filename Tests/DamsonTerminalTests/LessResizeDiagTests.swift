@@ -23,7 +23,7 @@ final class LessResizeDiagTests: XCTestCase {
         pty.onData = { buf.append($0) }
         var env = DamsonConfig.defaultEnv()
         env["TERM"] = "xterm-256color"
-        env["LESS"] = "FRX"          // exactly what git sets
+        env["LESS"] = ProcessInfo.processInfo.environment["PROBE_LESS"] ?? "FRX"
         try pty.spawn(argv: ["/usr/bin/less", path], env: env,
                       cwd: NSTemporaryDirectory(), cols: 40, rows: 10)
         defer { pty.terminate() }
