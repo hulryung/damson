@@ -345,13 +345,37 @@ extension GlyphFallbackTests {
                 return (minX, maxX, l, r)
             }
 
+            /// Per-column coverage totals — how much ink each column carries, so a
+            /// faint antialiasing fringe can be told apart from a real stroke.
+            func columnSums(_ bmp: GlyphRasterizer.Bitmap) -> [Int] {
+                var cols = [Int](repeating: 0, count: bmp.width)
+                for y in 0..<bmp.height {
+                    let row = y * bmp.width
+                    for x in 0..<bmp.width { cols[x] += Int(bmp.bytes[row + x]) }
+                }
+                return cols
+            }
+
             // NATURAL variant: 2-cell canvas, ink at the designed size — it must
             // extend past the first cell (the half-clipped bug stopped at the cell
-            // edge) and still not touch the canvas edges.
+            // edge) and still not run off the canvas.
             let nat = try XCTUnwrap(r.raster(ch, bold: false, wide: Cell.isWide(ch)),
                                     "\(ch) must render")
             let n = inkStats(nat)
-            XCTAssertGreaterThan(n.minX, 0, "\(ch) natural ink flush with the LEFT edge")
+            // The left edge can't be asserted as "no ink at all": this variant is
+            // left-anchored BY DESIGN (ink starts at the glyph's own cell edge and
+            // spills only rightward), so it gets no inset, and whether column 0
+            // lights up is decided by the fallback face's left side bearing against
+            // the device pixel grid. Without D2Coding installed — the common case —
+            // the pin lands on Apple SD Gothic Neo, whose ① bears 0.39pt: 0.78px at
+            // scale 2, so antialiasing tints column 0 on a perfectly complete glyph.
+            // Measure that tint instead. A genuine left clip puts the circle's near-
+            // vertical left arc into column 0, which reads as a full-strength stroke.
+            let natCols = columnSums(nat)
+            let natPeak = max(natCols.max() ?? 0, 1)
+            XCTAssertLessThan(Double(natCols[0]) / Double(natPeak), 0.25,
+                "\(ch) natural ink CLIPPED at the LEFT edge — column 0 carries "
+                + "\(natCols[0]) of peak \(natPeak), too much for an antialiasing fringe")
             XCTAssertLessThan(n.maxX, nat.width - 1, "\(ch) natural ink clipped at the RIGHT edge")
             XCTAssertGreaterThan(n.maxX, oneCellW,
                 "\(ch) natural ink stops at the 1-cell edge (w=\(nat.width)) — half the glyph is missing")
