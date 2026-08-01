@@ -22,6 +22,7 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.tabTransition") private var tabTransitionRaw: String = TabTransitionStyle.slide.rawValue
     @AppStorage("damson.activePaneIndicator") private var activePaneRaw: String = ActivePaneIndicator.accentBorder.rawValue
     @AppStorage("damson.focusFollowsMouse") private var focusFollowsMouse: Bool = true
+    @AppStorage("damson.evenSplits") private var evenSplits: Bool = true
     @AppStorage("damson.newTabDirectory") private var newTabDirRaw: String = NewTabDirectory.home.rawValue
     @AppStorage("damson.backgroundOpacity") private var backgroundOpacity: Double = 1.0
     @AppStorage("damson.paddingH") private var paddingH: Double = 4
@@ -176,6 +177,10 @@ struct DamsonSettingsView: View {
                 }
                 Toggle("Focus follows mouse", isOn: $focusFollowsMouse)
                 Text("When on (default), the pane under the mouse cursor activates without a click. Only meaningful in split windows.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Toggle("Even splits", isOn: $evenSplits)
+                Text("When on (default), splitting (⌘D / ⌘⇧D) or closing (⌘W) a pane evens out every pane left in the same row or column — a third split gives ⅓ · ⅓ · ⅓. When off, a split just halves the active pane (½ · ¼ · ¼) and a close hands all of its space to the neighbor.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Picker("New Tab Directory", selection: $newTabDirRaw) {

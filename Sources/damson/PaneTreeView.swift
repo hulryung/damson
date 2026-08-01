@@ -150,15 +150,29 @@ final class PaneTreeView: NSView {
         let newLeaf = PaneNode.leaf(newSession)
         let oldKind = activeLeaf.kind
         // Replace activeLeaf's kind with a split. The activeLeaf instance stays the same (preserving the parent link).
+        let splitNode = activeLeaf
         let oldLeafCopy = PaneNode(kind: oldKind)
-        oldLeafCopy.parent = activeLeaf
-        newLeaf.parent = activeLeaf
-        activeLeaf.kind = .split(
+        oldLeafCopy.parent = splitNode
+        newLeaf.parent = splitNode
+        splitNode.kind = .split(
             direction: direction,
             first: oldLeafCopy,
             second: newLeaf,
             ratio: 0.5
         )
+        if EvenSplits.enabled {
+            // The fresh split only halved the active pane; to make it even with the panes
+            // it lines up against, re-space the whole run of same-axis splits it belongs to.
+            // Walk up while the parent divides on the same axis — a perpendicular split ends
+            // the run, since everything below it lives inside a single slot of the outer one.
+            var runRoot = splitNode
+            while let parent = runRoot.parent,
+                  case .split(let parentDir, _, _, _) = parent.kind,
+                  parentDir == direction {
+                runRoot = parent
+            }
+            runRoot.equalizeRatios(along: direction)
+        }
         activeLeaf = newLeaf
         // Animate the new pane in only when motion is enabled (live transform,
         // no snapshot → the only gate is Motion.enabled). Otherwise the instant
@@ -274,7 +288,7 @@ final class PaneTreeView: NSView {
         s.terminate()
         // The parent's other child is promoted into the parent's slot.
         guard let parent = leaf.parent,
-              case .split(_, let first, let second, _) = parent.kind
+              case .split(let parentDir, let first, let second, _) = parent.kind
         else {
             // Closed the root leaf — shut everything down.
             onAllPanesClosed?()
@@ -286,6 +300,18 @@ final class PaneTreeView: NSView {
         if case .split(_, let a, let b, _) = parent.kind {
             a.parent = parent
             b.parent = parent
+        }
+        if EvenSplits.enabled {
+            // The collapse handed the closed pane's space to its sibling alone, which
+            // leaves the survivors uneven (closing one of three thirds → ⅓ · ⅔). Re-space
+            // the run the removed slot came from, the same way `split` does after adding one.
+            var runRoot = parent
+            while let grandparent = runRoot.parent,
+                  case .split(let dir, _, _, _) = grandparent.kind,
+                  dir == parentDir {
+                runRoot = grandparent
+            }
+            runRoot.equalizeRatios(along: parentDir)
         }
         // Only move the active pane if the close actually invalidated it. This
         // collapse removes exactly two nodes from the tree: the closed `leaf` and the
