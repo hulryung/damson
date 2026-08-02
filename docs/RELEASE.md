@@ -163,11 +163,16 @@ Release creation).
 | `APPLE_CERTIFICATE_BASE64` | Developer ID Application `.p12` via `base64 -i cert.p12` |
 | `APPLE_CERTIFICATE_PASSWORD` | Password used when importing the `.p12` |
 | `APPLE_SIGNING_IDENTITY` | `"Developer ID Application: Your Name (TEAMID)"` |
-| `APPLE_ID` | Apple ID email |
-| `APPLE_APP_SPECIFIC_PASSWORD` | Issued at appleid.apple.com |
+| `APP_STORE_CONNECT_KEY_B64` | App Store Connect API key (`.p8`) → base64 |
+| `APP_STORE_CONNECT_KEY_ID` | ASC API Key ID |
+| `APP_STORE_CONNECT_ISSUER` | ASC Issuer ID (UUID) |
 | `APPLE_TEAM_ID` | `ABCDE12345` |
 | `SPARKLE_PUBLIC_KEY` | base64 EdDSA public key (sparkle-keygen.sh output) |
 | `SPARKLE_PRIVATE_KEY` | base64 EdDSA private key (keychain export) |
+
+Notarization prefers the App Store Connect API key; `APPLE_ID` +
+`APPLE_APP_SPECIFIC_PASSWORD` still work as a legacy fallback if the ASC
+secrets are absent.
 
 How to export the private key:
 ```sh
@@ -185,6 +190,60 @@ git push --tags
 ```
 
 Manual trigger also works: Actions tab → "release" workflow → "Run workflow" → enter version.
+
+## Key custody
+
+Two secrets can end a release: the Developer ID signing identity and the Sparkle
+EdDSA key. GitHub Actions holds a copy of each, but **Actions secrets are
+write-only** — they can be replaced, never read back. So the repository is not a
+backup, and the only recoverable copies are the ones you keep yourself.
+
+| Key | Lives in | Recoverable if lost? |
+|---|---|---|
+| Developer ID certificate | Apple Developer portal (re-downloadable) | Yes — the `.cer` is always available |
+| …its private key | login keychain of the machine that made the CSR | **No** — revoke and issue a new certificate |
+| Sparkle EdDSA private key | login keychain, `"https://sparkle-project.org"` / `ed25519` | **No** — and see below |
+| App Store Connect API key (`.p8`) | downloaded once at creation | No, but a replacement key is free to issue |
+
+### What losing each one costs
+
+**Developer ID private key** — issue a new certificate and re-sign. Nothing
+already shipped breaks; Gatekeeper keeps honoring binaries signed by the old
+certificate as long as it was valid and notarized when they were signed. The
+cost is process, not users. (Note Developer ID certificates are rate-limited per
+team, so don't churn them.)
+
+**Sparkle EdDSA private key** — this is the expensive one. Every installed copy
+verifies updates against the `SUPublicEDKey` baked into *its own* Info.plist, so
+a new keypair orphans every user already in the field: their app rejects the
+update as unsigned and stays where it is until they download a `.dmg` by hand.
+There is no rotation path that reaches an app that has already shipped.
+
+**Leaking** either private key is worse than losing it — someone else can ship
+software signed as you. If a Developer ID key leaks, Apple revokes the
+certificate, and revocation applies to what you already shipped: those builds
+stop launching. Treat both as company credentials, not developer conveniences.
+
+### Backing them up
+
+```sh
+# Developer ID: Keychain Access → select the certificate AND its private key
+# → right-click → Export → .p12 (this is exactly what APPLE_CERTIFICATE_BASE64 holds)
+
+# Sparkle EdDSA:
+generate_keys -x sparkle-private.key      # .build/artifacts/sparkle/Sparkle/bin/
+generate_keys -f sparkle-private.key      # …and to import it on another machine
+```
+
+Keep two copies that don't share a failure mode: one in the team password
+manager's shared vault (restricted to whoever cuts releases), one offline on
+encrypted media. Not in this repository, not in Slack or email, not in
+unencrypted cloud sync.
+
+Give the `.p12` a long random export password — PKCS#12 can be brute-forced
+offline, so a memorable password means the file leaking is the key leaking.
+Store that password in the password manager, and delete the exported files from
+disk once they are in the vault; both are plaintext key material until then.
 
 ## Known limitations
 
