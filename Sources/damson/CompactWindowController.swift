@@ -62,12 +62,17 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     /// Animation intent threaded through `selectTab` / `addTab`. `.none` = instant
     /// (today's behavior; restore, keyboard nav, tab-bar click, close-show-next).
     /// `.create` = a brand-new tab's content fades + scales in (Task 2).
-    /// `.switch(fromIndex:)` = the tab-switch crossfade/slide (Task 6); carries the
-    /// index we came **from** so the slide direction follows the index sign.
+    /// `.switch(fromIndex:towardRight:)` = the tab-switch crossfade/slide (Task 6);
+    /// carries the index we came **from**. `towardRight` is the direction the content
+    /// should travel, for the callers where the index sign is not the intent: ⌘→ off
+    /// the LAST tab wraps to index 0, and sliding rightward there — as the indices
+    /// imply — plays the animation backwards against the key that was pressed. nil
+    /// means derive it from the indices, which is right for a click or ⌘1…9, where
+    /// the index order IS what the user asked for.
     enum TabTransition {
         case none
         case create
-        case `switch`(fromIndex: Int)
+        case `switch`(fromIndex: Int, towardRight: Bool?)
     }
     private(set) var tabs: [Tab] = []
     private(set) var currentIndex: Int = 0
@@ -228,7 +233,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.onTabSelected = { [weak self] idx in
             guard let self = self else { return }
-            self.selectTab(idx, transition: .switch(fromIndex: self.currentIndex))
+            self.selectTab(idx, transition: .switch(fromIndex: self.currentIndex, towardRight: nil))
         }
         tabBar.onTabClosed = { [weak self] idx in self?.closeTab(idx) }
         tabBar.onNewTab = { [weak self] in self?.addNewTab() }
@@ -459,16 +464,16 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         // completes costs nothing up front AND is pixel-faithful — the dim/border overlay
         // layers ride along live (the snapshot composited the Metal frame OVER the dim
         // scrim, so inactive panes flashed undimmed during the slide).
-        var switchOutgoing: (tree: PaneTreeView, fromIndex: Int)?
+        var switchOutgoing: (tree: PaneTreeView, fromIndex: Int, towardRight: Bool?)?
         var reentry = TabTransitionCoordinator.SwitchReentry()
-        if case .switch(let fromIndex) = transition,
+        if case .switch(let fromIndex, let towardRight) = transition,
            Motion.enabled,
            TabTransitionStyle.current != .none,
            fromIndex >= 0, fromIndex < tabs.count, fromIndex != index {
             let outgoing = tabs[fromIndex].tree
             // Only animate if that tree is actually the one on screen right now.
             if outgoing.superview === contentContainer {
-                switchOutgoing = (outgoing, fromIndex)
+                switchOutgoing = (outgoing, fromIndex, towardRight)
                 // Capture current on-screen positions NOW, before the detach/reset below
                 // clears the incoming tree's in-flight animation — so a reversed switch
                 // continues from where the two trees currently are.
@@ -548,7 +553,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         // identical to today.
         if let out = switchOutgoing, out.tree !== tree {
             tabTransitions.animateTabSwitch(incoming: tree, outgoing: out.tree,
-                                            fromIndex: out.fromIndex, toIndex: index, reentry: reentry)
+                                            fromIndex: out.fromIndex, toIndex: index,
+                                            towardRight: out.towardRight, reentry: reentry)
         }
     }
 
@@ -840,18 +846,21 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     // MARK: - Tab keyboard navigation
 
-    /// Cmd+Shift+] / Ctrl+Tab — next tab (wrap).
+    /// Cmd+Shift+] / Ctrl+Tab / ⌘→ — next tab (wrap). Always slides leftward, wrap
+    /// included: "next" is one direction to the user no matter what it does to the index.
     @objc func selectNextTab(_ sender: Any?) {
         guard !tabs.isEmpty else { return }
         let from = currentIndex
-        selectTab((currentIndex + 1) % tabs.count, transition: .switch(fromIndex: from))
+        selectTab((currentIndex + 1) % tabs.count,
+                  transition: .switch(fromIndex: from, towardRight: true))
     }
 
-    /// Cmd+Shift+[ / Ctrl+Shift+Tab — previous tab (wrap).
+    /// Cmd+Shift+[ / Ctrl+Shift+Tab / ⌘← — previous tab (wrap). Mirror of the above.
     @objc func selectPreviousTab(_ sender: Any?) {
         guard !tabs.isEmpty else { return }
         let from = currentIndex
-        selectTab((currentIndex - 1 + tabs.count) % tabs.count, transition: .switch(fromIndex: from))
+        selectTab((currentIndex - 1 + tabs.count) % tabs.count,
+                  transition: .switch(fromIndex: from, towardRight: false))
     }
 
     /// Cmd+1..9 — the nth tab (9 is the last tab). NSMenuItem.tag holds the 1-based number.
@@ -860,7 +869,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         let n = item.tag
         let idx = (n == 9) ? tabs.count - 1 : n - 1
         if idx >= 0 && idx < tabs.count {
-            selectTab(idx, transition: .switch(fromIndex: currentIndex))
+            selectTab(idx, transition: .switch(fromIndex: currentIndex, towardRight: nil))
         }
     }
 

@@ -154,7 +154,8 @@ final class TabTransitionCoordinator {
     }
 
     func animateTabSwitch(incoming tree: PaneTreeView, outgoing: PaneTreeView,
-                          fromIndex: Int, toIndex: Int, reentry: SwitchReentry) {
+                          fromIndex: Int, toIndex: Int, towardRight: Bool?,
+                          reentry: SwitchReentry) {
         guard let incomingLayer = tree.layer, let outgoingLayer = outgoing.layer else { return }
         // Ensure constraints have produced the final frame before we read/animate it.
         host.contentContainer.layoutSubtreeIfNeeded()
@@ -178,7 +179,9 @@ final class TabTransitionCoordinator {
 
         // Cross-slide geometry (matches Rust halite). Higher target index = new tab
         // is to the right → it enters from the right while the old one exits left.
-        let goingRight = toIndex > fromIndex
+        // The caller overrides this when the index sign isn't the intent — next/previous
+        // wrapping past either end, where the tab one step to the "right" is index 0.
+        let goingRight = towardRight ?? (toIndex > fromIndex)
         let width = host.contentContainer.bounds.width
         let style = TabTransitionStyle.current
 
