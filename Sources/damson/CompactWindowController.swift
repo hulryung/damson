@@ -718,7 +718,20 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             window?.performClose(nil)
             return
         }
-        if currentIndex >= tabs.count { currentIndex = tabs.count - 1 }
+        if index < currentIndex {
+            // A tab BEFORE the current one went away, so everything after it — including the
+            // tab being looked at — slid down a slot. Follow it, or `currentIndex` keeps its
+            // number while naming the neighbor to the right: closing a background tab would
+            // silently switch tabs on the user, and every later ⌘←/⌘→ would count from there.
+            // Reachable without touching the tab bar, since a background tab whose last shell
+            // exits closes itself through here.
+            currentIndex -= 1
+        } else if currentIndex >= tabs.count {
+            // The active tab was the last one — fall back to the new last tab.
+            currentIndex = tabs.count - 1
+        }
+        // Closing the ACTIVE tab leaves currentIndex alone on purpose: the tab that shifted
+        // into that slot is the next one to the right, which is what should be shown.
         // Show the next tab live, instantly (.none). The overlay slides/fades on top of it.
         selectTab(currentIndex)
 
