@@ -30,6 +30,12 @@ let package = Package(
             name: "damson-cli",
             targets: ["damson-cli"]
         ),
+        // Session keeper — holds PTY master fds across an app restart so the
+        // children (shells, TUIs) survive an update relaunch. See docs/SESSION-KEEPER.md.
+        .executable(
+            name: "damson-keeper",
+            targets: ["damson-keeper"]
+        ),
     ],
     dependencies: [
         // Sparkle auto-update — only works in a Developer ID-signed .app.
@@ -52,6 +58,7 @@ let package = Package(
             dependencies: [
                 "DamsonTerminal",
                 "DamsonControl",
+                "CFDPass",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/damson",
@@ -61,6 +68,18 @@ let package = Package(
             name: "damson-cli",
             dependencies: ["DamsonControl"],
             path: "Sources/damson-cli"
+        ),
+        // SCM_RIGHTS fd passing — C because the CMSG_* macros don't import into Swift.
+        .target(
+            name: "CFDPass",
+            path: "Sources/CFDPass"
+        ),
+        // Foundation/Darwin ONLY — must never link AppKit (it would register with
+        // LaunchServices and outlive the app as a ghost "app").
+        .executableTarget(
+            name: "damson-keeper",
+            dependencies: ["CFDPass", "DamsonControl"],
+            path: "Sources/damson-keeper"
         ),
         .testTarget(
             name: "DamsonTerminalTests",

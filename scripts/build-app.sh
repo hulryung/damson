@@ -34,6 +34,7 @@ fi
 echo "==> swift build -c release"
 swift build -c release --product damson
 swift build -c release --product damson-cli
+swift build -c release --product damson-keeper
 
 # To build an arm64 + x86_64 universal binary, add --arch arm64 --arch x86_64
 # (for now only the build machine's architecture; CI handles universal).
@@ -41,8 +42,9 @@ swift build -c release --product damson-cli
 BIN_DIR="$(swift build -c release --show-bin-path)"
 DAMSON_BIN="$BIN_DIR/damson"
 CLI_BIN="$BIN_DIR/damson-cli"
+KEEPER_BIN="$BIN_DIR/damson-keeper"
 
-if [[ ! -x "$DAMSON_BIN" || ! -x "$CLI_BIN" ]]; then
+if [[ ! -x "$DAMSON_BIN" || ! -x "$CLI_BIN" || ! -x "$KEEPER_BIN" ]]; then
     echo "error: built binaries missing under $BIN_DIR" >&2
     exit 1
 fi
@@ -60,6 +62,10 @@ chmod 0755 "$MACOS_DIR/damson"
 #  both MacOS/ and Resources/ still signs fine, so Resources/ is cleaner.)
 cp "$CLI_BIN" "$RESOURCES_DIR/damson-cli"
 chmod 0755 "$RESOURCES_DIR/damson-cli"
+
+# damson-keeper — session-survival daemon spawned by the app at restart handoff.
+cp "$KEEPER_BIN" "$MACOS_DIR/damson-keeper"
+chmod 0755 "$MACOS_DIR/damson-keeper"
 
 # Sparkle.framework — SwiftPM does not auto-bundle it into the .app, so copy it directly.
 # The RPATH of the SwiftPM-built binary is only @loader_path (= the MacOS directory,
