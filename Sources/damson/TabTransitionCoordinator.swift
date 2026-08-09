@@ -396,12 +396,26 @@ final class TabTransitionCoordinator {
         let targetDx: CGFloat = commit ? -neighborStart : 0
         startSwipeSettle(from: dx, to: targetDx, neighborStart: neighborStart) { [weak self] in
             guard let self else { return }
+            // ONE transaction for the whole teardown. Unpinning a tree snaps it back to
+            // x = 0, and `applySwipeTranslation`'s own begin/commit — when it is the first
+            // CA activity of this callout — is an OUTERMOST commit, which flushes to the
+            // render server immediately. The detach then lands in a separate, later flush,
+            // and the frame in between shows the origin tab parked at center: the "old tab
+            // flashes right as the swipe comes to rest" bug (visible whenever the preview
+            // sits BELOW the origin, e.g. adopted from a still-animating keyboard switch).
+            // Wrapping the callback makes every mutation inside reach the screen together.
+            CATransaction.begin()
+            defer { CATransaction.commit() }
             if commit {
-                self.setSwipeTranslation(self.host.tabs[self.host.currentIndex].tree, 0)
+                // Detach the origin first (selectTab's detach loop), and only then drop
+                // its off-screen pin — an unpinned tree must never still be in the window,
+                // transaction or not. Capture it now: commitToTab moves currentIndex.
+                let origin = self.host.tabs[self.host.currentIndex].tree
                 self.endSwipe()
                 // Real switch (instant) — same path as keyboard nav, so first
                 // responder, title, and tab-bar selection are all correct.
                 self.commitToTab(neighborIndex)
+                self.setSwipeTranslation(origin, 0)
             } else {
                 self.detachNeighborPreview()
                 self.setSwipeTranslation(self.host.tabs[self.host.currentIndex].tree, 0)
@@ -491,6 +505,11 @@ final class TabTransitionCoordinator {
     /// A pending cancel (didn't cross the threshold) just tears the settle down.
     private func finalizeSwipeSettleNow() {
         guard swipeAnimating else { return }
+        // Same single-flush rule as the settle completion: the instant-commit unpins the
+        // outgoing tree (via selectTab → abortSwipe) while it is still attached, and that
+        // must reach the render server in the same commit as the detach that follows.
+        CATransaction.begin()
+        defer { CATransaction.commit() }
         if swipePendingCommit, swipePendingIndex >= 0, swipePendingIndex < host.tabs.count,
            swipePendingIndex != host.currentIndex {
             commitToTab(swipePendingIndex)
@@ -502,6 +521,11 @@ final class TabTransitionCoordinator {
     /// Tear down an in-flight swipe before a non-swipe path (keyboard/click switch)
     /// takes over, so nothing is left offset.
     private func abortSwipe() {
+        // One flush for the whole abort: detaching the preview and snapping the current
+        // tree back to center are a single visual state, not two. (Nested harmlessly
+        // under finalizeSwipeSettleNow's / the settle completion's transaction.)
+        CATransaction.begin()
+        defer { CATransaction.commit() }
         // endSwipe() clears swipeAnimating first, so any in-flight settle's
         // completion block early-returns (its `done` won't fire after this).
         endSwipe()
