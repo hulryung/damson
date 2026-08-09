@@ -204,6 +204,15 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// window survive; removed on teardown — see docs/TMUX-INTEGRATION.md (P1).
     private var tmuxControllers: [TmuxIntegrationController] = []
 
+    // Restart-survival intent flags (see docs/SESSION-KEEPER.md). All three mean
+    // "this termination should hand sessions to the keeper" when the feature is on:
+    /// Sparkle is about to install an update and relaunch us (set by DamsonUpdater).
+    var updateRelaunchPending = false
+    /// The user picked "Restart Damson" (app menu) — relaunch after exit.
+    private var restartRequested = false
+    /// The user picked "Keep Sessions & Quit" in the quit dialog.
+    private var keepQuitRequested = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Control macOS press-and-hold (the accent popup). When it's on, holding a key
         // makes the text input system intercept it as "waiting for an accent" and
@@ -218,9 +227,35 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // + cwd; otherwise open a fresh window.
         if TabBarStyle.current == .compact,
            let state = SessionRestore.load(), !state.windows.isEmpty {
-            for restoreWindow in state.windows {
-                spawnCompactWindow(restoring: restoreWindow)
+            // Restart survival: if the previous instance handed sessions to a keeper,
+            // claim the fds back FIRST — the restore below then builds those leaves
+            // around the still-running children instead of spawning fresh shells.
+            // No keeper answering → empty map → every leaf takes today's fresh-spawn
+            // path on its own.
+            var adopted: [String: AdoptedSession] = [:]
+            if let generation = state.handoffGeneration {
+                var wanted: [String] = []
+                func collect(_ pane: RestorablePane) {
+                    switch pane {
+                    case .leaf(_, _, let sessionID, _):
+                        if let sessionID { wanted.append(sessionID) }
+                    case .split(_, _, let a, let b):
+                        collect(a)
+                        collect(b)
+                    }
+                }
+                for w in state.windows { for t in w.tabs { collect(t) } }
+                if !wanted.isEmpty {
+                    adopted = SessionHandoff.claim(generation: generation, wanted: wanted)
+                }
             }
+            for restoreWindow in state.windows {
+                spawnCompactWindow(restoring: restoreWindow) { adopted.removeValue(forKey: $0) }
+            }
+            // A claimed fd whose leaf vanished from the layout (shouldn't happen — the
+            // state and keeper are separate stores): close it, so the child gets SIGHUP
+            // instead of leaking as an invisible, undrained orphan.
+            for (_, leftover) in adopted { close(leftover.fd) }
         } else {
             spawnWindow()
         }
@@ -254,17 +289,58 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Just before termination — save the layout + cwd of the current Compact windows.
     func applicationWillTerminate(_ notification: Notification) {
         for c in controllers { for s in c.sessions { s.terminate() } }
-        for cc in compactControllers { for s in cc.sessions { s.terminate() } }
+
+        // Restart survival: hand the compact panes' PTYs to the keeper instead of killing
+        // them. ORDER MATTERS — handOffAll snapshots preamble/cwd and releases each PTY,
+        // so it must run BEFORE any terminate sweep, and toRestorable(handoff:) must run
+        // AFTER (it reads the released sessions' snapshots from the records). Whatever
+        // could not be handed off (tmux panes, release failures) is terminated as always.
+        let keep = SessionHandoff.keepEnabled
+            && (updateRelaunchPending || restartRequested || keepQuitRequested)
+            && !compactControllers.isEmpty
+        var handoffRecords: [ObjectIdentifier: SessionHandoffRecord] = [:]
+        var generation: String?
+        if keep, let result = SessionHandoff.handOffAll(controllers: compactControllers) {
+            generation = result.generation
+            handoffRecords = result.records
+        }
+        for cc in compactControllers {
+            for s in cc.allPaneSessions where handoffRecords[ObjectIdentifier(s)] == nil {
+                s.terminate()
+            }
+        }
         // Save session state (Compact windows only — single-session/native-tab modes
         // aren't restored). Clear old scrollback files before capturing (toRestorable
-        // writes fresh ones when the setting is on).
+        // writes fresh ones when the setting is on — and always for handed-off leaves).
         SessionRestore.resetScrollbackDir()
-        let windows = compactControllers.map { $0.toRestorableWindow() }
+        let windows = compactControllers.map { $0.toRestorableWindow(handoff: handoffRecords) }
         if windows.isEmpty {
             SessionRestore.clear()
         } else {
-            SessionRestore.save(RestorableState(windows: windows))
+            SessionRestore.save(RestorableState(windows: windows, handoffGeneration: generation))
         }
+
+        // "Restart Damson": relaunch once we're fully gone. The helper outlives us (its
+        // own session via /bin/sh; no controlling-tty tie to this process).
+        if restartRequested {
+            // -n: force a fresh instance of THIS bundle path — plain `open` may just
+            // activate another running copy that shares the bundle identifier.
+            let script = "while /bin/kill -0 \(getpid()) 2>/dev/null; do /bin/sleep 0.1; done; "
+                + "/usr/bin/open -n \"\(Bundle.main.bundlePath)\""
+            let relauncher = Process()
+            relauncher.executableURL = URL(fileURLWithPath: "/bin/sh")
+            relauncher.arguments = ["-c", script]
+            try? relauncher.run()
+        }
+    }
+
+    /// App menu → "Restart Damson". With keep-sessions on, panes and their programs
+    /// survive into the relaunched instance — same mechanism as an update relaunch.
+    @objc func restartDamson(_ sender: Any?) {
+        restartRequested = true
+        NSApp.terminate(nil)
+        // Reached only when termination was cancelled (e.g. a modal sheet objected).
+        restartRequested = false
     }
 
     // MARK: - damson-cli IPC
@@ -628,11 +704,18 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Confirmation dialog on ⌘Q / Quit. Ask if a foreground command is running or if there
     /// are 2 or more open sessions (tabs/panes). A single idle session quits immediately without asking.
+    /// With the keep-sessions feature on, the dialog gains "Keep Sessions & Quit" — the panes'
+    /// programs keep running in the background and the next launch reattaches to them.
+    /// Restart-type terminations (update install, Restart Damson) never ask: keeping the
+    /// sessions is the point of those, and Sparkle already ran its own confirmation UI.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if updateRelaunchPending || restartRequested { return .terminateNow }
         let sessions = allSessions()
         let busy = sessions.filter { $0.hasRunningForegroundJob }.count
         let total = sessions.count
         guard busy > 0 || total > 1 else { return .terminateNow }
+
+        let keepOffered = SessionHandoff.keepEnabled && !compactControllers.isEmpty
 
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -640,11 +723,35 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.messageText = busy == 1
                 ? "A process is still running."
                 : "\(busy) processes are still running."
-            alert.informativeText = "Quitting Damson will terminate "
-                + (busy == 1 ? "it." : "them.") + " Quit anyway?"
+            alert.informativeText = keepOffered
+                ? "\"Keep Sessions & Quit\" leaves "
+                    + (busy == 1 ? "it" : "them")
+                    + " running in the background; the next launch picks them up right where they are. "
+                    + "\"Quit\" terminates " + (busy == 1 ? "it." : "them.")
+                : "Quitting Damson will terminate "
+                    + (busy == 1 ? "it." : "them.") + " Quit anyway?"
         } else {
             alert.messageText = "Damson has \(total) open tabs/panes."
-            alert.informativeText = "Quitting will close them all. Quit anyway?"
+            alert.informativeText = keepOffered
+                ? "\"Keep Sessions & Quit\" keeps their shells running in the background; "
+                    + "the next launch picks them up right where they are. \"Quit\" closes them all."
+                : "Quitting will close them all. Quit anyway?"
+        }
+        if keepOffered {
+            alert.addButton(withTitle: "Keep Sessions & Quit")  // first (default / Return)
+            alert.addButton(withTitle: "Quit")                  // second
+            alert.addButton(withTitle: "Cancel")                // third (Esc via key equivalent)
+            alert.buttons.last?.keyEquivalent = "\u{1b}"
+            NSApp.activate(ignoringOtherApps: true)
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                keepQuitRequested = true
+                return .terminateNow
+            case .alertSecondButtonReturn:
+                return .terminateNow
+            default:
+                return .terminateCancel
+            }
         }
         alert.addButton(withTitle: "Quit")     // .alertFirstButtonReturn (default / Return)
         alert.addButton(withTitle: "Cancel")   // .alertSecondButtonReturn (Esc)
@@ -827,8 +934,9 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.showWindow(nil)
     }
 
-    private func spawnCompactWindow(restoring: RestorableWindow? = nil) {
-        let controller = CompactWindowController(restoring: restoring)
+    private func spawnCompactWindow(restoring: RestorableWindow? = nil,
+                                    adopt: (String) -> AdoptedSession? = { _ in nil }) {
+        let controller = CompactWindowController(restoring: restoring, adopt: adopt)
         let box = ObserverTokenBox()
         box.token = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
@@ -904,6 +1012,14 @@ private func buildAppMenu(into mainMenu: NSMenu) {
     updateItem.target = DamsonUpdater.shared.target
     appMenu.addItem(updateItem)
     appMenu.addItem(NSMenuItem.separator())
+    // With "Keep sessions running across restarts" on, this restarts the app while every
+    // pane's program keeps running — same survival mechanism as an update relaunch.
+    let restartItem = NSMenuItem(
+        title: "Restart Damson",
+        action: #selector(DamsonAppDelegate.restartDamson(_:)),
+        keyEquivalent: ""
+    )
+    appMenu.addItem(restartItem)
     appMenu.addItem(menuItem("Quit Damson", #selector(NSApplication.terminate(_:)), .quit))
 }
 

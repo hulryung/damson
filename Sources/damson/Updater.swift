@@ -28,7 +28,7 @@ final class DamsonUpdater: NSObject, ObservableObject {
     @Published private(set) var canCheckForUpdates: Bool = false
 
     private let userDriver: SilentErrorUserDriver
-    private let updater: SPUUpdater
+    private var updater: SPUUpdater!
     private var canCheckObservation: NSKeyValueObservation?
 
     /// Dev builds never run the updater: a dev .app silently replacing itself
@@ -39,13 +39,16 @@ final class DamsonUpdater: NSObject, ObservableObject {
     private override init() {
         let host = Bundle.main
         self.userDriver = SilentErrorUserDriver(hostBundle: host, delegate: nil)
+        super.init()
+        // Delegate = self so the app learns an update relaunch is coming — that's what
+        // arms the session-keeper handoff (see applicationWillTerminate). Requires
+        // constructing the updater after super.init, hence the implicitly-unwrapped var.
         self.updater = SPUUpdater(
             hostBundle: host,
             applicationBundle: host,
             userDriver: userDriver,
-            delegate: nil
+            delegate: self
         )
-        super.init()
         guard updatesEnabled else {
             NSLog("Damson: dev build — Sparkle updater not started")
             return
@@ -88,6 +91,20 @@ final class DamsonUpdater: NSObject, ObservableObject {
         guard updatesEnabled else { return }
         let enabled = UserDefaults.standard.object(forKey: "damson.autoUpdate") as? Bool ?? false
         updater.automaticallyChecksForUpdates = enabled
+    }
+}
+
+extension DamsonUpdater: SPUUpdaterDelegate {
+    /// Both hooks fire before Sparkle asks the app to terminate for the install; either
+    /// one arming the flag is enough (setting it twice is harmless). The flag makes the
+    /// coming termination a "restart-type" one: no quit dialog, and — when the keep
+    /// setting is on — the sessions are handed to the keeper so they survive the update.
+    func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
+        (NSApp.delegate as? DamsonAppDelegate)?.updateRelaunchPending = true
+    }
+
+    func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        (NSApp.delegate as? DamsonAppDelegate)?.updateRelaunchPending = true
     }
 }
 

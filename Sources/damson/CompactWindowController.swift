@@ -158,8 +158,11 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     var hasTabs: Bool { !tabs.isEmpty }
 
-    /// If `restoring` is present, restore that tab/pane layout + cwd; otherwise a single empty tab.
-    init(restoring: RestorableWindow? = nil) {
+    /// If `restoring` is present, restore that tab/pane layout + cwd; otherwise a single
+    /// empty tab. `adopt` resolves a saved leaf's sessionID to a surviving PTY reclaimed
+    /// from the keeper (restart survival) — the default adopts nothing.
+    init(restoring: RestorableWindow? = nil,
+         adopt: (String) -> AdoptedSession? = { _ in nil }) {
         let window = CompactWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
@@ -183,7 +186,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
         if let restore = restoring, !restore.tabs.isEmpty {
             for (i, paneRestore) in restore.tabs.enumerated() {
-                let root = PaneNode.from(restorable: paneRestore)
+                let root = PaneNode.from(restorable: paneRestore, adopt: adopt)
                 let title = restore.tabTitles.flatMap { i < $0.count ? $0[i] : nil }
                 addTab(tree: PaneTreeView(restoredRoot: root), customTitle: title)
             }
@@ -197,10 +200,11 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// Serialize the current window's tab/pane layout + cwd.
-    func toRestorableWindow() -> RestorableWindow {
+    /// Serialize the current window's tab/pane layout + cwd. `handoff` marks the sessions
+    /// just released to the keeper so their leaves carry adoption ids (see toRestorable).
+    func toRestorableWindow(handoff: [ObjectIdentifier: SessionHandoffRecord] = [:]) -> RestorableWindow {
         RestorableWindow(
-            tabs: tabs.map { $0.tree.root.toRestorable() },
+            tabs: tabs.map { $0.tree.root.toRestorable(handoff: handoff) },
             selectedTab: currentIndex,
             tabTitles: tabs.map { $0.customTitle }
         )

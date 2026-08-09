@@ -8,6 +8,7 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.fontFamily") private var fontFamily: String = FontDiscovery.defaultFamily()
     @AppStorage("damson.scrollbackLines") private var scrollbackLines: Int = 10_000
     @AppStorage("damson.restoreScrollback") private var restoreScrollback: Bool = false
+    @AppStorage("damson.keepSessionsOnRestart") private var keepSessionsOnRestart: Bool = false
     @AppStorage("damson.tabBarStyle") private var tabBarStyleRaw: String = TabBarStyle.compact.rawValue
     @AppStorage("damson.imeStyle") private var imeStyleRaw: String = IMECompositionStyle.none.rawValue
     @AppStorage("damson.theme") private var themeName: String = DamsonTheme.defaultDark.name
@@ -282,6 +283,11 @@ struct DamsonSettingsView: View {
                 }
                 Toggle("Restore scrollback on relaunch", isOn: $restoreScrollback)
                 Text("Saves each pane's scrollback text on quit and shows it after relaunch (colors not preserved). Compact-mode windows only.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Section("Sessions") {
+                Toggle("Keep sessions running across restarts", isOn: $keepSessionsOnRestart)
+                Text("Update installs and \"Restart Damson\" keep every pane's program running and reattach after the relaunch; the quit dialog gains a \"Keep Sessions & Quit\" option. Compact-mode windows only.")
                     .font(.caption).foregroundColor(.secondary)
             }
             Section("Cursor") {
