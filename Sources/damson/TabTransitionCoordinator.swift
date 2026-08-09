@@ -182,6 +182,18 @@ final class TabTransitionCoordinator {
         // The caller overrides this when the index sign isn't the intent — next/previous
         // wrapping past either end, where the tab one step to the "right" is index 0.
         let goingRight = towardRight ?? (toIndex > fromIndex)
+
+        // The captured in-flight position is a valid continuation only when it lies on
+        // the side the incoming tab enters from. The reentry exists for REVERSALS (⌘→
+        // then ⌘← mid-slide), where the tab currently exiting left comes back from the
+        // left — position and direction agree. But a same-direction chain can re-target
+        // that same exiting tree — with two tabs, ⌘→ ⌘→ wraps B→A while A is still
+        // sliding out LEFT — and continuing from there brings the tab in from the wrong
+        // side: the key said "next" and the content arrives like "previous". Wrong-side
+        // capture → discard it and enter from the proper edge; the outgoing side needs
+        // no such gate, since any current position is a legitimate start for an exit.
+        let incomingContinueX = incomingReentryX
+            .flatMap { (goingRight ? $0 > 0 : $0 < 0) ? $0 : nil }
         let width = host.contentContainer.bounds.width
         let style = TabTransitionStyle.current
 
@@ -245,7 +257,7 @@ final class TabTransitionCoordinator {
         }
 
         // Incoming: slide from off-screen (or its current on-screen x if reversing mid-slide) to 0.
-        let iSlide = tabSlideTranslation(style: style, from: incomingReentryX ?? incomingStart, to: 0)
+        let iSlide = tabSlideTranslation(style: style, from: incomingContinueX ?? incomingStart, to: 0)
         var inAnims = [iSlide]
         if fade {
             let iFade = CABasicAnimation(keyPath: "opacity")
