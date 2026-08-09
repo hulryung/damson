@@ -116,6 +116,56 @@ public final class DamsonSession: ObservableObject {
         }
     }
 
+    // MARK: - Restart survival (keeper handoff / adoption)
+
+    /// Detach the local PTY from this session for handoff to the keeper — the child
+    /// keeps running, this session just stops owning it. nil when there is nothing
+    /// sensible to hand off: tmux-backed panes (tmux already persists them) and the
+    /// `tmux -CC` control client (adopting a control-mode byte stream into a fresh
+    /// session would splice a half-spoken protocol).
+    public func releasePTYForHandoff() -> PTYHost.PTYHandoff? {
+        guard !inTmuxControlMode, let host = pty as? PTYHost else { return nil }
+        return host.releaseOwnership()
+    }
+
+    /// The escape bytes that recreate this session's tracked terminal state in a fresh
+    /// parser — replayed into the ADOPTING session before any live output, so modes set
+    /// long before the restart (mouse reporting, bracketed paste, alt screen…) survive it.
+    /// Lives here, next to `applyModeChange`, so the two can't drift apart: everything
+    /// damson tracks is emitted, everything it doesn't track has nothing to restore.
+    /// (Scroll region and saved cursor are deliberately absent — the post-adopt SIGWINCH
+    /// makes any full-screen program repaint and re-establish those itself.)
+    public func stateRestorationPreamble() -> Data {
+        var out = ""
+        if !title.isEmpty {
+            out += "\u{1b}]2;\(title)\u{07}"
+        }
+        if g0Charset != 0x42 { out += "\u{1b}(\(Character(UnicodeScalar(g0Charset)))" }
+        if g1Charset != 0x42 { out += "\u{1b})\(Character(UnicodeScalar(g1Charset)))" }
+        if activeGL == 1 { out += "\u{0e}" }                     // SO — G1 active
+        if grid.isAltScreenActive { out += "\u{1b}[?1049h" }
+        if !grid.cursorVisible { out += "\u{1b}[?25l" }
+        if grid.insertMode { out += "\u{1b}[4h" }
+        if bracketedPasteEnabled { out += "\u{1b}[?2004h" }
+        if mouseReportingMode > 0 { out += "\u{1b}[?\(mouseReportingMode)h" }
+        if mouseSGREncoding { out += "\u{1b}[?1006h" }
+        if grid.hasUsedSyncOutput {
+            // Re-arm the sticky "this app uses sync output" bit; the transient
+            // in-sync state must end false, hence the immediate reset.
+            out += "\u{1b}[?2026h\u{1b}[?2026l"
+        }
+        if grid.cursorShape != config.cursorShape {
+            let ps: Int
+            switch grid.cursorShape {
+            case .block: ps = 2
+            case .underline: ps = 4
+            case .bar: ps = 6
+            }
+            out += "\u{1b}[\(ps) q"
+        }
+        return Data(out.utf8)
+    }
+
     /// Additional input beyond key events (e.g. text synthesized by the host).
     public func write(_ bytes: Data) {
         pty.write(bytes)
