@@ -55,6 +55,18 @@ final class TabTransitionCoordinator {
     // of being locked out until the 0.42s arrival finishes.
     private var swipePendingCommit = false
     private var swipePendingIndex = -1
+    // Swallow window for the gesture's trailing momentum, armed at release. The
+    // per-view momentum flag dies with the commit (the new tab's surface takes over
+    // hit-testing with its own, unset flag), so the surfaces ask the host through
+    // TabSwipeHandler instead. Deadline-based: if the momentum-ended event never
+    // reaches us (window switch mid-stream), the window closes itself.
+    private var momentumSwallowDeadline: CFTimeInterval = 0
+
+    /// Trailing swipe momentum should still be swallowed (TabSwipeHandler relay).
+    var swallowingMomentum: Bool { CACurrentMediaTime() < momentumSwallowDeadline }
+
+    /// The momentum stream ended (or a new gesture began) — close the window early.
+    func momentumEnded() { momentumSwallowDeadline = 0 }
 
     /// Tab-create motion (Task 2): the new tab's content fades + scales in.
     /// `opacity` 0→1 and `transform` 0.98→1.0 over `Motion.duration` easeOut.
@@ -353,6 +365,10 @@ final class TabTransitionCoordinator {
     /// consistent; the snapshot layer is removed after the live tab is in place.
     func tabSwipeEnd(translation dx: CGFloat, velocity: CGFloat) {
         guard swipeActive else { return }
+        // Swallow this gesture's momentum tail window-wide. Long enough to outlive a
+        // hard flick's momentum stream; a momentum-ended event or a fresh touch closes
+        // it earlier through momentumEnded().
+        momentumSwallowDeadline = CACurrentMediaTime() + 2.0
         let width = host.contentContainer.bounds.width
         let neighborStart = swipeFromRight ? width : -width
         // Commit on distance OR a fast flick. swipeFromRight (next) commits on a

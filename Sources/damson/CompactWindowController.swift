@@ -577,6 +577,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabTransitions.tabSwipeEnd(translation: dx, velocity: velocity)
     }
 
+    // The swallow window lives on the coordinator with the rest of the swipe state;
+    // these relays exist because the engine resolves the handler to the window
+    // controller (see the conformance note above).
+    var tabSwipeMomentumActive: Bool { tabTransitions.swallowingMomentum }
+
+    func tabSwipeMomentumEnded() { tabTransitions.momentumEnded() }
+
     /// Put the swipe's incoming tab in the container as a LIVE tree, translated to `offset` so
     /// it starts off-screen, and hand input straight back to the tab the user is still on.
     ///

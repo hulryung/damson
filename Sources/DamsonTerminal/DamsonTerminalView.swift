@@ -42,6 +42,23 @@ public protocol TabSwipeHandler: AnyObject {
     /// `velocity`: recent horizontal speed at release (pt per event, ~per frame),
     /// so a fast flick commits even if it didn't travel the distance threshold.
     func tabSwipeEnd(translation: CGFloat, velocity: CGFloat)
+    /// True while the trailing momentum of a just-ended tab swipe should still be
+    /// swallowed. The per-VIEW momentum flag is not enough: a committed swipe swaps
+    /// which surface is under the pointer, and the momentum events that keep arriving
+    /// after the switch land on the NEW tab's surface — whose own flag was never set —
+    /// and scroll its scrollback / feed its TUI. The host outlives the view swap, so
+    /// it holds the swallow window. (See `tabSwipeMomentumEnded` for the handshake.)
+    var tabSwipeMomentumActive: Bool { get }
+    /// The view saw the momentum phase end (or a new gesture begin) — the host can
+    /// close the swallow window early instead of waiting for its deadline.
+    func tabSwipeMomentumEnded()
+}
+
+/// Defaults so hosts that embed the engine without tab swiping (or predate the
+/// momentum handshake) keep compiling and behave exactly as before.
+public extension TabSwipeHandler {
+    var tabSwipeMomentumActive: Bool { false }
+    func tabSwipeMomentumEnded() {}
 }
 
 /// Owner of input (key/IME/mouse), selection, find, and follow policy. Drawing,
@@ -1354,6 +1371,11 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
         // When mouse reporting is active, deliver the wheel to the PTY as button 64/65 codes (tmux/Claude Code, etc.).
         if isMouseReportingEvent(event) {
+            // A committed tab swipe swaps which pane is under the pointer, and a
+            // reporting pane skips handleTabSwipe entirely — so the gesture's trailing
+            // momentum would land in the TUI that just slid in and scroll it. Swallow
+            // it here through the same host-side window handleTabSwipe uses.
+            if swallowsSwipeMomentum(event) { return }
             forwardWheelToMouseReporting(event)
             return
         }
@@ -1390,6 +1412,26 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         }
     }
 
+    /// The trailing momentum of a just-ended tab swipe, arriving on a view whose own
+    /// `swipeInMomentum` was never set (the commit swapped which surface is under the
+    /// pointer)? True = consume the event. Mirrors handleTabSwipe's momentum branch
+    /// for the paths that never reach it (mouse-reporting panes).
+    private func swallowsSwipeMomentum(_ event: NSEvent) -> Bool {
+        guard let handler = window?.windowController as? TabSwipeHandler else { return false }
+        if event.phase.contains(.began) {
+            // A fresh touch kills any momentum stream; don't let a stale window
+            // swallow the new gesture's own tail later.
+            handler.tabSwipeMomentumEnded()
+            return false
+        }
+        guard event.phase == [], event.momentumPhase != [],
+              handler.tabSwipeMomentumActive else { return false }
+        if event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled) {
+            handler.tabSwipeMomentumEnded()
+        }
+        return true
+    }
+
     /// Part of a horizontal tab-swipe gesture? Decides horizontal-vs-vertical once
     /// per gesture; accumulates dx; on release past a threshold switches tab via
     /// the responder chain (same cross-slide as ⌘← / ⌘→). Returns true when the
@@ -1404,6 +1446,10 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             swipeAccumX = 0
             swipeVelocity = 0
             swipeInMomentum = false
+            // Touching the pad kills any momentum stream mid-flight (macOS never
+            // resumes it), so a fresh gesture also closes the host's swallow window —
+            // otherwise a leftover window would eat the tail of THIS gesture's scroll.
+            handler.tabSwipeMomentumEnded()
             return false   // .began carries ~0 delta; decide on the first .changed
         case .changed:
             if !swipeDecided {
@@ -1427,10 +1473,16 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         default:
             // Momentum events (phase == []) after a horizontal swipe: consume them —
             // don't let the flick's residual vertical velocity leak into scrollback —
-            // until the momentum phase itself ends.
-            guard swipeInMomentum else { return false }
+            // until the momentum phase itself ends. Ask the HOST too, not just our own
+            // flag: when the swipe COMMITS, the settle swaps which tab's surface sits
+            // under the pointer, and the rest of the momentum stream arrives HERE, on
+            // the new tab's view, whose flag was never set. Without the host's window
+            // the leftover momentum scrolls the freshly revealed tab — a visible nudge
+            // right after the switch.
+            guard swipeInMomentum || handler.tabSwipeMomentumActive else { return false }
             if event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled) {
                 swipeInMomentum = false
+                handler.tabSwipeMomentumEnded()
             }
             return true
         }
