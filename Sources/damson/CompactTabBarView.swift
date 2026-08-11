@@ -39,7 +39,25 @@ final class CompactTabBarView: NSView {
     /// The selection highlight, detached from the buttons so it can SLIDE between tabs on a
     /// switch (the buttons are recreated on every update, which can only ever snap). Lives
     /// at the bottom of the bar's layer stack; buttons render on top of it.
-    private let selectionPill = CALayer()
+    ///
+    /// Shape: a Chrome-style tab — rounded top corners, outward-flaring bottom corners,
+    /// flush with the bar's bottom edge, FILLED with the terminal's background color — so
+    /// the active tab and the content below read as one connected surface. The layer's
+    /// frame is always `pillFrame(for:)` of a tab frame (widened by the flares), so the
+    /// existing slide/swipe animations drive it unchanged; only the look differs.
+    private let selectionPill = CAShapeLayer()
+    /// Radius of the top rounding AND the bottom flares of the selection shape.
+    private let pillCorner: CGFloat = 8
+    /// The path's size signature, to rebuild only when tab metrics change.
+    private var pillPathSize: CGSize = .zero
+    /// Fill for the selection shape — the CONTENT (terminal) background, set by the
+    /// controller from the live theme. This is what visually merges tab and body.
+    var contentFill: NSColor = NSColor(srgbRed: 0.09, green: 0.09, blue: 0.11, alpha: 1) {
+        didSet { selectionPill.fillColor = contentFill.cgColor }
+    }
+    /// Thin vertical dividers between adjacent tabs (Chrome-style). The ones touching
+    /// the selected tab are hidden — its shape provides that edge.
+    private var separators: [CALayer] = []
     /// The tab index the pill currently sits on (-1 = not placed yet → first placement snaps).
     private var pillDisplayedIndex: Int = -1
     /// While an interactive trackpad swipe drives the pill directly, a stray
@@ -72,7 +90,9 @@ final class CompactTabBarView: NSView {
     private let tabSpacing: CGFloat = 2
     private let maxTabWidth: CGFloat = 200
     private let minTabWidth: CGFloat = 80
-    private let tabHeight: CGFloat = 24
+    /// Tabs sit flush with the bar's BOTTOM edge (Chrome-style) so the selected tab's
+    /// shape can run straight into the content below it.
+    private let tabHeight: CGFloat = 30
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -80,9 +100,8 @@ final class CompactTabBarView: NSView {
         // Transparent — so the NSVisualEffectView behind it shows through.
         layer?.backgroundColor = NSColor.clear.cgColor
 
-        // Selection pill UNDER the buttons (insert at 0; subview layers append above).
-        selectionPill.cornerRadius = 5
-        selectionPill.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        // Selection shape UNDER the buttons (insert at 0; subview layers append above).
+        selectionPill.fillColor = contentFill.cgColor
         selectionPill.isHidden = true
         layer?.insertSublayer(selectionPill, at: 0)
 
@@ -344,7 +363,9 @@ final class CompactTabBarView: NSView {
         let available = bounds.width - leadingReservation - trailingReservation - btnSize - 4
             - tabSpacing * (count - 1)
         perTab = max(minTabWidth, min(maxTabWidth, available / count))
-        let tabY = (bounds.height - tabHeight) / 2
+        // Flush with the bar's bottom edge — the selected tab's shape continues into
+        // the content area below, Chrome-style.
+        let tabY: CGFloat = 0
 
         for (i, btn) in tabButtons.enumerated() {
             btn.frame = NSRect(
@@ -361,7 +382,79 @@ final class CompactTabBarView: NSView {
                 newTabButton.frame.origin.x = nx
             }
         }
+        updatePillPathIfNeeded()
+        layoutSeparators()
         positionSelectionPill()
+    }
+
+    // MARK: - Chrome-style selection shape
+
+    /// The selection layer's frame for a given tab frame: widened by the bottom flares,
+    /// pinned to the bar's bottom edge. All placement paths (layout snap, switch slide,
+    /// swipe track/settle) go through this, so the shape follows the exact same motion
+    /// the plain pill did.
+    private func pillFrame(for tabFrame: NSRect) -> NSRect {
+        NSRect(x: tabFrame.minX - pillCorner, y: 0,
+               width: tabFrame.width + pillCorner * 2, height: tabHeight)
+    }
+
+    /// Chrome tab outline, in the selection layer's local coordinates (y-up): rounded
+    /// top corners, bottom corners flaring OUTWARD into the bar's bottom edge — the
+    /// curve that makes the tab look attached to the surface below rather than floating.
+    private func updatePillPathIfNeeded() {
+        let size = CGSize(width: perTab + pillCorner * 2, height: tabHeight)
+        guard size != pillPathSize else { return }
+        pillPathSize = size
+        let r = pillCorner
+        let w = size.width
+        let h = size.height
+        let p = CGMutablePath()
+        p.move(to: CGPoint(x: 0, y: 0))
+        // Bottom-left flare: outward quarter-arc up into the tab's left edge.
+        p.addArc(center: CGPoint(x: 0, y: r), radius: r,
+                 startAngle: -.pi / 2, endAngle: 0, clockwise: false)
+        p.addLine(to: CGPoint(x: r, y: h - r))
+        // Top-left rounding.
+        p.addArc(center: CGPoint(x: r * 2, y: h - r), radius: r,
+                 startAngle: .pi, endAngle: .pi / 2, clockwise: true)
+        p.addLine(to: CGPoint(x: w - r * 2, y: h))
+        // Top-right rounding.
+        p.addArc(center: CGPoint(x: w - r * 2, y: h - r), radius: r,
+                 startAngle: .pi / 2, endAngle: 0, clockwise: true)
+        p.addLine(to: CGPoint(x: w - r, y: r))
+        // Bottom-right flare.
+        p.addArc(center: CGPoint(x: w, y: r), radius: r,
+                 startAngle: .pi, endAngle: .pi * 1.5, clockwise: false)
+        p.closeSubpath()
+        selectionPill.path = p
+    }
+
+    /// Thin vertical dividers on the boundaries between tabs. The two boundaries
+    /// touching the selected tab stay hidden — its shape draws that edge itself.
+    private func layoutSeparators() {
+        let needed = max(0, tabButtons.count - 1)
+        while separators.count < needed {
+            let sep = CALayer()
+            sep.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+            // Below the selection shape (which is at index 0 → insert separators at 0 too,
+            // pushing the pill up is fine: the pill just needs to cover them when passing).
+            layer?.insertSublayer(sep, at: 0)
+            separators.append(sep)
+        }
+        while separators.count > needed {
+            separators.removeLast().removeFromSuperlayer()
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let sepHeight: CGFloat = 14
+        for (b, sep) in separators.enumerated() {
+            // Boundary b sits between tab b and tab b+1.
+            let x = tabButtons[b].frame.maxX + tabSpacing / 2
+            sep.frame = NSRect(x: x.rounded(), y: (tabHeight - sepHeight) / 2,
+                               width: 1, height: sepHeight)
+            sep.isHidden = (b == selectedIndex - 1 || b == selectedIndex)
+        }
+        CATransaction.commit()
     }
 
     /// Place the selection pill on the selected tab. A selection CHANGE slides it there
@@ -380,8 +473,8 @@ final class CompactTabBarView: NSView {
               toIndex >= 0, toIndex < tabButtons.count else { return }
         swipePillTracking = true
         let f = max(0, min(1, fraction))
-        let a = tabButtons[fromIndex].frame
-        let b = tabButtons[toIndex].frame
+        let a = pillFrame(for: tabButtons[fromIndex].frame)
+        let b = pillFrame(for: tabButtons[toIndex].frame)
         let frame = NSRect(x: a.minX + (b.minX - a.minX) * f,
                            y: a.minY + (b.minY - a.minY) * f,
                            width: a.width + (b.width - a.width) * f,
@@ -404,7 +497,7 @@ final class CompactTabBarView: NSView {
         CATransaction.setAnimationDuration(duration)
         CATransaction.setAnimationTimingFunction(timing)
         selectionPill.isHidden = false
-        selectionPill.frame = tabButtons[index].frame
+        selectionPill.frame = pillFrame(for: tabButtons[index].frame)
         CATransaction.commit()
     }
 
@@ -419,7 +512,7 @@ final class CompactTabBarView: NSView {
             if reorderModeActive { pillDisplayedIndex = -1 }  // re-place (snap) after reorder
             return
         }
-        let target = tabButtons[selectedIndex].frame
+        let target = pillFrame(for: tabButtons[selectedIndex].frame)
         let isSwitch = pillDisplayedIndex != -1 && pillDisplayedIndex != selectedIndex
         pillDisplayedIndex = selectedIndex
 
@@ -499,6 +592,9 @@ private final class TabButton: NSView, ImmediateTitlebarClick {
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
         closeButton.translatesAutoresizingMaskIntoConstraints = false
+        // Chrome-style: the close affordance appears only while the pointer is over
+        // the tab (mouseEntered/Exited below). hitTest already skips it when hidden.
+        closeButton.isHidden = true
         addSubview(closeButton)
 
         // The title's trailing gap to the close button is NOT required: a freshly
@@ -548,7 +644,11 @@ private final class TabButton: NSView, ImmediateTitlebarClick {
         guard isSelected != sel else { return }
         isSelected = sel
         titleLabel.textColor = sel ? .labelColor : .secondaryLabelColor
-        if (layer?.borderWidth ?? 0) > 0 { setReorderMode(true) }
+        if (layer?.borderWidth ?? 0) > 0 {
+            setReorderMode(true)
+        } else {
+            updateBackground()   // drop/allow the hover wash as selection moves
+        }
     }
 
     // The tab bar sits in the titlebar region, whose background is window-
@@ -570,12 +670,29 @@ private final class TabButton: NSView, ImmediateTitlebarClick {
         return bounds.contains(local) ? self : nil
     }
 
+    private var hovered = false
+
     private func updateBackground() {
-        layer?.cornerRadius = 5
-        // The selection highlight is the bar's sliding pill (rendered beneath the buttons),
-        // so the button itself stays clear in normal mode — a per-button background could
-        // only ever snap, since buttons are recreated on every update.
-        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.cornerRadius = 7
+        // The selection highlight is the bar's sliding shape (rendered beneath the
+        // buttons), so the button itself stays clear in normal mode — a per-button
+        // background could only ever snap, since buttons are recreated on every update.
+        // Unselected tabs get a Chrome-like hover wash.
+        layer?.backgroundColor = (hovered && !isSelected)
+            ? NSColor.white.withAlphaComponent(0.06).cgColor
+            : NSColor.clear.cgColor
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovered = true
+        closeButton.isHidden = false
+        if (layer?.borderWidth ?? 0) == 0 { updateBackground() }   // not in reorder chip mode
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovered = false
+        closeButton.isHidden = true
+        if (layer?.borderWidth ?? 0) == 0 { updateBackground() }
     }
 
     /// Pop-out styling while Cmd+Shift reorder mode is active: accent border +

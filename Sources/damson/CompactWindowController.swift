@@ -309,10 +309,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     func applyTabBarBackground() {
         let transparent = UserDefaults.standard.bool(forKey: "damson.tabBarTransparent")
         tabBarSolid?.isHidden = transparent
+        let theme = activeSession?.config.theme ?? DamsonConfig.fromUserDefaults().theme
+        let bg = (theme.background.usingColorSpace(.sRGB)) ?? theme.background
+        // The selected tab's Chrome-style shape is filled with the EXACT content
+        // background, so tab and terminal read as one connected surface.
+        tabBar?.contentFill = bg
         if !transparent {
             // Slightly darken the current theme background color (active session → settings value if none) for a titlebar feel.
-            let theme = activeSession?.config.theme ?? DamsonConfig.fromUserDefaults().theme
-            let bg = (theme.background.usingColorSpace(.sRGB)) ?? theme.background
             // A bit darker (dark theme) / a bit lighter (light theme) to distinguish it from the terminal background.
             let lum = 0.299 * bg.redComponent + 0.587 * bg.greenComponent + 0.114 * bg.blueComponent
             let shade: CGFloat = lum < 0.5 ? 0.06 : -0.06
