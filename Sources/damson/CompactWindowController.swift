@@ -120,6 +120,9 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private var tabBarTopConstraint: NSLayoutConstraint!
     /// Frame observers on the traffic lights — see `observeTrafficLights`.
     private var trafficLightObservers: [NSObjectProtocol] = []
+    /// Identities of the buttons those observers are bound to, so a titlebar rebuild
+    /// (which recreates the buttons) is detected and observation re-registers.
+    private var observedTrafficLightIDs: [ObjectIdentifier] = []
     private var tabBarBackgroundHeightConstraint: NSLayoutConstraint!
     private var tabBarSolidHeightConstraint: NSLayoutConstraint!
     /// Tab-bar top inset. Kept at 0 even in full screen so the tab bar shows as a single
@@ -336,6 +339,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     /// `observeTrafficLights`) without looping on the change it makes itself.
     func centerTrafficLights() {
         guard let window, !window.styleMask.contains(.fullScreen) else { return }
+        // Sweep for rebuilt buttons on every pass (identity-compare no-op when nothing
+        // changed): if AppKit recreated just the zoom button, ITS observer is gone, but
+        // any surviving sibling's observer landing here re-adopts the whole current set.
+        // Terminates: observeTrafficLights only calls back on an identity CHANGE, and the
+        // set it just adopted compares equal on reentry.
+        observeTrafficLights()
         let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
             .compactMap { window.standardWindowButton($0) }
         guard let container = buttons.first?.superview else { return }
@@ -357,16 +366,30 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     ///
     /// So react to the buttons MOVING rather than to a list of things that move them: the
     /// event is the same for every cause, including causes not enumerated here.
+    ///
+    /// And observe the buttons AppKit has NOW, not the ones it had at setup: titlebar
+    /// reconfiguration (a full-screen round-trip, styleMask changes) REBUILDS the standard
+    /// window buttons. Observers bound to the old instances then watch dead views while the
+    /// fresh buttons sit wherever the system put them — the "one stray traffic light" bug,
+    /// with the zoom button (which hosts the full-screen hover widget, so AppKit touches it
+    /// most) as the usual victim. Cheap to call anywhere: it no-ops while the instance set
+    /// is unchanged, and re-registers + re-centers when it isn't.
     private func observeTrafficLights() {
-        guard trafficLightObservers.isEmpty, let window else { return }
+        guard let window else { return }
         let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
             .compactMap { window.standardWindowButton($0) }
+        let ids = buttons.map(ObjectIdentifier.init)
+        guard ids != observedTrafficLightIDs else { return }
+        for token in trafficLightObservers { NotificationCenter.default.removeObserver(token) }
+        trafficLightObservers.removeAll()
+        observedTrafficLightIDs = ids
         for b in buttons {
             b.postsFrameChangedNotifications = true
             trafficLightObservers.append(NotificationCenter.default.addObserver(
                 forName: NSView.frameDidChangeNotification, object: b, queue: .main
             ) { [weak self] _ in self?.centerTrafficLights() })
         }
+        centerTrafficLights()
     }
 
     // MARK: - Tab management
@@ -980,10 +1003,14 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     }
     func windowDidExitFullScreen(_ notification: Notification) {
         updateFullScreenInset()
-        DispatchQueue.main.async { [weak self] in self?.centerTrafficLights() }
+        // The exit rebuilds the titlebar buttons — re-OBSERVE (which re-centers), not
+        // just re-center: observers on the pre-full-screen instances are dead now.
+        DispatchQueue.main.async { [weak self] in self?.observeTrafficLights() }
     }
-    // The system resets the traffic-light positions on resize, so re-center them.
+    // The system resets the traffic-light positions on resize, so re-center them —
+    // and re-observe first, in case this resize came with a titlebar rebuild.
     func windowDidResize(_ notification: Notification) {
+        observeTrafficLights()
         centerTrafficLights()
     }
 }
