@@ -1005,6 +1005,75 @@ final class GridTests: XCTestCase {
         XCTAssertEqual(g.scrollback.count, 0) // no push when top != 0
     }
 
+    // MARK: - IL / DL (insert/delete lines)
+
+    /// The ordinary case: rows below the cursor pull up, the region tail blanks.
+    func testDeleteLinesShiftsUpAndBlanksRegionTail() {
+        let g = makeGrid(cols: 2, rows: 5)
+        for (i, s) in ["AA", "BB", "CC", "DD", "EE"].enumerated() {
+            g.setCursor(row: i + 1, col: 1); write(g, s)
+        }
+        g.setCursor(row: 2, col: 1) // row 1
+        g.deleteLines(1)
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, "A") // above the cursor: untouched
+        XCTAssertEqual(g.cell(row: 1, col: 0).char, "C") // pulled up
+        XCTAssertEqual(g.cell(row: 2, col: 0).char, "D")
+        XCTAssertEqual(g.cell(row: 3, col: 0).char, "E")
+        XCTAssertEqual(g.cell(row: 4, col: 0).char, " ") // tail blanked
+        XCTAssertEqual(g.cursorCol, 0)                   // DL homes to column 1
+    }
+
+    /// DL on the last row of the region: `actual` covers the whole remainder, so the
+    /// shift range is empty. Must blank the row, not trap on an inverted range.
+    func testDeleteLinesAtScrollRegionBottomDoesNotTrap() {
+        let g = makeGrid(cols: 2, rows: 5)
+        g.setScrollRegion(top: 1, bottom: 3)
+        g.setCursor(row: 4, col: 1) // row 3 == scrollBottom
+        write(g, "ZZ")
+        g.setCursor(row: 4, col: 1)
+        g.deleteLines(1)
+        XCTAssertEqual(g.cell(row: 3, col: 0).char, " ") // the one row in range blanked
+        XCTAssertEqual(g.cell(row: 4, col: 0).char, " ") // below the region: untouched
+    }
+
+    /// DL with a count past the region height blanks from the cursor down, and leaves
+    /// rows above the cursor (still inside the region) alone.
+    func testDeleteLinesBeyondRegionHeightBlanksFromCursorDown() {
+        let g = makeGrid(cols: 2, rows: 5)
+        g.setScrollRegion(top: 1, bottom: 3)
+        for (i, s) in ["AA", "BB", "CC", "DD", "EE"].enumerated() {
+            g.setCursor(row: i + 1, col: 1); write(g, s)
+        }
+        g.setCursor(row: 3, col: 1) // row 2, inside the region
+        g.deleteLines(999)
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, "A") // outside the region
+        XCTAssertEqual(g.cell(row: 1, col: 0).char, "B") // inside, above the cursor
+        XCTAssertEqual(g.cell(row: 2, col: 0).char, " ") // cursor row down: blanked
+        XCTAssertEqual(g.cell(row: 3, col: 0).char, " ")
+        XCTAssertEqual(g.cell(row: 4, col: 0).char, "E") // outside the region
+    }
+
+    /// A one-row grid makes every DL a whole-region delete.
+    func testDeleteLinesInOneRowGridDoesNotTrap() {
+        let g = makeGrid(cols: 2, rows: 1)
+        write(g, "AA")
+        g.setCursor(row: 1, col: 1)
+        g.deleteLines(1)
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, " ")
+    }
+
+    /// The IL sibling already uses an empty-safe stride; pin that so the two can't drift.
+    func testInsertLinesAtScrollRegionBottomDoesNotTrap() {
+        let g = makeGrid(cols: 2, rows: 5)
+        g.setScrollRegion(top: 1, bottom: 3)
+        g.setCursor(row: 4, col: 1) // row 3 == scrollBottom
+        write(g, "ZZ")
+        g.setCursor(row: 4, col: 1)
+        g.insertLines(1)
+        XCTAssertEqual(g.cell(row: 3, col: 0).char, " ")
+        XCTAssertEqual(g.cell(row: 4, col: 0).char, " ") // below the region: untouched
+    }
+
     // MARK: M3.9 — CHA / VPA / ECH / SC / RC
 
     func testSetCursorColumnAbsolute() {

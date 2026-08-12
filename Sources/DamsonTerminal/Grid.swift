@@ -635,7 +635,11 @@ public final class Grid {
         let regionRemain = scrollBottom - cursorRow + 1
         let actual = min(count, regionRemain)
         let blank = Line.blank(cols: cols, attrs: pen)
-        for r in cursorRow...(scrollBottom - actual) {
+        // Half-open: when `actual` covers the whole remainder (cursor at the region
+        // bottom, or n past the region height) the shift range is empty and the blank
+        // loop below erases cursorRow…scrollBottom by itself. The closed form would be
+        // inverted here and trap, killing the app — see testDeleteLinesAtScrollRegionBottom.
+        for r in cursorRow..<(scrollBottom - actual + 1) {
             cells[r] = cells[r + actual]
         }
         for r in (scrollBottom - actual + 1)...scrollBottom {
