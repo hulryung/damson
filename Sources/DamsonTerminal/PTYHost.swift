@@ -15,7 +15,9 @@ public final class PTYHost: SessionIOBackend {
     public var onData: ((Data) -> Void)?
     public var onExit: ((Int32) -> Void)?
 
-    private var primaryFD: Int32 = -1
+    /// Module-internal (not private) so tests can assert the fd's mode invariants —
+    /// `FD_CLOEXEC` in particular, which nothing else can observe from outside.
+    private(set) var primaryFD: Int32 = -1
     private var childPID: pid_t = -1
     /// Adopted = the child is NOT our child (it survived a previous app instance via the
     /// keeper). waitpid is impossible (launchd reaped it), so exit detection is EOF/POLLHUP
@@ -57,6 +59,18 @@ public final class PTYHost: SessionIOBackend {
     /// amortizes the memmove to O(1) per byte. Guarded by `pendingLock`.
     private var drainOffset = 0
     private var drainScheduled = false
+    // Write-side queue (see `write` / `flushPendingInput`). Shared between the caller's
+    // thread (append — always main in the app) and the read thread (flush). Mirrors the
+    // read side's `pendingOutput`/`drainOffset` pair, including the amortized compaction.
+    private let outLock = NSLock()
+    private var pendingInput = Data()
+    private var inputOffset = 0
+    /// Log-only threshold. Deliberately NOT a drop point: silently discarding keystrokes
+    /// or paste bytes corrupts input in a way the user cannot see, which is strictly worse
+    /// than the memory. A queue this deep means the child stopped reading its own stdin.
+    private static let inputHighWater = 8 * 1024 * 1024
+    private var didWarnHighWater = false
+
     /// Cap on bytes buffered between the read thread and the main thread. When the main
     /// thread can't keep up with an output flood (e.g. `yes`), the read thread stalls at
     /// this cap; the kernel PTY buffer then fills and the child blocks in write() —
@@ -130,6 +144,7 @@ public final class PTYHost: SessionIOBackend {
     /// and only then starts the read loop — so replay is parsed strictly before live output.
     public func adopt(fd: Int32, pid: pid_t, startSec: UInt64, startUsec: UInt64, replay: Data) {
         primaryFD = fd
+        setFDMode(fd)
         childPID = pid
         isAdopted = true
         adoptedStart = (startSec, startUsec)
@@ -203,11 +218,30 @@ public final class PTYHost: SessionIOBackend {
 
         // === parent process ===
         primaryFD = primary
+        setFDMode(primary)
         childPID = pid
 
         makeWakePipe()
         startReading()
         startWaiting()
+    }
+
+    /// The master fd's mode is an invariant of `PTYHost`, not an accident of where the fd
+    /// came from. Both entry points call this: `spawn` (forkpty hands back a blocking,
+    /// inheritable fd) and `adopt` (the keeper's fd arrives already non-blocking, because
+    /// `O_NONBLOCK` lives on the open file description and rides through SCM_RIGHTS).
+    /// Setting it in one place is what keeps a restored pane behaving like a fresh one.
+    ///
+    /// - `O_NONBLOCK`: writes never park the caller (see `write`), and the read loop only
+    ///   ever reads an fd `poll` just called readable, treating a spurious EAGAIN as a retry.
+    /// - `FD_CLOEXEC`: without it the next pane's shell inherits this master across execve
+    ///   and holds it for life — the pty is never freed when the pane closes, and our
+    ///   close() stops being the LAST close, so the SIGHUP that teardown and the keeper
+    ///   handoff both depend on is never delivered.
+    private func setFDMode(_ fd: Int32) {
+        let fl = fcntl(fd, F_GETFL)
+        if fl >= 0 { _ = fcntl(fd, F_SETFL, fl | O_NONBLOCK) }
+        _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
     }
 
     private func makeWakePipe() {
@@ -217,6 +251,17 @@ public final class PTYHost: SessionIOBackend {
             wakePipeWrite = fds[1]
             _ = fcntl(wakePipeRead, F_SETFD, FD_CLOEXEC)
             _ = fcntl(wakePipeWrite, F_SETFD, FD_CLOEXEC)
+            // The loop drains this pipe on every wake and must never park in that read;
+            // the write end too, so a burst of wakes can't block a writer once it fills.
+            let rfl = fcntl(wakePipeRead, F_GETFL)
+            if rfl >= 0 { _ = fcntl(wakePipeRead, F_SETFL, rfl | O_NONBLOCK) }
+            let wfl = fcntl(wakePipeWrite, F_GETFL)
+            if wfl >= 0 { _ = fcntl(wakePipeWrite, F_SETFL, wfl | O_NONBLOCK) }
+        } else {
+            // Without the wake pipe the read loop can't be interrupted: it would park in
+            // poll(-1) forever and teardown would never complete. Worth a log line —
+            // silently disarming teardown is how a "damson won't quit" report starts.
+            NSLog("damson: PTY wake pipe unavailable (errno=\(errno)) — teardown may stall")
         }
     }
 
@@ -225,23 +270,101 @@ public final class PTYHost: SessionIOBackend {
         if wakePipeWrite >= 0 { close(wakePipeWrite); wakePipeWrite = -1 }
     }
 
+    /// Queue bytes for the child. Never enters the kernel, so it cannot block the caller —
+    /// which matters because every caller is the main thread (keystrokes, paste, and the
+    /// DSR/DA replies the parser writes back). The child's tty input queue is only a few KB;
+    /// once a raw-mode program stops reading (a paused job, a wedged TUI), a direct blocking
+    /// write parks main until that program drains, freezing every window in the app.
+    ///
+    /// One FIFO for all writers, so a report emitted mid-paste can never overtake it.
+    /// The read loop does the actual writing when `poll` says the fd is writable.
     public func write(_ data: Data) {
-        guard primaryFD >= 0 else { return }
-        data.withUnsafeBytes { buf in
-            guard let base = buf.baseAddress else { return }
-            var remaining = buf.count
-            var ptr = base
-            while remaining > 0 {
-                let n = Darwin.write(primaryFD, ptr, remaining)
-                if n < 0 {
-                    if errno == EINTR { continue }
+        guard primaryFD >= 0, !data.isEmpty else { return }
+        outLock.lock()
+        pendingInput.append(data)
+        let backlog = pendingInput.count - inputOffset
+        let warn = backlog > Self.inputHighWater && !didWarnHighWater
+        if warn { didWarnHighWater = true }
+        outLock.unlock()
+        if warn {
+            // Grow and log; never drop. Discarded keystrokes corrupt input invisibly.
+            NSLog("damson: PTY input backlog past \(Self.inputHighWater / (1024 * 1024))MB — child is not reading stdin")
+        }
+        wake()   // re-arm the poll loop for POLLOUT
+    }
+
+    /// Read-thread side: push as much of the queue as the fd will take right now. The fd is
+    /// non-blocking, so this is bounded work; EAGAIN just means "wait for the next POLLOUT".
+    private func flushPendingInput(fd: Int32) {
+        outLock.lock()
+        defer { outLock.unlock() }
+        while inputOffset < pendingInput.count {
+            let n: Int = pendingInput.withUnsafeBytes { raw in
+                guard let base = raw.baseAddress else { return 0 }
+                return Darwin.write(fd, base.advanced(by: inputOffset),
+                                    pendingInput.count - inputOffset)
+            }
+            if n > 0 {
+                inputOffset += n
+                // Compact only once the sent prefix outgrows the remaining tail, so the
+                // memmove is amortized O(1) per byte (same policy as the read side).
+                if inputOffset >= pendingInput.count {
+                    pendingInput.removeAll(keepingCapacity: true)
+                    inputOffset = 0
+                    didWarnHighWater = false
                     return
                 }
-                if n == 0 { return }
-                remaining -= n
-                ptr = ptr.advanced(by: n)
+                if inputOffset >= pendingInput.count - inputOffset {
+                    pendingInput.removeFirst(inputOffset)
+                    inputOffset = 0
+                }
+            } else if n < 0 {
+                if errno == EINTR { continue }
+                if errno == EAGAIN || errno == EWOULDBLOCK { return }   // poll will re-arm
+                // A real error (the child is gone, the fd is dead): the queue can never
+                // be delivered, so drop it rather than retry forever on every POLLOUT.
+                NSLog("damson: PTY write failed (errno=\(errno)), dropping \(pendingInput.count - inputOffset) queued bytes")
+                pendingInput.removeAll(keepingCapacity: false)
+                inputOffset = 0
+                return
+            } else {
+                return
             }
         }
+    }
+
+    private var hasPendingInput: Bool {
+        outLock.lock()
+        defer { outLock.unlock() }
+        return inputOffset < pendingInput.count
+    }
+
+    /// Drain the write queue on the CALLING thread, giving up after `budget` seconds. Used
+    /// only at handoff, where the read loop has already stopped and nothing else will ever
+    /// flush the queue. Bounded on purpose: a child that isn't reading must delay quitting
+    /// by at most the budget, not forever.
+    private func flushBeforeHandoff(fd: Int32, budget: TimeInterval) {
+        let deadline = Date().addingTimeInterval(budget)
+        while hasPendingInput && Date() < deadline {
+            var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            let ms = Int32(max(0, deadline.timeIntervalSinceNow) * 1000)
+            let pr = poll(&pfd, 1, min(ms, 100))
+            if pr < 0 && errno == EINTR { continue }
+            if pr <= 0 { continue }
+            if pfd.revents & Int16(POLLOUT) != 0 { flushPendingInput(fd: fd) } else { break }
+        }
+        if hasPendingInput {
+            NSLog("damson: handoff left queued input undelivered — child is not reading stdin")
+        }
+        discardPendingInput()
+    }
+
+    private func discardPendingInput() {
+        outLock.lock()
+        pendingInput.removeAll(keepingCapacity: false)
+        inputOffset = 0
+        didWarnHighWater = false
+        outLock.unlock()
     }
 
     public func resize(cols: Int, rows: Int) {
@@ -305,12 +428,27 @@ public final class PTYHost: SessionIOBackend {
         let fdToClose = primaryFD
         let adopted = isAdopted
         let start = adoptedStart
+        let wakeR = wakePipeRead
+        let wakeW = wakePipeWrite
         isReading = false
         childPID = -1
         primaryFD = -1
         wake()
+        // Disarm the wake pipe synchronously, BEFORE the teardown is dispatched. Two
+        // reasons, both load-bearing:
+        //  - `deinit` calls terminate() a second time; without this it would wake() an fd
+        //    number the kernel may already have recycled — injecting a byte into whatever
+        //    now owns it, possibly another pane's master.
+        //  - the fds are closed by value below rather than through `[weak self]`, which
+        //    never ran once the host itself was released: two leaked fds per closed pane.
+        wakePipeRead = -1
+        wakePipeWrite = -1
+        discardPendingInput()
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        // Everything below is captured by value: the block must complete even when the
+        // host is released the instant terminate() returns, which is the common case for
+        // a closing pane. Capturing self (weak or strong) is what used to skip the closes.
+        DispatchQueue.global(qos: .utility).async {
             if adopted {
                 // Not our child, and the pid may be recycled. Primary mechanism is
                 // closing the master — ours is the LAST open descriptor (the keeper
@@ -339,7 +477,8 @@ public final class PTYHost: SessionIOBackend {
                     close(fdToClose)
                 }
             }
-            self?.closeWakePipe()
+            if wakeR >= 0 { close(wakeR) }
+            if wakeW >= 0 { close(wakeW) }
         }
     }
 
@@ -380,6 +519,11 @@ public final class PTYHost: SessionIOBackend {
         // The loop signals on every exit path; if the child died earlier the signal is
         // already pending and this returns immediately.
         _ = readLoopDone.wait(timeout: .now() + 2.0)
+
+        // The read loop owned the write queue and has now stopped, so anything still
+        // queued (a paste the user fired just before quitting) would vanish at handoff.
+        // Push it synchronously, bounded — the fd survives, so the child still gets it.
+        flushBeforeHandoff(fd: fd, budget: 2.0)
 
         pendingLock.lock()
         let tail: Data
@@ -426,8 +570,11 @@ public final class PTYHost: SessionIOBackend {
                 // Park in poll, not read: poll is interruptible through the wake pipe
                 // without touching the pty fd (a close would block while a read is in
                 // flight — the documented macOS pty hazard `terminate` works around).
+                // POLLOUT is armed only while input is queued, so an idle pane still
+                // sleeps in poll instead of spinning on a permanently-writable fd.
+                let wantsWrite = self?.hasPendingInput == true
                 var fds = [
-                    pollfd(fd: fd, events: Int16(POLLIN), revents: 0),
+                    pollfd(fd: fd, events: Int16(POLLIN | (wantsWrite ? POLLOUT : 0)), revents: 0),
                     pollfd(fd: wakeFD, events: Int16(POLLIN), revents: 0),
                 ]
                 let pr = poll(&fds, 2, -1)
@@ -435,14 +582,24 @@ public final class PTYHost: SessionIOBackend {
                     if errno == EINTR { continue }
                     return
                 }
-                if fds[1].revents != 0 { return }   // woken — leave the pty fd untouched
-                guard fds[0].revents != 0 else { continue }
+                if fds[1].revents != 0 {
+                    // A wake means either "input was queued" or "stop". Drain the pipe and
+                    // let `isReading` say which — returning unconditionally (as this did
+                    // when the pipe only ever meant "stop") would kill the loop on a write.
+                    Self.drainWakePipe(wakeFD)
+                    if self?.isReading != true { return }
+                }
+                if fds[0].revents & Int16(POLLOUT) != 0 {
+                    self?.flushPendingInput(fd: fd)
+                }
+                if fds[0].revents & Int16(POLLNVAL) != 0 { return }   // fd closed under us
+                guard fds[0].revents & Int16(POLLIN | POLLHUP | POLLERR) != 0 else { continue }
                 // POLLIN or POLLHUP: read won't block now. HUP with drained queue reads 0.
                 let n = buffer.withUnsafeMutableBufferPointer { ptr -> Int in
                     read(fd, ptr.baseAddress, ptr.count)
                 }
                 if n > 0 {
-                    self?.enqueueOutput(buffer[0..<n])
+                    self?.enqueueOutput(buffer[0..<n], fd: fd)
                 } else if n == 0 {
                     // EOF — every slave descriptor closed, i.e. the child (and its whole
                     // session) is gone. For an adopted child this is the ONLY exit signal
@@ -454,15 +611,32 @@ public final class PTYHost: SessionIOBackend {
                     return
                 } else {
                     if errno == EINTR { continue }
+                    // The fd is non-blocking (see `setFDMode`), so a spurious readable
+                    // report is normal and must not be mistaken for a dead pty — without
+                    // this the pane would go permanently deaf on its first EAGAIN.
+                    if errno == EAGAIN || errno == EWOULDBLOCK { continue }
                     return
                 }
             }
         }
     }
 
+    /// Swallow whatever the wake pipe holds. The pipe is non-blocking, so this returns as
+    /// soon as it's empty; coalescing many wakes into one drain is exactly what we want.
+    private static func drainWakePipe(_ fd: Int32) {
+        guard fd >= 0 else { return }
+        var sink = [UInt8](repeating: 0, count: 64)
+        while true {
+            let n = sink.withUnsafeMutableBufferPointer { read(fd, $0.baseAddress, $0.count) }
+            if n > 0 { continue }
+            if n < 0 && errno == EINTR { continue }
+            return
+        }
+    }
+
     /// Read-thread side: append bytes to the pending buffer, schedule a single main-queue
     /// drain, and stall while the backlog is at the cap (the drain side shrinks it).
-    private func enqueueOutput(_ bytes: ArraySlice<UInt8>) {
+    private func enqueueOutput(_ bytes: ArraySlice<UInt8>, fd: Int32) {
         pendingLock.lock()
         pendingOutput.append(contentsOf: bytes)
         let needsSchedule = !drainScheduled
@@ -474,6 +648,12 @@ public final class PTYHost: SessionIOBackend {
             DispatchQueue.main.async { [weak self] in self?.drainPendingOutput() }
         }
         while backlog >= Self.maxPendingBytes && isReading {
+            // Keep servicing the input queue while stalled. Under a flood this loop owns
+            // the read thread for as long as the main thread lags, and the keystroke that
+            // ends the flood — Ctrl-C — is delivered by writing to this very fd. Waiting
+            // for the stall to clear first would make interrupting a runaway process take
+            // as long as the runaway process.
+            flushPendingInput(fd: fd)
             usleep(2_000)
             pendingLock.lock()
             backlog = pendingOutput.count - drainOffset
