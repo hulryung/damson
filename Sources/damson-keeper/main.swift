@@ -138,6 +138,11 @@ func closeAllHeld(reason: String) {
 }
 
 func drain(_ i: Int) {
+    // The caller's index may be stale (a claim removed an entry) or already closed. Both
+    // are cheap to check and expensive to get wrong: an out-of-range subscript traps, and
+    // reading fd -1 returns EBADF — which falls past the EINTR/EAGAIN arms below and marks
+    // a perfectly LIVE session dead. Either way every held child loses its terminal.
+    guard held.indices.contains(i), held[i].fd >= 0 else { return }
     var buf = [UInt8](repeating: 0, count: 65536)
     while held[i].buffer.count < bufferCap {
         let n = read(held[i].fd, &buf, min(buf.count, bufferCap - held[i].buffer.count))
@@ -271,6 +276,12 @@ mainLoop: while true {
                 disableSIGPIPE(conn)
                 if serveClaim(conn: conn) { break mainLoop }
             }
+            // A claim removes entries from `held`, so every index in `indexForSlot` past
+            // this point describes the array as it was BEFORE the conversation. Rebuild
+            // rather than drain through them. Nothing is lost by skipping this round: the
+            // pty fds are level-triggered, so anything readable is reported again on the
+            // very next poll.
+            continue mainLoop
         } else {
             drain(indexForSlot[slot])
         }
