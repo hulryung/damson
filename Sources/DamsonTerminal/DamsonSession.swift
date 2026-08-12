@@ -182,6 +182,13 @@ public final class DamsonSession: ObservableObject {
         pty.isRunningForegroundJob
     }
 
+    /// The process group owning this session's terminal, when it has one. A host uses this
+    /// to tell *what* is running in the pane — e.g. to match it against a tool's own
+    /// process registry. nil for backends with no tty (tmux panes) and for a dead child.
+    public var foregroundProcessID: pid_t? {
+        pty.foregroundPID
+    }
+
     public func resize(cols: Int, rows: Int) {
         dumpEvent("resize", cols, rows)
         // While a foreground app owns the screen, don't physically preserve (clip) the

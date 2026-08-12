@@ -18,7 +18,7 @@ public final class PTYHost: SessionIOBackend {
     /// Module-internal (not private) so tests can assert the fd's mode invariants —
     /// `FD_CLOEXEC` in particular, which nothing else can observe from outside.
     private(set) var primaryFD: Int32 = -1
-    private var childPID: pid_t = -1
+    private(set) var childPID: pid_t = -1
     /// Adopted = the child is NOT our child (it survived a previous app instance via the
     /// keeper). waitpid is impossible (launchd reaped it), so exit detection is EOF/POLLHUP
     /// on the master, and any signal is gated on a process-identity check (pid + start time)
@@ -123,14 +123,27 @@ public final class PTYHost: SessionIOBackend {
         return now == start
     }
 
+    /// The process group currently owning this PTY's terminal — the shell's own pgid when
+    /// it is sitting at a prompt, otherwise the foreground job's. nil when there is no
+    /// child, no fd, or the tty has no foreground group (the child exited).
+    ///
+    /// Only the process holding the PTY *master* can ask this, which makes it the one
+    /// identifier a host can use to join a pane to the program running inside it. Read
+    /// live from the tty on each call, so — unlike a stored pid — it is not exposed to pid
+    /// recycling. `tcgetpgrp` is a non-blocking ioctl; it is safe to call on the main thread.
+    public var foregroundPID: pid_t? {
+        guard childPID > 0, primaryFD >= 0 else { return nil }
+        let fg = tcgetpgrp(primaryFD)
+        return fg > 0 ? fg : nil
+    }
+
     /// true when the PTY's foreground process group differs from the shell itself
     /// (childPID, = the shell's pgid) — i.e. the shell is running some command in the
     /// foreground rather than waiting at a prompt. Used so the exit-confirmation dialog
     /// doesn't prompt when "only the shell is up".
     public var isRunningForegroundJob: Bool {
-        guard childPID > 0, primaryFD >= 0 else { return false }
-        let fg = tcgetpgrp(primaryFD)
-        return fg > 0 && fg != childPID
+        guard let fg = foregroundPID else { return false }
+        return fg != childPID
     }
 
     deinit {

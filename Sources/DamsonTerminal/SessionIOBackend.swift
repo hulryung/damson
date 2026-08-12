@@ -33,4 +33,18 @@ public protocol SessionIOBackend: AnyObject {
 
     /// Whether a command other than the shell itself is running in the foreground.
     var isRunningForegroundJob: Bool { get }
+
+    /// The process group owning the backend's terminal, when the backend has one. Lets a
+    /// host identify *which program* is running in a pane — the join key between a pane and
+    /// an external tool's own process registry. Defaulted to nil, so a backend with no tty
+    /// (tmux panes, tests) needs no change; see the extension below.
+    var foregroundPID: pid_t? { get }
+}
+
+public extension SessionIOBackend {
+    /// Default for backends that have no controlling terminal to ask. Declared in the
+    /// protocol body as well as here on purpose: that keeps dispatch dynamic (a conformer's
+    /// own implementation always wins) while leaving existing conformers — including any
+    /// downstream of this library product — source-compatible.
+    var foregroundPID: pid_t? { nil }
 }
