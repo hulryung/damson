@@ -203,6 +203,9 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Active tmux -CC integrations (one per attach). Kept alive here so the client + host
     /// window survive; removed on teardown — see docs/TMUX-INTEGRATION.md (P1).
     private var tmuxControllers: [TmuxIntegrationController] = []
+    /// Agent-status badges for panes running Claude Code. Owned here so its sweep timer
+    /// lives exactly as long as the app does.
+    private var crew: CrewController?
 
     // Restart-survival intent flags (see docs/SESSION-KEEPER.md). All three mean
     // "this termination should hand sessions to the keeper" when the feature is on:
@@ -284,6 +287,10 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         bindControlSocket()
         // Sparkle is lazily initialized — it starts automatically on first access.
         _ = DamsonUpdater.shared
+        // Label panes with what the Claude Code session inside them is doing. Reads only —
+        // a timer sweep, never the output path. Costs nothing on a machine with no agents.
+        crew = CrewController(windows: { [weak self] in self?.compactControllers ?? [] })
+        crew?.start()
     }
 
     /// Just before termination — save the layout + cwd of the current Compact windows.

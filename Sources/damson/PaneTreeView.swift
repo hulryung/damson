@@ -1396,6 +1396,30 @@ final class PaneTreeView: NSView {
         walk(self)
     }
 
+    /// Re-label every pane's agent status pill. `badge` is asked once per leaf session and
+    /// returns nil for a pane that isn't running anything recognizable — which is every
+    /// ordinary shell, so the common case is one closure call and one identity comparison.
+    ///
+    /// Driven by a low-frequency sweep in `CrewController`; deliberately NOT wired to output
+    /// or rendering, so nothing here can ever land on the PTY read path.
+    /// Returns the badge of the tree's first leaf, which is what the tab title reflects.
+    @discardableResult
+    func refreshAgentBadges(_ badge: (DamsonSession) -> AgentBadge?) -> AgentBadge? {
+        var firstLeafBadge: AgentBadge?
+        var sawFirst = false
+        func walk(_ view: NSView) {
+            if let wrapper = view as? PaneLeafWrapper,
+               case .leaf(let session, _) = wrapper.leaf.kind {
+                let b = badge(session)
+                wrapper.setAgentBadge(b)
+                if !sawFirst { firstLeafBadge = b; sawFirst = true }
+            }
+            for sub in view.subviews { walk(sub) }
+        }
+        walk(self)
+        return firstLeafBadge
+    }
+
     /// If node is a leaf, return it; if a split, descend to the first leaf.
     private func firstLeaf(of node: PaneNode) -> PaneNode {
         switch node.kind {
@@ -1433,6 +1457,10 @@ private final class PaneLeafWrapper: NSView {
     /// dimLayer = inactive-pane scrim, borderLayer = active-pane border.
     private let dimLayer = CALayer()
     private let borderLayer = CALayer()
+    /// Agent status pill (top-right). Hidden unless this pane is running something damson
+    /// recognizes — an ordinary shell pane never shows it, and never pays for it.
+    private let agentLayer = CATextLayer()
+    private var agentBadge: AgentBadge?
     /// Whether this leaf is the active pane. Set only via `setActiveState(_:animated:)`
     /// so the caller controls whether the indicator transition animates.
     private(set) var isActive: Bool = false
@@ -1447,8 +1475,17 @@ private final class PaneLeafWrapper: NSView {
         dimLayer.isHidden = true
         borderLayer.zPosition = 101
         borderLayer.borderWidth = 0
+        // Above the focus indicators so a badge stays readable on a dimmed inactive pane.
+        agentLayer.zPosition = 102
+        agentLayer.isHidden = true
+        agentLayer.alignmentMode = .center
+        agentLayer.cornerRadius = Self.agentBadgeSize / 2
+        agentLayer.masksToBounds = true
+        agentLayer.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
+        agentLayer.fontSize = 10
         layer?.addSublayer(dimLayer)
         layer?.addSublayer(borderLayer)
+        layer?.addSublayer(agentLayer)
 
         // Accessibility (VoiceOver): expose the pane as a labeled group. The label is computed
         // live in `accessibilityLabel()` (session title → cwd → fallback, plus an "active" tag),
@@ -1488,6 +1525,10 @@ private final class PaneLeafWrapper: NSView {
                 name = leafName.isEmpty ? cwd : leafName
             }
         }
+        if let agentBadge {
+            // VoiceOver gets the word, not the glyph — "?" spoken aloud is useless.
+            name += " — \(agentBadge.describedAs)"
+        }
         return isActive ? "\(name) (active)" : name
     }
 
@@ -1503,12 +1544,42 @@ private final class PaneLeafWrapper: NSView {
         owner?.setActive(leaf)
     }
 
+    /// Diameter of the agent status pill, and its inset from the pane's top-right corner.
+    private static let agentBadgeSize: CGFloat = 16
+    private static let agentBadgeInset: CGFloat = 6
+
     override func layout() {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         dimLayer.frame = bounds
         borderLayer.frame = bounds
+        let s = Self.agentBadgeSize
+        let i = Self.agentBadgeInset
+        // Top-right in layer coordinates. The wrapper is not flipped, so "top" is maxY.
+        agentLayer.frame = CGRect(x: bounds.maxX - s - i, y: bounds.maxY - s - i, width: s, height: s)
+        agentLayer.contentsScale = window?.backingScaleFactor ?? 2
+        CATransaction.commit()
+    }
+
+    /// Show (or clear) the agent status pill. Called from a low-frequency refresh sweep —
+    /// never from the output or render path. Re-applying the same badge is a no-op, so a
+    /// steady-state tick costs nothing beyond the comparison.
+    func setAgentBadge(_ badge: AgentBadge?) {
+        guard badge != agentBadge else { return }
+        agentBadge = badge
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let badge {
+            agentLayer.string = badge.label
+            agentLayer.foregroundColor = NSColor.white.cgColor
+            agentLayer.backgroundColor = badge.tint.withAlphaComponent(
+                badge.isAttention ? 0.95 : 0.55).cgColor
+            agentLayer.isHidden = false
+        } else {
+            agentLayer.isHidden = true
+            agentLayer.string = nil
+        }
         CATransaction.commit()
     }
 

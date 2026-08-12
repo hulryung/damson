@@ -57,6 +57,11 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         var titleSub: AnyCancellable
         /// User-assigned title set via double-click. If nil, follows the session (process/OSC) title.
         var customTitle: String?
+        /// Live agent status for this tab's first pane, appended to whatever title is shown.
+        /// Deliberately NOT folded into `customTitle`: that is the user's rename slot, it
+        /// short-circuits `displayTitle`, and it is persisted per-tab into the restore blob —
+        /// writing a transient status there would both hide the real title and survive a restart.
+        var agentSuffix: String?
     }
 
     /// Animation intent threaded through `selectTab` / `addTab`. `.none` = instant
@@ -953,7 +958,14 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     }
 
     /// Title to show on the tab: user-assigned title > session (OSC/process) title > current directory > "Damson".
+    /// An agent status suffix, when present, rides on top of whichever of those won.
     private func displayTitle(_ tab: Tab) -> String {
+        let base = baseTitle(tab)
+        guard let suffix = tab.agentSuffix, !suffix.isEmpty else { return base }
+        return "\(base) \(suffix)"
+    }
+
+    private func baseTitle(_ tab: Tab) -> String {
         if let custom = tab.customTitle, !custom.isEmpty { return custom }
         guard let session = tab.tree.root.leaves().first?.session else { return "Damson" }
         if !session.title.isEmpty { return session.title }
@@ -962,6 +974,30 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             return Self.prettyDir(dir)
         }
         return "Damson"
+    }
+
+    /// Refresh every pane's agent badge in this window and mirror the first pane's state
+    /// into each tab's title. Called from `CrewController`'s sweep — never from a hot path.
+    /// The tab bar is only rebuilt when a suffix actually changed.
+    func refreshAgentBadges(_ badge: (DamsonSession) -> AgentBadge?) {
+        var changed = false
+        for i in tabs.indices {
+            let leadBadge = tabs[i].tree.refreshAgentBadges(badge)
+            // Only `waiting` reaches the tab title. A tab bar that relabels every few
+            // seconds as agents flip busy↔idle is noise; the one state a user must not
+            // miss while looking at another tab is "this agent is blocked on you".
+            let suffix = leadBadge?.isAttention == true ? leadBadge?.label : nil
+            if tabs[i].agentSuffix != suffix {
+                tabs[i].agentSuffix = suffix
+                changed = true
+            }
+        }
+        if changed {
+            refreshTabBar()
+            if currentIndex >= 0, currentIndex < tabs.count {
+                window?.title = displayTitle(tabs[currentIndex])
+            }
+        }
     }
 
     /// Make a path tab-friendly — home becomes "~", otherwise the last path component (folder name).
