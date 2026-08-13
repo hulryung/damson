@@ -241,7 +241,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 var wanted: [String] = []
                 func collect(_ pane: RestorablePane) {
                     switch pane {
-                    case .leaf(_, _, let sessionID, _):
+                    case .leaf(_, _, let sessionID, _, _, _):
                         if let sessionID { wanted.append(sessionID) }
                     case .split(_, _, let a, let b):
                         collect(a)

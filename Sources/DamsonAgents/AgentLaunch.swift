@@ -62,6 +62,52 @@ public enum AgentLaunch {
         return config
     }
 
+    /// Turn a saved argv into the one to run when the pane's process did NOT survive a
+    /// restart — the keeper never answered, or the child died while held.
+    ///
+    /// For a Claude Code pane damson minted the session id, so `--session-id X` becomes
+    /// `--resume X`: the pane comes back attached to its own transcript rather than as a
+    /// blank conversation in the right directory. Anything else is re-run verbatim; damson
+    /// has no idea how another program resumes, and inventing a flag would be worse than
+    /// starting it fresh.
+    /// A Claude Code pane comes back as a NEW conversation in the same directory, not as a
+    /// resumed one. That is a deliberate retreat, not an oversight:
+    ///
+    /// Rewriting `--session-id X` to `--resume X` was tried and measured. It loses the pane.
+    /// With no transcript, `claude --resume X` prints "No conversation found" and exits;
+    /// with a real transcript it can still exit ("No deferred tool marker found in the
+    /// resumed session…"). A pane whose process exits on startup closes — so the user ends
+    /// up with no pane at all, which is worse than the login shell this replaced. Re-running
+    /// `--session-id X` is no safer: an id whose conversation already exists is a conflict.
+    ///
+    /// So the session-identity flags are dropped and the program restarts clean. What
+    /// persists is damson's own pane id, which is the identifier this repo controls; the
+    /// conversation is one `/resume` away inside the pane, chosen by a human who can see
+    /// whether it worked.
+    public static func restartArgv(_ saved: [String]) -> [String] {
+        guard isClaude(saved.first) else { return saved }
+        var out: [String] = []
+        var i = 0
+        while i < saved.count {
+            // Drop the flag AND its value; a bare trailing flag just disappears.
+            if saved[i] == "--session-id" || saved[i] == "--resume" || saved[i] == "-r" {
+                i += 2
+                continue
+            }
+            out.append(saved[i])
+            i += 1
+        }
+        return out
+    }
+
+    /// True when argv[0] looks like the Claude Code CLI — matched on the executable's NAME,
+    /// so it holds for any install location, and never on a substring of a path (a pane
+    /// running `/Users/claude/bin/vim` is not Claude Code).
+    static func isClaude(_ executable: String?) -> Bool {
+        guard let executable else { return false }
+        return (executable as NSString).lastPathComponent == "claude"
+    }
+
     /// A short, human-readable name for a pane started in `cwd` — the directory's last
     /// component, which is what a developer actually calls the project.
     public static func label(for cwd: String?) -> String? {

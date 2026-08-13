@@ -1,4 +1,5 @@
 import AppKit
+import DamsonAgents
 import DamsonTerminal
 
 /// Session-state restoration — on quit, serializes the window/tab/pane layout plus each
@@ -17,8 +18,15 @@ import DamsonTerminal
 /// the id keys the claim, the preamble (base64 escape bytes from
 /// `DamsonSession.stateRestorationPreamble`) rebuilds the tracked terminal modes in the
 /// adopting parser. Optional for the same backward-decode reason as `scrollbackID`.
+/// `paneID`/`argv` exist so a pane keeps its identity and its program across a restart:
+/// the id is what an external driver addressed it by, and argv is what it was running.
+/// Optional for the same backward-decode reason as the fields above — and added to the
+/// EXISTING case rather than as a new one, deliberately. `load()` is one `try?` over the
+/// whole state, so a saved file carrying a case an older build doesn't know would lose
+/// every window's layout on a downgrade, not just the new part.
 indirect enum RestorablePane: Codable {
-    case leaf(cwd: String?, scrollbackID: String?, sessionID: String?, preamble: String?)
+    case leaf(cwd: String?, scrollbackID: String?, sessionID: String?, preamble: String?,
+              paneID: String? = nil, argv: [String]? = nil)
     case split(direction: String, ratio: Double, first: RestorablePane, second: RestorablePane)
 }
 
@@ -186,16 +194,25 @@ extension PaneNode {
     func toRestorable(handoff: [ObjectIdentifier: SessionHandoffRecord] = [:]) -> RestorablePane {
         switch kind {
         case .leaf(let session, _):
+            // Save the pane's id only if it HAS one: minting here would hand an id to every
+            // pane the user never addressed, for no one's benefit.
+            let paneID = PaneRegistry.shared.existingID(for: session)?.uuidString
+            // A pane running the user's shell restores from settings as it always has; one
+            // running something else (an agent) needs its argv to come back as itself.
+            let argv = session.config.argv
+            let savedArgv = argv == DamsonConfig.fromUserDefaults().argv ? nil : argv
             if let rec = handoff[ObjectIdentifier(session)] {
                 let sbID = SessionRestore.writeScrollback(
                     grid: session.grid, includeVisible: !session.grid.isAltScreenActive)
                 return .leaf(cwd: rec.cwd, scrollbackID: sbID,
-                             sessionID: rec.uuid, preamble: rec.preamble.base64EncodedString())
+                             sessionID: rec.uuid, preamble: rec.preamble.base64EncodedString(),
+                             paneID: paneID, argv: savedArgv)
             }
             let sbID = SessionRestore.scrollbackRestoreEnabled
                 ? SessionRestore.writeScrollback(grid: session.grid) : nil
             return .leaf(cwd: session.currentWorkingDirectory, scrollbackID: sbID,
-                         sessionID: nil, preamble: nil)
+                         sessionID: nil, preamble: nil,
+                         paneID: paneID, argv: savedArgv)
         case .split(let dir, let first, let second, let ratio):
             return .split(
                 direction: dir == .horizontal ? "horizontal" : "vertical",
@@ -215,11 +232,20 @@ extension PaneNode {
     static func from(restorable: RestorablePane,
                      adopt: (String) -> AdoptedSession? = { _ in nil }) -> PaneNode {
         switch restorable {
-        case .leaf(let cwd, let scrollbackID, let sessionID, let preamble):
+        case .leaf(let cwd, let scrollbackID, let sessionID, let preamble,
+                   let paneID, let savedArgv):
             var config = DamsonConfig.fromUserDefaults()
             // If the saved cwd still exists, use it; otherwise fall back to fromUserDefaults' default (home).
             if let cwd = cwd, FileManager.default.fileExists(atPath: cwd) {
                 config.cwd = cwd
+            }
+            /// Re-attach the pane's saved id, so a driver that was addressing this pane
+            /// before the restart still resolves it afterwards.
+            func adoptID(_ session: DamsonSession) -> PaneNode {
+                if let paneID, let uuid = UUID(uuidString: paneID) {
+                    PaneRegistry.shared.adopt(session, as: uuid)
+                }
+                return PaneNode.leaf(session)
             }
             if let sessionID, let adopted = adopt(sessionID) {
                 let host = PTYHost()
@@ -234,12 +260,21 @@ extension PaneNode {
                 }
                 let session = DamsonSession(config: config, restoredScrollback: restored,
                                             backend: host)
-                return PaneNode.leaf(session)
+                return adoptID(session)
             }
             let restored: [Line]? = (SessionRestore.scrollbackRestoreEnabled ? scrollbackID : nil)
                 .flatMap { SessionRestore.readScrollback(id: $0) }
+            // Cold path: this pane was not running the user's shell, and its process did not
+            // survive (no keeper, or the child died while held). Restoring it as a login
+            // shell would silently turn an agent pane into an empty terminal — the layout
+            // comes back but the work does not. Re-run what it WAS running, and for a Claude
+            // Code pane resume the conversation damson minted the id for, so the transcript
+            // comes back with it.
+            if let savedArgv, !savedArgv.isEmpty {
+                config.argv = AgentLaunch.restartArgv(savedArgv)
+            }
             let session = DamsonSession(config: config, restoredScrollback: restored)
-            return PaneNode.leaf(session)
+            return adoptID(session)
         case .split(let dirStr, let ratio, let first, let second):
             let dir: SplitDirection = (dirStr == "vertical") ? .vertical : .horizontal
             let a = from(restorable: first, adopt: adopt)
