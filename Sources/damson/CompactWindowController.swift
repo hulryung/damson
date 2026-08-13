@@ -406,17 +406,32 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     // MARK: - Tab management
 
+    /// Open a tab. `configOverride` runs a tab on something other than the user's default
+    /// shell — the caller has already decided argv/cwd (see `AgentLaunch`). Without it the
+    /// behaviour is exactly what ⌘T has always done.
     @discardableResult
-    func addNewTab() -> DamsonSession {
-        var config = DamsonConfig.fromUserDefaults()
-        // Under the "inherit current directory" policy, start from the current active pane's cwd (keep home if none).
-        if NewTabDirectory.current == .inheritCwd,
-           let cwd = activeSession?.currentDirectory {
-            config.cwd = cwd
+    func addNewTab(configOverride: DamsonConfig? = nil) -> DamsonSession {
+        let config: DamsonConfig
+        if let configOverride {
+            config = configOverride
+        } else {
+            var c = DamsonConfig.fromUserDefaults()
+            // Under the "inherit current directory" policy, start from the current active pane's cwd (keep home if none).
+            if NewTabDirectory.current == .inheritCwd,
+               let cwd = activeSession?.currentDirectory {
+                c.cwd = cwd
+            }
+            config = c
         }
         let session = DamsonSession(config: config)
         addTab(tree: PaneTreeView(rootSession: session), transition: .create)
         return session
+    }
+
+    /// The working directory a newly opened pane should start in: the active pane's, as
+    /// reported by shell integration (OSC 7), falling back to where it was spawned.
+    var activePaneDirectory: String? {
+        activeSession?.currentDirectory ?? activeSession?.currentWorkingDirectory
     }
 
     /// Add a tab backed by an externally-built session (e.g. a tmux `-CC` pane). Returns the
@@ -848,6 +863,15 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     func splitActive(direction: SplitDirection) {
         guard currentIndex < tabs.count else { return }
         tabs[currentIndex].tree.split(direction: direction)
+    }
+
+    /// Split the active pane onto a caller-supplied config (see `AgentLaunch`). Deliberately
+    /// separate from `splitActive` rather than a defaulted parameter on it: that one is a
+    /// `PaneCommandTarget` requirement implemented by two controllers, and widening a
+    /// protocol for one caller's convenience is how the seam starts to rot.
+    func splitActivePane(direction: SplitDirection, configOverride: DamsonConfig) {
+        guard currentIndex < tabs.count else { return }
+        tabs[currentIndex].tree.split(direction: direction, configOverride: configOverride)
     }
 
     /// Apply a one-shot preset pane layout to the active tab.

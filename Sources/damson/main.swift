@@ -884,6 +884,50 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         newTabOrWindow()
     }
 
+    /// Open a pane running Claude Code, in the active pane's directory.
+    ///
+    /// damson mints the session id so the pane and the conversation share an identifier it
+    /// chose — that is what lets a later `--resume` reattach a pane to its own transcript.
+    /// The prompt (when there is one) would go in argv; damson never types into the pane.
+    @MainActor
+    @objc func newAgentTab(_ sender: Any?) {
+        openAgent(inNewTab: true)
+    }
+
+    @MainActor
+    @objc func newAgentPane(_ sender: Any?) {
+        openAgent(inNewTab: false)
+    }
+
+    @MainActor
+    private func openAgent(inNewTab: Bool) {
+        guard let active = activeCompact() else {
+            // No compact window to host it — make one first, then place the agent in it.
+            spawnWindow()
+            if activeCompact() != nil { openAgent(inNewTab: inNewTab) }
+            return
+        }
+        let cwd = active.activePaneDirectory
+        let config = AgentLaunch.config(
+            cwd: cwd, sessionID: UUID(), label: AgentLaunch.label(for: cwd))
+        let session: DamsonSession?
+        if inNewTab {
+            session = active.addNewTab(configOverride: config)
+        } else {
+            active.splitActivePane(direction: .horizontal, configOverride: config)
+            session = active.activeSession
+        }
+        // Give it a stable id up front: an agent pane is exactly the kind a driver will want
+        // to address later, and minting now means the id exists before anyone asks.
+        if let session { PaneRegistry.shared.id(for: session) }
+    }
+
+    /// Enabled only when `claude` is actually installed — a menu item that opens a pane and
+    /// immediately prints "command not found" is worse than one that is greyed out.
+    @objc func validateAgentMenuItem(_ item: NSMenuItem) -> Bool {
+        AgentLaunch.isAvailable
+    }
+
     /// Cmd+W — for a terminal window, close the active pane (if it's the last, cascade tab→window);
     /// for any other window (Settings, etc.) close the whole window. When a menu key-equiv is wired
     /// directly to NSWindow.performClose, there's a bug where the whole window closes even with multiple
@@ -1035,6 +1079,21 @@ private func buildFileMenu(into mainMenu: NSMenu) {
     fileMenu.addItem(menuItem("New Window", #selector(DamsonAppDelegate.newWindow(_:)), .newWindow))
     // Cmd+T — in Compact mode add a tab to the active window, otherwise a new window (native tab group join).
     fileMenu.addItem(menuItem("New Tab", #selector(DamsonAppDelegate.newTab(_:)), .newTab))
+    // Agent panes. No default shortcut on purpose — these are new, and claiming a chord
+    // risks colliding with one the user already relies on. They stay menu-only until the
+    // rebindable catalogue grows entries for them.
+    fileMenu.addItem(NSMenuItem.separator())
+    let agentTab = NSMenuItem(title: "New Claude Code Tab",
+                              action: #selector(DamsonAppDelegate.newAgentTab(_:)), keyEquivalent: "")
+    let agentPane = NSMenuItem(title: "New Claude Code Pane",
+                               action: #selector(DamsonAppDelegate.newAgentPane(_:)), keyEquivalent: "")
+    // Greyed out when `claude` isn't installed, rather than opening a pane that immediately
+    // prints "command not found".
+    for item in [agentTab, agentPane] {
+        item.isEnabled = AgentLaunch.isAvailable
+        fileMenu.addItem(item)
+    }
+    fileMenu.addItem(NSMenuItem.separator())
     // Cmd+W — close the tab/pane (not the whole window). For a terminal window, close the active
     // pane and cascade tab→window when it's the last. For a non-terminal window (Settings, etc.) close the window.
     fileMenu.addItem(menuItem("Close Tab", #selector(DamsonAppDelegate.closeTabOrWindow(_:)), .closeTab))

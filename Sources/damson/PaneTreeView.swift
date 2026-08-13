@@ -135,7 +135,9 @@ final class PaneTreeView: NSView {
 
     // MARK: - Public actions
 
-    func split(direction: SplitDirection) {
+    /// Split the active pane. `configOverride` runs the new pane on something other than the
+    /// user's default shell (see `AgentLaunch`); without it the behaviour is unchanged.
+    func split(direction: SplitDirection, configOverride: DamsonConfig? = nil) {
         guard case .leaf(let activeSession, _) = activeLeaf.kind else { return }
         // tmux-backed tab: let the host issue a tmux `split-window`; tmux drives the native
         // split back via `%layout-change`. (A local split would mint a non-tmux pane in a
@@ -144,8 +146,14 @@ final class PaneTreeView: NSView {
         // A split always inherits the current pane's working directory (shell-integration
         // OSC 7 report → falling back to the cwd at spawn time), since opening a pane
         // alongside within the same project is the common case.
-        var config = DamsonConfig.fromUserDefaults()
-        if let cwd = activeSession.currentDirectory { config.cwd = cwd }
+        let config: DamsonConfig
+        if let configOverride {
+            config = configOverride
+        } else {
+            var c = DamsonConfig.fromUserDefaults()
+            if let cwd = activeSession.currentDirectory { c.cwd = cwd }
+            config = c
+        }
         let newSession = DamsonSession(config: config)
         let newLeaf = PaneNode.leaf(newSession)
         let oldKind = activeLeaf.kind
