@@ -215,13 +215,49 @@ final class CompactTabBarView: NSView {
         ) { [weak self] event in
             self?.handleMonitorEvent(event) ?? event
         }
+        // The chord can be released somewhere this monitor will never hear about: a local
+        // monitor only sees events delivered to THIS app, and the very chord that enters
+        // the mode also leaves it (Cmd+Shift+Tab switches apps, Cmd+` switches windows).
+        // The release then lands elsewhere, `reorderModeActive` stays true, and the window
+        // is left with accent-bordered tabs AND `isMovable = false` — visibly wrong and
+        // undraggable until the user happens to press the chord again over this window.
+        //
+        // Losing active/key status is the signal the keystrokes can't give us. Resigning
+        // ACTIVE is the load-bearing one: on an app switch no flagsChanged arrives at all.
+        observe(NSApplication.didResignActiveNotification, object: nil)
+        observe(NSWindow.didResignKeyNotification, object: window)
+        // And on the way back, trust the hardware over our own bookkeeping: whatever we
+        // believe, the mode is exactly "is the chord held right now". This reconciles any
+        // transition we missed rather than the two we know about, so a future path that
+        // swallows the release can't latch the mode on again.
+        observe(NSWindow.didBecomeKeyNotification, object: window, reconcile: true)
+    }
+
+    /// Add a reorder-mode lifecycle observer. `reconcile` re-derives the mode from the
+    /// live modifier state instead of forcing it off.
+    private func observe(_ name: NSNotification.Name, object: Any?, reconcile: Bool = false) {
+        modeObservers.append(NotificationCenter.default.addObserver(
+            forName: name, object: object, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let held = NSEvent.modifierFlags.contains([.command, .shift])
+                self.setReorderMode(active: reconcile ? held : false)
+            }
+        })
     }
 
     private func removeMonitor() {
         setReorderMode(active: false)
         restoreWindowMovable()
         if let m = eventMonitor { NSEvent.removeMonitor(m); eventMonitor = nil }
+        for token in modeObservers { NotificationCenter.default.removeObserver(token) }
+        modeObservers.removeAll()
     }
+
+    /// Observers that exit reorder mode when the chord's release can't reach us.
+    /// Torn down in `removeMonitor` (view leaves its window, and `deinit`).
+    private var modeObservers: [NSObjectProtocol] = []
 
     /// Toggle reorder mode on the Cmd+Shift chord. We never consume the event —
     /// the drag is handled by TabButton, and pinning `isMovable=false` (in
