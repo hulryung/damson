@@ -350,15 +350,23 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         // Terminates: observeTrafficLights only calls back on an identity CHANGE, and the
         // set it just adopted compares equal on reentry.
         observeTrafficLights()
-        let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
-            .compactMap { window.standardWindowButton($0) }
-        guard let container = buttons.first?.superview else { return }
-        for b in buttons {
+        for b in Self.trafficLightTypes.compactMap({ window.standardWindowButton($0) }) {
+            // Compute each target in the button's OWN superview. `setFrameOrigin` is
+            // relative to that superview, so deriving one y from a sibling's container —
+            // as this used to — silently misplaces any button AppKit has re-parented.
+            // The zoom button is the one that happens to: it hosts the full-screen hover
+            // widget, so it is rebuilt and re-homed far more than its siblings, and it
+            // alone then sits at the wrong height. That is the "only the green light is
+            // off" report, and it is why the target must be per-button.
+            guard let container = b.superview else { continue }
             let y = container.bounds.height - (Self.tabBarHeight + b.frame.height) / 2
             guard abs(b.frame.origin.y - y) > 0.5 else { continue }
             b.setFrameOrigin(NSPoint(x: b.frame.origin.x, y: y))
         }
     }
+
+    private static let trafficLightTypes: [NSWindow.ButtonType] =
+        [.closeButton, .miniaturizeButton, .zoomButton]
 
     /// Re-center the traffic lights whenever AppKit moves them.
     ///
@@ -381,8 +389,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     /// is unchanged, and re-registers + re-centers when it isn't.
     private func observeTrafficLights() {
         guard let window else { return }
-        let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
-            .compactMap { window.standardWindowButton($0) }
+        let buttons = Self.trafficLightTypes.compactMap { window.standardWindowButton($0) }
         let ids = buttons.map(ObjectIdentifier.init)
         guard ids != observedTrafficLightIDs else { return }
         for token in trafficLightObservers { NotificationCenter.default.removeObserver(token) }
@@ -955,6 +962,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private func refreshTabBar() {
         let titles = tabs.map { displayTitle($0) }
         tabBar.update(titles: titles, selectedIndex: currentIndex)
+        // The traffic lights share this row, and a title change is one of the things that
+        // makes AppKit relayout the titlebar — so this is both the moment a light can be
+        // knocked out of place and the cheapest moment to notice. `windowDidUpdate` alone
+        // recovers it eventually, but "eventually" measured ~24s in a soak; a pane running
+        // a spinner-animating TUI calls this several times a second, which makes the
+        // correction immediate in exactly the situation that produces the bug.
+        centerTrafficLights()
     }
 
     /// Title to show on the tab: user-assigned title > session (OSC/process) title > current directory > "Damson".
@@ -1047,6 +1061,24 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     // and re-observe first, in case this resize came with a titlebar rebuild.
     func windowDidResize(_ notification: Notification) {
         observeTrafficLights()
+        centerTrafficLights()
+    }
+
+    /// Last line of defence for the traffic lights.
+    ///
+    /// Everything else here reacts to a button MOVING, which cannot see the case that
+    /// actually strands one: AppKit rebuilds a button, the replacement has no observer,
+    /// and no sibling ever moves again — so nothing re-adopts it and it simply stays at
+    /// the system position. That is why the stray light shows up after hours rather than
+    /// at a moment you can point to: it needs a titlebar relayout to coincide with a
+    /// rebuild, and a pane running a spinner-animating TUI drives thousands of them
+    /// (every OSC title change refreshes the tab bar).
+    ///
+    /// `windowDidUpdate` is AppKit's own once-per-event-cycle hook and does not depend on
+    /// our bookkeeping being intact. The work is three `standardWindowButton` lookups and
+    /// three float compares that early-out when nothing moved — cheap enough to run
+    /// unconditionally, and it never touches the PTY or render path.
+    func windowDidUpdate(_ notification: Notification) {
         centerTrafficLights()
     }
 }
