@@ -89,11 +89,19 @@ let package = Package(
             name: "CFDPass",
             path: "Sources/CFDPass"
         ),
+        // The keeper's behaviour, split from its process setup so it can be tested: this
+        // process holds every surviving session's PTY master across an app restart, so a
+        // trap in it is every shell losing its terminal at once.
         // Foundation/Darwin ONLY — must never link AppKit (it would register with
         // LaunchServices and outlive the app as a ghost "app").
+        .target(
+            name: "DamsonKeeperCore",
+            dependencies: ["CFDPass", "DamsonControl"],
+            path: "Sources/DamsonKeeperCore"
+        ),
         .executableTarget(
             name: "damson-keeper",
-            dependencies: ["CFDPass", "DamsonControl"],
+            dependencies: ["DamsonKeeperCore", "DamsonControl"],
             path: "Sources/damson-keeper"
         ),
         .testTarget(
@@ -110,6 +118,11 @@ let package = Package(
             name: "DamsonAgentsTests",
             dependencies: ["DamsonAgents", "DamsonTerminal"],
             path: "Tests/DamsonAgentsTests"
+        ),
+        .testTarget(
+            name: "DamsonKeeperCoreTests",
+            dependencies: ["DamsonKeeperCore", "DamsonControl"],
+            path: "Tests/DamsonKeeperCoreTests"
         ),
     ]
 )
