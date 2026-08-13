@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import DamsonControl
+import DamsonAgents
 import DamsonTerminal
 
 /// NSWindow that delivers tab-bar clicks immediately. The tab bar lives in the

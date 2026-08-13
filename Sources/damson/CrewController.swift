@@ -1,4 +1,5 @@
 import AppKit
+import DamsonAgents
 import DamsonTerminal
 import Foundation
 

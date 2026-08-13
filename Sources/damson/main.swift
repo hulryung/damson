@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import DamsonControl
+import DamsonAgents
 import DamsonTerminal
 import SwiftUI
 
@@ -909,7 +910,8 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let cwd = active.activePaneDirectory
         let config = AgentLaunch.config(
-            cwd: cwd, sessionID: UUID(), label: AgentLaunch.label(for: cwd))
+            base: DamsonConfig.fromUserDefaults(), cwd: cwd,
+            sessionID: UUID(), label: AgentLaunch.label(for: cwd))
         let session: DamsonSession?
         if inNewTab {
             session = active.addNewTab(configOverride: config)
@@ -925,7 +927,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Enabled only when `claude` is actually installed — a menu item that opens a pane and
     /// immediately prints "command not found" is worse than one that is greyed out.
     @objc func validateAgentMenuItem(_ item: NSMenuItem) -> Bool {
-        AgentLaunch.isAvailable
+        AgentLaunch.isAvailable(env: DamsonConfig.fromUserDefaults().env)
     }
 
     /// Cmd+W — for a terminal window, close the active pane (if it's the last, cascade tab→window);
@@ -1090,7 +1092,7 @@ private func buildFileMenu(into mainMenu: NSMenu) {
     // Greyed out when `claude` isn't installed, rather than opening a pane that immediately
     // prints "command not found".
     for item in [agentTab, agentPane] {
-        item.isEnabled = AgentLaunch.isAvailable
+        item.isEnabled = AgentLaunch.isAvailable(env: DamsonConfig.fromUserDefaults().env)
         fileMenu.addItem(item)
     }
     fileMenu.addItem(NSMenuItem.separator())

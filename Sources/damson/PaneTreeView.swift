@@ -1,4 +1,5 @@
 import AppKit
+import DamsonAgents
 import DamsonTerminal
 
 /// Pane focus move direction (Cmd+Opt+arrow).

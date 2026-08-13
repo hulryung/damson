@@ -53,11 +53,26 @@ let package = Package(
             name: "DamsonControl",
             path: "Sources/DamsonControl"
         ),
+        // Agent-orchestration logic, factored out of the app so it can be TESTED: the
+        // `damson` target is an executable with top-level code, which `@testable import`
+        // handles badly, and pointing a test target at it would drag AppKit + Sparkle into
+        // the test process. Everything here is window-free — the AppKit glue that drives it
+        // (CrewController) stays in the app.
+        //
+        // Deliberately a target and NOT a library product: this is damson's own logic, not
+        // a contract with downstream consumers. Promoting it later is easy; un-promoting a
+        // published API is not.
+        .target(
+            name: "DamsonAgents",
+            dependencies: ["DamsonTerminal"],
+            path: "Sources/DamsonAgents"
+        ),
         .executableTarget(
             name: "damson",
             dependencies: [
                 "DamsonTerminal",
                 "DamsonControl",
+                "DamsonAgents",
                 "CFDPass",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
@@ -90,6 +105,11 @@ let package = Package(
             name: "DamsonControlTests",
             dependencies: ["DamsonControl"],
             path: "Tests/DamsonControlTests"
+        ),
+        .testTarget(
+            name: "DamsonAgentsTests",
+            dependencies: ["DamsonAgents", "DamsonTerminal"],
+            path: "Tests/DamsonAgentsTests"
         ),
     ]
 )

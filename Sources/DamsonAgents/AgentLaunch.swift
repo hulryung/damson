@@ -11,11 +11,11 @@ import Foundation
 ///
 /// damson also does NOT create worktrees: `claude -w <name>` owns that, and duplicating it
 /// here would mean two things managing the same directories.
-enum AgentLaunch {
+public enum AgentLaunch {
     /// Absolute path to the `claude` binary. A GUI launch has a minimal PATH (LaunchServices
     /// does not run a login shell), so searching the usual install locations is more reliable
     /// than trusting PATH — but PATH is still the last resort, for installs we don't know about.
-    static func claudeExecutable(env: [String: String]) -> String {
+    public static func claudeExecutable(env: [String: String]) -> String {
         let candidates = [
             "\(NSHomeDirectory())/.claude/local/claude",
             "/opt/homebrew/bin/claude",
@@ -37,9 +37,8 @@ enum AgentLaunch {
     /// True when `claude` can be found at all — the menu items are disabled otherwise, so a
     /// machine without it doesn't get commands that open a pane and immediately print
     /// "command not found".
-    static var isAvailable: Bool {
-        let env = DamsonConfig.fromUserDefaults().env
-        return FileManager.default.isExecutableFile(atPath: claudeExecutable(env: env))
+    public static func isAvailable(env: [String: String]) -> Bool {
+        FileManager.default.isExecutableFile(atPath: claudeExecutable(env: env))
     }
 
     /// Build the config for a pane running Claude Code.
@@ -50,8 +49,12 @@ enum AgentLaunch {
     ///   not survive but its transcript did.
     /// - `label`: shown in Claude Code's own UI and in `claude agents --json`, so a human
     ///   reading either can tell which damson pane a session belongs to.
-    static func config(cwd: String?, sessionID: UUID, label: String?) -> DamsonConfig {
-        var config = DamsonConfig.fromUserDefaults()
+    /// - `base`: the user's ordinary pane config (font, theme, env…). Passed in rather than
+    ///   read here, so this stays a pure function of its inputs — reading UserDefaults is
+    ///   the app's job, and keeping it out is what makes this testable at all.
+    public static func config(base: DamsonConfig, cwd: String?,
+                              sessionID: UUID, label: String?) -> DamsonConfig {
+        var config = base
         if let cwd { config.cwd = cwd }
         var argv = [claudeExecutable(env: config.env), "--session-id", sessionID.uuidString]
         if let label, !label.isEmpty { argv += ["--name", label] }
@@ -61,7 +64,7 @@ enum AgentLaunch {
 
     /// A short, human-readable name for a pane started in `cwd` — the directory's last
     /// component, which is what a developer actually calls the project.
-    static func label(for cwd: String?) -> String? {
+    public static func label(for cwd: String?) -> String? {
         guard let cwd, !cwd.isEmpty else { return nil }
         let base = (cwd as NSString).lastPathComponent
         return base.isEmpty ? nil : base

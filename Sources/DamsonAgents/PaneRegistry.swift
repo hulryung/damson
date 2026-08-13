@@ -16,8 +16,8 @@ import Foundation
 /// Process-wide (one terminal, one namespace) and main-thread only, like the pane tree it
 /// shadows. Registration is lazy — `id(for:)` mints on first ask — so no creation site has
 /// to remember to call in; a pane that is never addressed never costs anything.
-final class PaneRegistry {
-    static let shared = PaneRegistry()
+public final class PaneRegistry {
+    public static let shared = PaneRegistry()
 
     private var ids: [ObjectIdentifier: UUID] = [:]
     /// The reverse direction, for resolving an id back to its pane. Weak, so a closed pane's
@@ -30,9 +30,16 @@ final class PaneRegistry {
 
     /// This pane's stable id, minted on first use.
     @discardableResult
-    func id(for session: DamsonSession) -> UUID {
+    public func id(for session: DamsonSession) -> UUID {
         let key = ObjectIdentifier(session)
-        if let existing = ids[key] { return existing }
+        // `ObjectIdentifier` is the object's ADDRESS, and a deallocated session's address is
+        // reused by a later allocation — so a hit here may be a dead pane's entry sitting at
+        // an address this brand-new pane now occupies. Returning it would hand the new pane
+        // the old one's id, and a driver addressing "pane X" would silently talk to the
+        // wrong terminal. Confirm the entry still points back at THIS object; a stale one is
+        // treated as absent. (Sweeping cannot cover this: the collision exists from the
+        // instant the address is reused, before any sweep could run.)
+        if let existing = ids[key], sessions[existing]?.session === session { return existing }
         let id = UUID()
         ids[key] = id
         sessions[id] = WeakSession(session: session)
@@ -41,21 +48,21 @@ final class PaneRegistry {
 
     /// Adopt a pane under an id it already had — used when restoring a saved layout, so a
     /// driver's binding survives a restart (Stage 4). Ignored if the id is already live.
-    func adopt(_ session: DamsonSession, as id: UUID) {
+    public func adopt(_ session: DamsonSession, as id: UUID) {
         guard sessions[id]?.session == nil else { return }
         ids[ObjectIdentifier(session)] = id
         sessions[id] = WeakSession(session: session)
     }
 
     /// The pane with this id, if it is still open.
-    func session(for id: UUID) -> DamsonSession? {
+    public func session(for id: UUID) -> DamsonSession? {
         sweepIfNeeded()
         return sessions[id]?.session
     }
 
     /// The id of a pane that has one, without minting. Lets a read-only path (listing panes,
     /// serializing a layout) avoid creating ids for panes nobody has addressed.
-    func existingID(for session: DamsonSession) -> UUID? {
+    public func existingID(for session: DamsonSession) -> UUID? {
         ids[ObjectIdentifier(session)]
     }
 
@@ -82,7 +89,7 @@ final class PaneRegistry {
 
     #if DEBUG
     /// Test hook: forget everything, so a test starts from an empty namespace.
-    func resetForTesting() {
+    public func resetForTesting() {
         ids.removeAll()
         sessions.removeAll()
         lastSweepCount = 0

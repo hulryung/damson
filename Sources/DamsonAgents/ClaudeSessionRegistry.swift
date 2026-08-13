@@ -2,22 +2,22 @@ import Darwin
 import Foundation
 
 /// One live Claude Code session, as reported by the CLI itself.
-struct ClaudeSessionRow {
-    let pid: pid_t
-    let sessionId: String
-    let cwd: String
+public struct ClaudeSessionRow {
+    public let pid: pid_t
+    public let sessionId: String
+    public let cwd: String
     /// The session's display name (`--name`, or derived from the directory).
-    let name: String?
+    public let name: String?
     /// Raw status string. Deliberately kept raw here — `AgentBadge` owns the vocabulary,
     /// and an unknown value must survive this far so it can be dropped there rather than
     /// silently coerced into a neighbouring state.
-    let status: String
+    public let status: String
     /// Free-form description of what a `waiting` session is blocked on. Optional in the
     /// source data (Claude Code reads it back as `typeof x === "string" ? x : undefined`).
-    let waitingFor: String?
+    public let waitingFor: String?
     /// Claude Code's own version string. Present only in the on-disk records; used to
     /// notice that the format has moved on from what this code was written against.
-    let version: String?
+    public let version: String?
 }
 
 /// Tracks the Claude Code sessions running on this machine.
@@ -40,13 +40,13 @@ struct ClaudeSessionRow {
 ///
 /// All access is main-thread only: the sweep is driven by a timer owned by `CrewController`,
 /// and the parsed table is read from the UI on the same thread.
-final class ClaudeSessionRegistry {
+public final class ClaudeSessionRegistry {
     /// Live rows keyed by pid. Empty until the first `refresh()`.
-    private(set) var byPID: [pid_t: ClaudeSessionRow] = [:]
+    public private(set) var byPID: [pid_t: ClaudeSessionRow] = [:]
 
     /// The newest Claude Code version seen in a record, for diagnostics when the format
     /// drifts away from what this was written against.
-    private(set) var observedVersion: String?
+    public private(set) var observedVersion: String?
 
     private let sessionsDir: URL
     /// mtime+size per file path, so an unchanged record is skipped without re-parsing.
@@ -54,14 +54,14 @@ final class ClaudeSessionRegistry {
     private var cache: [pid_t: ClaudeSessionRow] = [:]
     private var didWarnUnreadable = false
 
-    init(sessionsDir: URL? = nil) {
+    public init(sessionsDir: URL? = nil) {
         self.sessionsDir = sessionsDir
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/sessions")
     }
 
     /// Re-read the session directory. Cheap on a quiet tick: only records whose mtime or
     /// size moved are parsed again.
-    func refresh() {
+    public func refresh() {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: sessionsDir.path) else {
             // A missing directory is the normal state on a machine that has never run
             // Claude Code — not an error, and not worth a log line every tick.
@@ -115,7 +115,7 @@ final class ClaudeSessionRegistry {
     /// The session whose pid matches, if any. This is the whole join: a pane's PTY
     /// foreground process group IS the pid of the `claude` running in it, because a shell
     /// puts each foreground job in its own process group led by that process.
-    func session(forForegroundPID pid: pid_t?) -> ClaudeSessionRow? {
+    public func session(forForegroundPID pid: pid_t?) -> ClaudeSessionRow? {
         guard let pid else { return nil }
         return byPID[pid]
     }
