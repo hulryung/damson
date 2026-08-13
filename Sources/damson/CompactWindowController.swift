@@ -104,6 +104,15 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabs.flatMap { $0.tree.root.leaves().map { $0.session } }
     }
 
+    /// Every pane paired with the index of the tab it lives in. External callers address
+    /// panes by a stable id, but still want to know where a pane sits — and a pane's index
+    /// is only meaningful within its tab.
+    func sessionsByTab() -> [(tab: Int, session: DamsonSession)] {
+        tabs.enumerated().flatMap { i, tab in
+            tab.tree.root.leaves().map { (tab: i, session: $0.session) }
+        }
+    }
+
     /// damson-cli `zoom` — the active tab's active pane surface.
     var activeSurfaceView: DamsonSurfaceView? {
         guard currentIndex < tabs.count else { return nil }

@@ -400,7 +400,90 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .dumpGrid:                         return controlDumpGrid()
         case .zoom(let action):                 return controlZoom(action)
         case .applyLayout(let name):            return controlApplyLayout(name)
+        case .spawnPane(let spec):              return controlSpawnPane(spec)
+        case .listAgents:                       return controlListAgents()
+        case .paneInfo:                         return controlPaneInfo(cmd.target)
         }
+    }
+
+    // MARK: Addressable panes
+
+    /// Panes opened through `spawn-pane`, keyed by the caller's idempotency token.
+    ///
+    /// The control handler waits only 2s for the main actor and then reports a timeout —
+    /// *while the queued work still runs*. So a spawn that overruns (easy behind a tab
+    /// animation) tells the client it failed for a pane that did open. Without this table a
+    /// retry would mint a second agent; with it, the retry gets the first pane's id.
+    /// Entries are dropped once their pane is gone, so the table cannot grow without bound.
+    private var spawnedByKey: [String: UUID] = [:]
+
+    @MainActor
+    private func controlSpawnPane(_ spec: SpawnSpec) -> ControlResponse {
+        if let key = spec.key, let existing = spawnedByKey[key] {
+            if let session = PaneRegistry.shared.session(for: existing) {
+                return .pane(paneInfo(for: session, id: existing))
+            }
+            spawnedByKey.removeValue(forKey: key)   // its pane closed; a repeat opens a new one
+        }
+        guard !spec.argv.isEmpty else { return .err("spawn-pane requires a non-empty argv") }
+        guard let window = activeCompact() ?? { spawnWindow(); return activeCompact() }() else {
+            return .err("no window to spawn into")
+        }
+        var config = DamsonConfig.fromUserDefaults()
+        config.argv = spec.argv
+        config.cwd = spec.cwd ?? window.activePaneDirectory
+        let session: DamsonSession?
+        if let split = spec.split {
+            window.splitActivePane(direction: split == .vertical ? .vertical : .horizontal,
+                                   configOverride: config)
+            session = window.activeSession
+        } else {
+            session = window.addNewTab(configOverride: config)
+        }
+        guard let session else { return .err("failed to open a pane") }
+        let id = PaneRegistry.shared.id(for: session)
+        if let key = spec.key { spawnedByKey[key] = id }
+        return .pane(paneInfo(for: session, id: id))
+    }
+
+    /// Every pane in every compact window, with the id that addresses it.
+    @MainActor
+    private func controlListAgents() -> ControlResponse {
+        var out: [PaneInfo] = []
+        for controller in compactControllers {
+            for (tabIndex, session) in controller.sessionsByTab() {
+                out.append(paneInfo(for: session, id: PaneRegistry.shared.id(for: session),
+                                    tab: tabIndex,
+                                    active: session === controller.activeSession))
+            }
+        }
+        return .panes(out)
+    }
+
+    @MainActor
+    private func controlPaneInfo(_ target: PaneTarget) -> ControlResponse {
+        switch target {
+        case .active:
+            guard let session = activeControlSession() else { return .err("no active pane") }
+            return .pane(paneInfo(for: session, id: PaneRegistry.shared.id(for: session)))
+        case .id(let raw):
+            guard let uuid = UUID(uuidString: raw) else { return .err("not a pane id: \(raw)") }
+            guard let session = PaneRegistry.shared.session(for: uuid) else {
+                return .err("no such pane: \(raw)")
+            }
+            return .pane(paneInfo(for: session, id: uuid))
+        }
+    }
+
+    @MainActor
+    private func paneInfo(for session: DamsonSession, id: UUID,
+                          tab: Int? = nil, active: Bool = false) -> PaneInfo {
+        PaneInfo(index: 0, cols: session.grid.cols, rows: session.grid.rows, active: active,
+                 id: id.uuidString, tab: tab,
+                 pid: session.foregroundProcessID,
+                 cwd: session.currentDirectory ?? session.currentWorkingDirectory,
+                 title: session.title.isEmpty ? nil : session.title,
+                 agent: crew?.badge(for: session)?.rawValue)
     }
 
     // MARK: Tab / window control

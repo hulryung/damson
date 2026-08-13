@@ -58,6 +58,16 @@ final class CrewController {
 
     deinit { stop() }
 
+    /// The agent status of a pane right now, from the table the last sweep read. Used by
+    /// the control socket so a script sees the same status the badge shows, without paying
+    /// for a fresh directory scan per query.
+    func badge(for session: DamsonSession) -> AgentBadge? {
+        guard let row = registry.session(forForegroundPID: session.foregroundProcessID) else {
+            return nil
+        }
+        return AgentBadge(status: row.status)
+    }
+
     /// One sweep: re-read the session records, then relabel every pane in every window.
     private func tick() {
         registry.refresh()

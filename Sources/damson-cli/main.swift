@@ -54,9 +54,18 @@ Commands:
   dump-grid               Print the active pane's visible grid as plain text.
   zoom <in|out|reset>     Font zoom on the active pane (same path as Cmd+=/-).
 
+  spawn [--split-h|--split-v] [--cwd P] [--key K] -- argv...
+                          Open a pane running argv; prints its pane id as JSON.
+                          --key makes a repeat return the SAME pane rather than
+                          opening a second one, so a retry is safe.
+  agents                  Every pane, with its stable id, tab, pid, cwd and
+                          agent status.
+  pane-info               Details for --pane <id>, or the active pane.
+
 Options:
   --pid PID               Target the instance with this PID (default: most recent).
   --list-instances        List running damson instances and exit.
+  --pane <id>             Address a specific pane (id from `agents` / `spawn`).
   -h, --help              Show this help.
 """
 
@@ -70,6 +79,11 @@ var args = CommandLine.arguments.dropFirst().map { $0 }
 var pidArg: Int?
 var listInstances = false
 var positional: [String] = []
+var paneArg: String?
+// spawn options
+var spawnSplit: SplitDir?
+var spawnCwd: String?
+var spawnKey: String?
 
 var i = 0
 while i < args.count {
@@ -93,6 +107,24 @@ while i < args.count {
             die("--pid requires a numeric argument")
         }
         pidArg = v
+        i += 1
+    case "--pane":
+        i += 1
+        guard i < args.count else { die("--pane requires a pane id") }
+        paneArg = args[i]
+        i += 1
+    case "--split-h", "--split-v":
+        spawnSplit = (a == "--split-v") ? .vertical : .horizontal
+        i += 1
+    case "--cwd":
+        i += 1
+        guard i < args.count else { die("--cwd requires a path") }
+        spawnCwd = args[i]
+        i += 1
+    case "--key":
+        i += 1
+        guard i < args.count else { die("--key requires a token") }
+        spawnKey = args[i]
         i += 1
     default:
         // Options must precede the subcommand. Once a positional (the subcommand) is
@@ -207,6 +239,19 @@ case "layout":
         die("layout requires a name (e.g. columns2060, columns2, columns3, rows2, grid2x2, mainRight, mainLeftStack)")
     }
     cmdKind = .applyLayout(rest[0])
+case "spawn":
+    // Everything after `--` is the argv to run, so it can contain its own options:
+    //   damson-cli spawn --split-v --cwd /p -- claude -w feat
+    guard !rest.isEmpty else {
+        die("spawn requires a command, after `--`: spawn [--split-h|--split-v] [--cwd P] [--key K] -- argv…")
+    }
+    cmdKind = .spawnPane(SpawnSpec(split: spawnSplit, cwd: spawnCwd, argv: rest, key: spawnKey))
+case "agents":
+    guard rest.isEmpty else { die("agents takes no arguments") }
+    cmdKind = .listAgents
+case "pane-info":
+    guard rest.isEmpty else { die("pane-info takes no arguments (use --pane <id>)") }
+    cmdKind = .paneInfo
 default:
     die("unknown command: \(sub)")
 }
@@ -224,7 +269,7 @@ case .success(let p): socketPath = p
 case .failure(let e): die(e.message)
 }
 
-let json = encodeCommand(cmdKind)
+let json = encodeCommand(cmdKind, target: paneArg.map { .id($0) } ?? .active)
 switch sendCommand(socketPath: socketPath, commandJSON: json) {
 case .success(let resp):
     if !resp.ok {
@@ -246,6 +291,11 @@ case .success(let resp):
     }
     if let grid = resp.grid {
         print(grid)
+    }
+    if let pane = resp.pane,
+       let data = try? encoder.encode(pane),
+       let s = String(data: data, encoding: .utf8) {
+        print(s)
     }
     exit(0)
 case .failure(let e):

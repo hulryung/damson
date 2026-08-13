@@ -45,15 +45,63 @@ public enum ControlCommandKind: Equatable, Sendable {
     case zoom(String)
     /// Apply a preset pane layout to the active tab (e.g. "columns2060", "grid2x2").
     case applyLayout(String)
+    // --- Addressable panes (orchestration). NEW cases, never widened ones: adding an
+    // associated value to an existing case is source-breaking at every construction site,
+    // in this repo and in anything else that links this library product.
+    /// Open a pane running a caller-supplied argv, and return its stable id.
+    case spawnPane(SpawnSpec)
+    /// Every pane in every window, with its stable id — the addressing table.
+    case listAgents
+    /// One pane's details, by id (or the active pane when no target is given).
+    case paneInfo
+}
+
+/// Where a command should land. Absent on the wire means `.active`, so every existing
+/// client keeps its exact meaning.
+public enum PaneTarget: Equatable, Sendable {
+    case active
+    case id(String)
+}
+
+/// What to open, for `spawnPane`.
+public struct SpawnSpec: Equatable, Sendable, Codable {
+    /// Where the new pane goes. nil = a new tab.
+    public let split: SplitDir?
+    public let cwd: String?
+    public let argv: [String]
+    /// Idempotency token. The server records it and, on a repeat, returns the SAME pane
+    /// instead of opening a second one.
+    ///
+    /// This is not belt-and-braces. The control socket's handler hops to the main actor and
+    /// waits with a 2s timeout; on expiry it reports failure to the client **while the queued
+    /// work still runs to completion**. A spawn that overruns 2s — easy under a tab-creation
+    /// animation — therefore answers "failed" for a pane that did open, and a client that
+    /// retries would mint a second agent. With a key, the retry is answered with the first
+    /// pane's id.
+    public let key: String?
+
+    public init(split: SplitDir? = nil, cwd: String? = nil, argv: [String], key: String? = nil) {
+        self.split = split
+        self.cwd = cwd
+        self.argv = argv
+        self.key = key
+    }
 }
 
 /// An incoming command. JSON: `{"cmd":"new-tab"}`, `{"cmd":"split","args":{"dir":"horizontal"}}`, etc.
 public struct ControlCommand: Decodable, Equatable, Sendable {
     public let kind: ControlCommandKind
+    /// Which pane the command addresses. A payload with no `"pane"` key decodes to
+    /// `.active`, which is what every client sent before this existed — so old JSON keeps
+    /// its exact meaning and `init(kind:)` keeps its signature.
+    public let target: PaneTarget
 
-    public init(kind: ControlCommandKind) { self.kind = kind }
+    public init(kind: ControlCommandKind, target: PaneTarget = .active) {
+        self.kind = kind
+        self.target = target
+    }
 
-    enum CodingKeys: String, CodingKey { case cmd, args }
+    enum CodingKeys: String, CodingKey { case cmd, args, pane }
     private struct SplitArgs: Decodable { let dir: SplitDir }
     private struct SwitchArgs: Decodable { let index: Int }
     private struct TextArgs: Decodable { let text: String }
@@ -65,6 +113,11 @@ public struct ControlCommand: Decodable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let name = try c.decode(String.self, forKey: .cmd)
+        if let pane = try c.decodeIfPresent(String.self, forKey: .pane), !pane.isEmpty {
+            self.target = .id(pane)
+        } else {
+            self.target = .active
+        }
         switch name {
         case "new-tab":
             self.kind = .newTab
@@ -115,6 +168,17 @@ public struct ControlCommand: Decodable, Equatable, Sendable {
             struct LayoutArgs: Decodable { let name: String }
             let a = try c.decode(LayoutArgs.self, forKey: .args)
             self.kind = .applyLayout(a.name)
+        case "spawn-pane":
+            let spec = try c.decode(SpawnSpec.self, forKey: .args)
+            guard !spec.argv.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .args, in: c, debugDescription: "spawn-pane requires a non-empty argv")
+            }
+            self.kind = .spawnPane(spec)
+        case "list-agents":
+            self.kind = .listAgents
+        case "pane-info":
+            self.kind = .paneInfo
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .cmd, in: c,
@@ -173,7 +237,24 @@ public func encodeCommand(_ kind: ControlCommandKind) -> String {
         return #"{"cmd":"zoom","args":{"action":"\#(jsonEscape(a))"}}"#
     case .applyLayout(let name):
         return #"{"cmd":"layout","args":{"name":"\#(jsonEscape(name))"}}"#
+    case .spawnPane(let spec):
+        var parts: [String] = []
+        if let s = spec.split { parts.append(#""split":"\#(s.rawValue)""#) }
+        if let c = spec.cwd { parts.append(#""cwd":"\#(jsonEscape(c))""#) }
+        parts.append(#""argv":[\#(spec.argv.map { #""\#(jsonEscape($0))""# }.joined(separator: ","))]"#)
+        if let k = spec.key { parts.append(#""key":"\#(jsonEscape(k))""#) }
+        return #"{"cmd":"spawn-pane","args":{\#(parts.joined(separator: ","))}}"#
+    case .listAgents: return #"{"cmd":"list-agents"}"#
+    case .paneInfo: return #"{"cmd":"pane-info"}"#
     }
+}
+
+/// Attach a pane target to an encoded command. Splices into the existing object rather
+/// than re-encoding, so every command's payload stays byte-identical when no target is set.
+public func encodeCommand(_ kind: ControlCommandKind, target: PaneTarget) -> String {
+    let base = encodeCommand(kind)
+    guard case .id(let id) = target else { return base }
+    return String(base.dropLast()) + #","pane":"\#(jsonEscape(id))"}"#
 }
 
 /// A single list-tabs result row.
@@ -192,11 +273,52 @@ public struct PaneInfo: Codable, Equatable, Sendable {
     public let cols: Int
     public let rows: Int
     public let active: Bool
-    public init(index: Int, cols: Int, rows: Int, active: Bool) {
+    // Added for orchestration. All optional and all defaulted, so the original four-argument
+    // initializer still compiles unchanged everywhere — including downstream of this library.
+    /// Stable pane id (see PaneRegistry). Present once a pane has been addressed.
+    public let id: String?
+    /// Which tab the pane lives in — `index` is only unique within a tab.
+    public let tab: Int?
+    /// The process group owning the pane's tty: what is actually running in it.
+    public let pid: Int32?
+    public let cwd: String?
+    public let title: String?
+    /// Agent status when the pane is running one damson recognizes, else nil.
+    public let agent: String?
+
+    public init(index: Int, cols: Int, rows: Int, active: Bool,
+                id: String? = nil, tab: Int? = nil, pid: Int32? = nil,
+                cwd: String? = nil, title: String? = nil, agent: String? = nil) {
         self.index = index
         self.cols = cols
         self.rows = rows
         self.active = active
+        self.id = id
+        self.tab = tab
+        self.pid = pid
+        self.cwd = cwd
+        self.title = title
+        self.agent = agent
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case index, cols, rows, active, id, tab, pid, cwd, title, agent
+    }
+
+    /// Hand-rolled so nil fields are OMITTED rather than encoded as null — a `list-panes`
+    /// response for ordinary panes stays byte-identical to what it has always been.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(index, forKey: .index)
+        try c.encode(cols, forKey: .cols)
+        try c.encode(rows, forKey: .rows)
+        try c.encode(active, forKey: .active)
+        try c.encodeIfPresent(id, forKey: .id)
+        try c.encodeIfPresent(tab, forKey: .tab)
+        try c.encodeIfPresent(pid, forKey: .pid)
+        try c.encodeIfPresent(cwd, forKey: .cwd)
+        try c.encodeIfPresent(title, forKey: .title)
+        try c.encodeIfPresent(agent, forKey: .agent)
     }
 }
 
@@ -289,14 +411,17 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     public let panes: [PaneInfo]?
     /// dump-grid result: the visible grid as plain text, one line per row.
     public let grid: String?
+    /// spawn-pane / pane-info result. Defaulted, so the original initializer is unchanged.
+    public let pane: PaneInfo?
 
     public init(ok: Bool, err: String? = nil, tabs: [TabInfo]? = nil, panes: [PaneInfo]? = nil,
-                grid: String? = nil) {
+                grid: String? = nil, pane: PaneInfo? = nil) {
         self.ok = ok
         self.err = err
         self.tabs = tabs
         self.panes = panes
         self.grid = grid
+        self.pane = pane
     }
 
     public static func ok() -> Self { .init(ok: true) }
@@ -310,8 +435,13 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     public static func grid(_ text: String) -> Self {
         .init(ok: true, grid: text)
     }
+    /// `spawn-pane` — the id of the pane that was opened (or, on a repeated `key`, the one
+    /// opened the first time).
+    public static func pane(_ info: PaneInfo) -> Self {
+        .init(ok: true, pane: info)
+    }
 
-    enum CodingKeys: String, CodingKey { case ok, err, tabs, panes, grid }
+    enum CodingKeys: String, CodingKey { case ok, err, tabs, panes, grid, pane }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -320,5 +450,6 @@ public struct ControlResponse: Codable, Equatable, Sendable {
         if let tabs = tabs { try c.encode(tabs, forKey: .tabs) }
         if let panes = panes { try c.encode(panes, forKey: .panes) }
         if let grid = grid { try c.encode(grid, forKey: .grid) }
+        if let pane = pane { try c.encode(pane, forKey: .pane) }
     }
 }
