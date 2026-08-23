@@ -65,7 +65,10 @@ Commands:
 Options:
   --pid PID               Target the instance with this PID (default: most recent).
   --list-instances        List running damson instances and exit.
-  --pane <id>             Address a specific pane (id from `agents` / `spawn`).
+  --pane <id>             Address a specific pane (id from `agents` / `spawn`) instead of
+                          the active one. Honored by send-text, send-key, dump-grid, zoom,
+                          resize-pane, focus-pane, close-pane and pane-info; an id that no
+                          longer resolves is an error, never a fallback to the active pane.
   -h, --help              Show this help.
 """
 

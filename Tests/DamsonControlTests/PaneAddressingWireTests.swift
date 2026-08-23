@@ -63,6 +63,29 @@ final class PaneAddressingWireTests: XCTestCase {
         XCTAssertEqual(cmd.kind, .sendText("hi"), "the target must not disturb the payload")
     }
 
+    /// The server dispatches on the target for EVERY pane-addressed command, so the wire
+    /// must carry it for every one of them — a command whose target silently decoded to
+    /// `.active` would fall back to whatever pane is focused, the exact misroute pane ids
+    /// exist to prevent.
+    func testEveryPaneAddressedCommandCarriesItsTarget() throws {
+        let id = "6E7F1B2C-0000-4000-8000-000000000002"
+        let kinds: [ControlCommandKind] = [
+            .sendText("hi"),
+            .sendKeys(["enter"]),
+            .dumpGrid,
+            .zoom("in"),
+            .resizePane(dir: .left, amount: 2),
+            .focusPane(dir: .right),
+            .closePane,
+            .paneInfo,
+        ]
+        for kind in kinds {
+            let cmd = try decode(encodeCommand(kind, target: .id(id)))
+            XCTAssertEqual(cmd.target, .id(id), "\(kind) must carry its pane target")
+            XCTAssertEqual(cmd.kind, kind, "the target must not disturb \(kind)'s payload")
+        }
+    }
+
     /// `PaneInfo` grew six optional fields. An ordinary pane's row must still serialize as
     /// the original four keys — nils omitted, not encoded as null.
     func testPaneInfoWithoutTheNewFieldsIsUnchanged() throws {

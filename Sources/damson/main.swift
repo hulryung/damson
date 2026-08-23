@@ -150,6 +150,33 @@ final class DamsonWindowController: NSWindowController, NSWindowDelegate, PaneTr
         }
     }
 
+    // Id-addressed pane commands (`--pane <id>`) — single tree, so each is the compact
+    // controller's per-tab logic without the tab search.
+
+    func surfaceView(for session: DamsonSession) -> DamsonSurfaceView? {
+        tree.surfaceView(for: session)
+    }
+
+    func focusPane(from session: DamsonSession, _ dir: PaneFocusDirection) -> Bool {
+        guard let leaf = tree.leaf(for: session) else { return false }
+        tree.moveFocus(dir, from: leaf)
+        return true
+    }
+
+    func closePane(for session: DamsonSession) -> Bool {
+        guard let leaf = tree.leaf(for: session) else { return false }
+        tree.requestClose(leaf)
+        return true
+    }
+
+    func resizePane(for session: DamsonSession, _ dir: PaneFocusDirection, cells: Int) -> Bool? {
+        guard let win = window, let leaf = tree.leaf(for: session) else { return nil }
+        return tree.resizeDivider(
+            from: leaf, dir,
+            fraction: WindowResize.dividerFraction(dir, cells: cells,
+                                                   session: session, window: win))
+    }
+
     /// damson-cli `zoom` — the active pane's surface (zoomIn/zoomOut/resetZoom target).
     var activeSurfaceView: DamsonSurfaceView? { tree.activeSurfaceView }
 
@@ -390,15 +417,15 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .closeTab:                         return controlCloseTab()
         case .switchTab(let index):             return controlSwitchTab(index)
         case .listTabs:                         return controlListTabs()
-        case .sendText(let text):               return controlSendText(text)
-        case .sendKeys(let names):              return controlSendKeys(names)
+        case .sendText(let text):               return controlSendText(text, cmd.target)
+        case .sendKeys(let names):              return controlSendKeys(names, cmd.target)
         case .resizeWindow(let cols, let rows): return controlResizeWindow(cols: cols, rows: rows)
-        case .resizePane(let dir, let amount):  return controlResizePane(dir, amount)
-        case .focusPane(let dir):               return controlFocusPane(dir)
-        case .closePane:                        return controlClosePane()
+        case .resizePane(let dir, let amount):  return controlResizePane(dir, amount, cmd.target)
+        case .focusPane(let dir):               return controlFocusPane(dir, cmd.target)
+        case .closePane:                        return controlClosePane(cmd.target)
         case .listPanes:                        return controlListPanes()
-        case .dumpGrid:                         return controlDumpGrid()
-        case .zoom(let action):                 return controlZoom(action)
+        case .dumpGrid:                         return controlDumpGrid(cmd.target)
+        case .zoom(let action):                 return controlZoom(action, cmd.target)
         case .applyLayout(let name):            return controlApplyLayout(name)
         case .spawnPane(let spec):              return controlSpawnPane(spec)
         case .listAgents:                       return controlListAgents()
@@ -460,18 +487,50 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .panes(out)
     }
 
+    // MARK: Pane-target resolution
+
+    /// A `PaneTarget` resolved to a live session, or the typed error to answer with.
+    private enum ResolvedPane {
+        case session(DamsonSession)
+        case failure(ControlResponse)
+    }
+
+    /// One resolution path for every pane-addressed command. `.id` NEVER falls back to the
+    /// active pane: a driver that addressed "pane X" must be told X is gone, not have its
+    /// bytes land in whatever pane happens to be focused.
     @MainActor
-    private func controlPaneInfo(_ target: PaneTarget) -> ControlResponse {
+    private func resolvePane(_ target: PaneTarget) -> ResolvedPane {
         switch target {
         case .active:
-            guard let session = activeControlSession() else { return .err("no active pane") }
-            return .pane(paneInfo(for: session, id: PaneRegistry.shared.id(for: session)))
-        case .id(let raw):
-            guard let uuid = UUID(uuidString: raw) else { return .err("not a pane id: \(raw)") }
-            guard let session = PaneRegistry.shared.session(for: uuid) else {
-                return .err("no such pane: \(raw)")
+            guard let session = activeControlSession() else {
+                return .failure(.err("no active pane"))
             }
-            return .pane(paneInfo(for: session, id: uuid))
+            return .session(session)
+        case .id(let raw):
+            guard let uuid = UUID(uuidString: raw) else {
+                return .failure(.err("not a pane id: \(raw)"))
+            }
+            guard let session = PaneRegistry.shared.session(for: uuid) else {
+                return .failure(.err("no such pane: \(raw)"))
+            }
+            return .session(session)
+        }
+    }
+
+    /// Every controller that can own an addressed pane — compact first (spawn-pane only
+    /// opens panes there), then single-session windows (whose active pane can also be
+    /// handed an id via pane-info).
+    @MainActor
+    private var paneTargets: [PaneCommandTarget] {
+        compactControllers as [PaneCommandTarget] + controllers
+    }
+
+    @MainActor
+    private func controlPaneInfo(_ target: PaneTarget) -> ControlResponse {
+        switch resolvePane(target) {
+        case .failure(let resp): return resp
+        case .session(let session):
+            return .pane(paneInfo(for: session, id: PaneRegistry.shared.id(for: session)))
         }
     }
 
@@ -566,26 +625,32 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Remote input
 
     @MainActor
-    private func controlSendText(_ text: String) -> ControlResponse {
-        guard let session = activeControlSession() else { return .err("no active pane") }
-        guard let data = text.data(using: .utf8) else { return .err("invalid UTF-8 text") }
-        session.write(data)
-        return .ok()
+    private func controlSendText(_ text: String, _ target: PaneTarget) -> ControlResponse {
+        switch resolvePane(target) {
+        case .failure(let resp): return resp
+        case .session(let session):
+            guard let data = text.data(using: .utf8) else { return .err("invalid UTF-8 text") }
+            session.write(data)
+            return .ok()
+        }
     }
 
     @MainActor
-    private func controlSendKeys(_ names: [String]) -> ControlResponse {
-        guard let session = activeControlSession() else { return .err("no active pane") }
-        // Validate every name first so a partial chord isn't half-sent on a typo.
-        var sequence = Data()
-        for name in names {
-            guard let bytes = keyNameToBytes(name) else {
-                return .err("unknown key name: \(name)")
+    private func controlSendKeys(_ names: [String], _ target: PaneTarget) -> ControlResponse {
+        switch resolvePane(target) {
+        case .failure(let resp): return resp
+        case .session(let session):
+            // Validate every name first so a partial chord isn't half-sent on a typo.
+            var sequence = Data()
+            for name in names {
+                guard let bytes = keyNameToBytes(name) else {
+                    return .err("unknown key name: \(name)")
+                }
+                sequence.append(contentsOf: bytes)
             }
-            sequence.append(contentsOf: bytes)
+            session.write(sequence)
+            return .ok()
         }
-        session.write(sequence)
-        return .ok()
     }
 
     // MARK: Pane / window sizing, focus & inspection
@@ -599,29 +664,64 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @MainActor
-    private func controlResizePane(_ dir: PaneDir, _ amount: Int) -> ControlResponse {
+    private func controlResizePane(_ dir: PaneDir, _ amount: Int,
+                                   _ target: PaneTarget) -> ControlResponse {
         let focusDir = paneFocusDirection(dir)
-        guard let ok = withActiveTarget({ $0.resizeActivePane(focusDir, cells: amount) }) else {
-            return .err("no active window")
+        if case .active = target {
+            guard let ok = withActiveTarget({ $0.resizeActivePane(focusDir, cells: amount) }) else {
+                return .err("no active window")
+            }
+            return ok ? .ok() : .err("active pane has no split to resize toward \(dir.rawValue)")
         }
-        return ok ? .ok() : .err("active pane has no split to resize toward \(dir.rawValue)")
+        switch resolvePane(target) {
+        case .failure(let resp): return resp
+        case .session(let session):
+            for owner in paneTargets {
+                guard let resized = owner.resizePane(for: session, focusDir, cells: amount) else {
+                    continue
+                }
+                return resized ? .ok()
+                    : .err("pane has no split to resize toward \(dir.rawValue)")
+            }
+            return .err("pane is not attached to any window")
+        }
     }
 
     @MainActor
-    private func controlFocusPane(_ dir: PaneDir) -> ControlResponse {
+    private func controlFocusPane(_ dir: PaneDir, _ target: PaneTarget) -> ControlResponse {
         let focusDir = paneFocusDirection(dir)
-        guard withActiveTarget({ $0.focusActivePane(focusDir) }) != nil else {
-            return .err("no active window")
+        if case .active = target {
+            guard withActiveTarget({ $0.focusActivePane(focusDir) }) != nil else {
+                return .err("no active window")
+            }
+            return .ok()
         }
-        return .ok()
+        switch resolvePane(target) {
+        case .failure(let resp): return resp
+        case .session(let session):
+            guard paneTargets.contains(where: { $0.focusPane(from: session, focusDir) }) else {
+                return .err("pane is not attached to any window")
+            }
+            return .ok()
+        }
     }
 
     @MainActor
-    private func controlClosePane() -> ControlResponse {
-        guard withActiveTarget({ $0.closeActivePane() }) != nil else {
-            return .err("no active window")
+    private func controlClosePane(_ target: PaneTarget) -> ControlResponse {
+        if case .active = target {
+            guard withActiveTarget({ $0.closeActivePane() }) != nil else {
+                return .err("no active window")
+            }
+            return .ok()
         }
-        return .ok()
+        switch resolvePane(target) {
+        case .failure(let resp): return resp
+        case .session(let session):
+            guard paneTargets.contains(where: { $0.closePane(for: session) }) else {
+                return .err("pane is not attached to any window")
+            }
+            return .ok()
+        }
     }
 
     @MainActor
@@ -633,16 +733,32 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @MainActor
-    private func controlDumpGrid() -> ControlResponse {
-        guard let session = activeControlSession() else { return .err("no active pane") }
-        return .grid(Self.gridText(of: session))
+    private func controlDumpGrid(_ target: PaneTarget) -> ControlResponse {
+        switch resolvePane(target) {
+        case .failure(let resp): return resp
+        case .session(let session): return .grid(Self.gridText(of: session))
+        }
     }
 
     @MainActor
-    private func controlZoom(_ action: String) -> ControlResponse {
-        guard let surface = activeCompact()?.activeSurfaceView
-                ?? activeSingleController()?.activeSurfaceView else {
-            return .err("no active pane")
+    private func controlZoom(_ action: String, _ target: PaneTarget) -> ControlResponse {
+        let surface: DamsonSurfaceView
+        if case .active = target {
+            guard let active = activeCompact()?.activeSurfaceView
+                    ?? activeSingleController()?.activeSurfaceView else {
+                return .err("no active pane")
+            }
+            surface = active
+        } else {
+            switch resolvePane(target) {
+            case .failure(let resp): return resp
+            case .session(let session):
+                guard let owned = paneTargets.lazy
+                        .compactMap({ $0.surfaceView(for: session) }).first else {
+                    return .err("pane is not attached to any window")
+                }
+                surface = owned
+            }
         }
         switch action {
         case "in": surface.zoomIn(nil)
