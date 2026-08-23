@@ -79,15 +79,36 @@ public final class DamsonSession: ObservableObject {
     /// Default path: a local forkpty session. Behavior is identical to before the seam —
     /// the backend is a freshly constructed `PTYHost`.
     public convenience init(config: DamsonConfig, restoredScrollback: [Line]? = nil) {
-        self.init(config: config, restoredScrollback: restoredScrollback, backend: PTYHost())
+        self.init(config: config, restoredScrollback: restoredScrollback, backend: PTYHost(),
+                  initialCols: 80, initialRows: 24)
     }
 
     /// Backend-injection path: construct a session over an arbitrary `SessionIOBackend`
     /// (e.g. a `TmuxPaneBackend` for a tmux `-CC` pane). `spawn` is still called with the
     /// config's argv/env/cwd; a tmux backend treats it as a no-op.
-    public init(config: DamsonConfig, restoredScrollback: [Line]? = nil, backend: SessionIOBackend) {
-        let cols = 80
-        let rows = 24
+    public convenience init(config: DamsonConfig, restoredScrollback: [Line]? = nil,
+                            backend: SessionIOBackend) {
+        self.init(config: config, restoredScrollback: restoredScrollback, backend: backend,
+                  initialCols: 80, initialRows: 24)
+    }
+
+    /// Opt-in initial-size spawn over the default forkpty backend — see the designated
+    /// init below for why an embedder would pass a size.
+    public convenience init(config: DamsonConfig, restoredScrollback: [Line]? = nil,
+                            initialCols: Int, initialRows: Int) {
+        self.init(config: config, restoredScrollback: restoredScrollback, backend: PTYHost(),
+                  initialCols: initialCols, initialRows: initialRows)
+    }
+
+    /// Designated init. The two-argument forms above keep the historical contract — spawn
+    /// at 80×24, with the host expected to `resize` once its real geometry is known. An
+    /// embedder that already knows its grid passes it here, so the child starts at the
+    /// right size instead of laying out at 80×24 and reflowing on the first SIGWINCH.
+    /// Non-positive values are clamped to 1; existing callers and behavior are unchanged.
+    public init(config: DamsonConfig, restoredScrollback: [Line]? = nil,
+                backend: SessionIOBackend, initialCols: Int, initialRows: Int) {
+        let cols = max(1, initialCols)
+        let rows = max(1, initialRows)
         self.pty = backend
         self.config = config
         self.currentDirectory = config.cwd
