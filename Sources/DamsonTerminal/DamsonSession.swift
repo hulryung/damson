@@ -62,6 +62,13 @@ public final class DamsonSession: ObservableObject {
     public var onClipboardWrite: ((String) -> Void)?
     public var onOutput: ((Data) -> Void)?
 
+    /// Raw pre-parse PTY bytes, multi-subscriber. Fires with exactly the chunks `onOutput`
+    /// receives (and never while a `tmux -CC` takeover owns the stream), so an embedder can
+    /// observe the byte stream without claiming — or clobbering — the single `onOutput`
+    /// closure. Delivered synchronously on the PTY-drain thread (main), before the chunk is
+    /// parsed; subscribers must not block.
+    public let outputBytes = PassthroughSubject<Data, Never>()
+
     // The pluggable byte source/sink. Defaults to a local forkpty (`PTYHost`); a tmux -CC
     // pane injects a `TmuxPaneBackend` via the backend-factory init below — see
     // docs/TMUX-INTEGRATION.md. Whether `spawn` actually forks (PTYHost) or is a no-op
@@ -79,14 +86,16 @@ public final class DamsonSession: ObservableObject {
     /// (e.g. a `TmuxPaneBackend` for a tmux `-CC` pane). `spawn` is still called with the
     /// config's argv/env/cwd; a tmux backend treats it as a no-op.
     public init(config: DamsonConfig, restoredScrollback: [Line]? = nil, backend: SessionIOBackend) {
+        let cols = 80
+        let rows = 24
         self.pty = backend
         self.config = config
         self.currentDirectory = config.cwd
         // Width policy for EAW-Ambiguous symbols (process-global user setting).
         Cell.treatAmbiguousAsWide = config.ambiguousWide
         self.grid = Grid(
-            cols: 80,
-            rows: 24,
+            cols: cols,
+            rows: rows,
             pen: CellAttrs(fg: .default)
         )
         self.grid.maxScrollbackLines = config.scrollbackLines
@@ -108,8 +117,8 @@ public final class DamsonSession: ObservableObject {
                 argv: config.argv,
                 env: config.env,
                 cwd: config.cwd,
-                cols: 80,
-                rows: 24
+                cols: cols,
+                rows: rows
             )
         } catch {
             NSLog("damson: PTY spawn failed: \(error)")
@@ -289,6 +298,7 @@ public final class DamsonSession: ObservableObject {
             return
         }
         onOutput?(data)
+        outputBytes.send(data)
         parser.feed(data)
         if parser.tmuxControlModeDetected {
             // The user ran `tmux -CC` in this pane. Post FIRST so an observer can install
