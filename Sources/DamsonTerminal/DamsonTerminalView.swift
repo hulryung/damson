@@ -1502,6 +1502,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         return grid.isAltScreenActive || grid.hasUsedSyncOutput || grid.hasContentBelowCursor
     }
 
+    /// Debounced view of `isAnchoredGrid` — see `AnchorHysteresis`.
+    private var anchorHysteresis = AnchorHysteresis()
+
     /// The Y the scroll should settle at while following. Computed identically to
     /// renderNow()'s follow logic so the animated/immediate scroll go to the same
     /// spot. nil if already at the right position (no scroll needed).
@@ -2400,6 +2403,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         if grid.isAltScreenActive != lastAltScreenActive {
             lastAltScreenActive = grid.isAltScreenActive
             followingBottom = true
+            anchorHysteresis.reset()   // a real mode change: judge the new screen on its own
         }
 
         // How many lines the top of scrollback was evicted this render = how much
@@ -2421,7 +2425,10 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // below the cursor-visible rest, letting the empty prompt scroll into dead
         // space. Clear it every render for non-anchored grids (covers the case where
         // followTargetY() returns nil, so alignScroll below wouldn't refresh it).
-        if !isAnchoredGrid { backend.clearFollowAnchor() }
+        // Advance the hysteresis once per render, then use the debounced value everywhere
+        // below so a repaint's transient cursor position can't drop the anchor.
+        let anchored = anchorHysteresis.update(raw: isAnchoredGrid)
+        if !anchored { backend.clearFollowAnchor() }
         if followingBottom {
             // During a key-input jump animation, the animation owns the position — don't scroll immediately.
             // Alt screen uses the viewport top anchor; otherwise (normal shell/
@@ -2429,7 +2436,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             if !isSnappingToCursor, let targetY = followTargetY() {
                 backend.alignScroll(to: targetY, totalRows: totalRows,
                                     animated: inLiveResize,
-                                    floor: isAnchoredGrid ? backend.contentInset.height : 0)
+                                    floor: anchored ? backend.contentInset.height : 0)
             }
         } else if evictedSinceLast > 0 {
             // The user is scrolled up viewing history — scroll up by the amount of
@@ -2437,7 +2444,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             let curY = backend.scrollYPixels
             let adjusted = max(0, curY - CGFloat(evictedSinceLast) * cellMetrics.height)
             backend.alignScroll(to: adjusted, totalRows: totalRows, animated: false,
-                                floor: isAnchoredGrid ? backend.contentInset.height : 0)
+                                floor: anchored ? backend.contentInset.height : 0)
         }
         // else: leave the position the user scrolled up to as-is (no forced bottom pinning).
 
