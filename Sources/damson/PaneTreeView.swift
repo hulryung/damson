@@ -257,11 +257,16 @@ final class PaneTreeView: NSView {
     }
 
     func closeActive() {
-        // tmux-backed tab: route Cmd+W to a tmux `kill-pane`; `%layout-change` then collapses
-        // the split (or `%window-close` closes the tab). Falls through to a local close if no
-        // hook is set (normal local tabs).
-        if case .leaf(let s, _) = activeLeaf.kind, let hook = onCloseRequest, hook(s) { return }
-        closeLeaf(activeLeaf)
+        requestClose(activeLeaf)
+    }
+
+    /// User/driver-initiated close of a specific leaf — same path for Cmd+W (the active
+    /// leaf) and an id-addressed `close-pane`. tmux-backed tab: route to a tmux `kill-pane`;
+    /// `%layout-change` then collapses the split (or `%window-close` closes the tab). Falls
+    /// through to a local close if no hook is set (normal local tabs).
+    func requestClose(_ leaf: PaneNode) {
+        if case .leaf(let s, _) = leaf.kind, let hook = onCloseRequest, hook(s) { return }
+        closeLeaf(leaf)
     }
 
     /// Closes the leaf holding a session when that session ends (shell exit). The exit
@@ -336,6 +341,21 @@ final class PaneTreeView: NSView {
         rebuild(animation: animation)
     }
 
+    /// The leaf holding `session`, if it lives in this tree. The entry point for
+    /// id-addressed control commands: an external driver names a pane by its session
+    /// (via PaneRegistry) and the structural operation needs the node.
+    func leaf(for session: DamsonSession) -> PaneNode? {
+        leafNode(for: session, in: root)
+    }
+
+    /// The surface hosting `session`, if it lives in this tree (id-addressed `zoom`).
+    func surfaceView(for session: DamsonSession) -> DamsonSurfaceView? {
+        guard let leaf = leaf(for: session), case .leaf(_, let surface) = leaf.kind else {
+            return nil
+        }
+        return surface
+    }
+
     /// Find the leaf node in the tree holding the given session (by === identity).
     private func leafNode(for session: DamsonSession, in node: PaneNode) -> PaneNode? {
         switch node.kind {
@@ -395,21 +415,36 @@ final class PaneTreeView: NSView {
     /// Cmd+Opt+arrow — move focus to the nearest adjacent pane in the given direction,
     /// relative to the current active pane's on-screen position.
     func moveFocus(_ dir: PaneFocusDirection) {
-        if let target = directionalNeighbor(dir) { setActive(target) }
+        if let target = directionalNeighbor(dir, of: activeLeaf) { setActive(target) }
+    }
+
+    /// id-addressed `focus-pane`: the same move, but relative to a caller-named leaf
+    /// instead of the active one — the target pane substitutes for "active" in the
+    /// operation. No neighbor in that direction is a silent no-op, exactly like the
+    /// active-pane path.
+    func moveFocus(_ dir: PaneFocusDirection, from leaf: PaneNode) {
+        if let target = directionalNeighbor(dir, of: leaf) { setActive(target) }
     }
 
     /// damson-cli `resize-pane` — nudge the split divider that governs the active pane
-    /// toward `dir` by `fraction` of the relevant axis (one nudge per call). Walks up from
-    /// the active leaf to the nearest ancestor split whose axis matches the direction
-    /// (horizontal split ↔ left/right, vertical split ↔ up/down), then shifts its ratio
-    /// the same way SplitContainer.applyDrag does. Returns false if there's no such split.
+    /// toward `dir` by `fraction` of the relevant axis (one nudge per call).
     @discardableResult
     func resizeActiveDivider(_ dir: PaneFocusDirection, fraction: CGFloat) -> Bool {
+        resizeDivider(from: activeLeaf, dir, fraction: fraction)
+    }
+
+    /// The divider nudge itself, relative to any leaf (id-addressed `resize-pane` names one;
+    /// the active-pane path passes `activeLeaf`). Walks up from `leaf` to the nearest
+    /// ancestor split whose axis matches the direction (horizontal split ↔ left/right,
+    /// vertical split ↔ up/down), then shifts its ratio the same way
+    /// SplitContainer.applyDrag does. Returns false if there's no such split.
+    @discardableResult
+    func resizeDivider(from leaf: PaneNode, _ dir: PaneFocusDirection, fraction: CGFloat) -> Bool {
         let wantHorizontal = (dir == .left || dir == .right)
-        // Find the nearest ancestor split on the matching axis, and whether the active
+        // Find the nearest ancestor split on the matching axis, and whether the reference
         // pane lives in its `first` (left/top) subtree — that decides the ratio sign.
-        var child: PaneNode = activeLeaf
-        var node: PaneNode? = activeLeaf.parent
+        var child: PaneNode = leaf
+        var node: PaneNode? = leaf.parent
         while let parent = node {
             if case .split(let sdir, let first, let second, let ratio) = parent.kind {
                 let axisMatches = (sdir == .horizontal) == wantHorizontal
@@ -422,7 +457,7 @@ final class PaneTreeView: NSView {
                     case .right, .down: delta = fraction
                     case .left, .up:    delta = -fraction
                     }
-                    // If the active pane is the second child, a positive nudge in its own
+                    // If the reference pane is the second child, a positive nudge in its own
                     // direction should grow IT, so flip the sign relative to the first pane.
                     if !inFirst { delta = -delta }
                     let newRatio = min(0.95, max(0.05, ratio + delta))
@@ -464,12 +499,12 @@ final class PaneTreeView: NSView {
 
     /// Cmd+Shift+arrow — swap *positions* with the nearest adjacent pane in the given direction.
     func swapDirectional(_ dir: PaneFocusDirection) {
-        if let target = directionalNeighbor(dir) { swapActive(with: target) }
+        if let target = directionalNeighbor(dir, of: activeLeaf) { swapActive(with: target) }
     }
 
-    /// Find the leaf closest on screen in the `dir` direction relative to the active pane.
+    /// Find the leaf closest on screen in the `dir` direction relative to `reference`.
     /// Uses the leaf wrappers' frames in self's coordinate space. (Shared by focus move/swap.)
-    private func directionalNeighbor(_ dir: PaneFocusDirection) -> PaneNode? {
+    private func directionalNeighbor(_ dir: PaneFocusDirection, of reference: PaneNode) -> PaneNode? {
         var wrappers: [PaneLeafWrapper] = []
         func collect(_ v: NSView) {
             if let w = v as? PaneLeafWrapper { wrappers.append(w) }
@@ -477,7 +512,7 @@ final class PaneTreeView: NSView {
         }
         collect(self)
         guard wrappers.count >= 2,
-              let current = wrappers.first(where: { $0.leaf === activeLeaf })
+              let current = wrappers.first(where: { $0.leaf === reference })
         else { return nil }
 
         let cur = current.convert(current.bounds, to: self)

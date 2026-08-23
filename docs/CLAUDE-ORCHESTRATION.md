@@ -92,7 +92,20 @@ damson-cli spawn [--split-h|--split-v] [--cwd P] [--key K] -- argv...
 damson-cli agents
 damson-cli pane-info --pane <id>
 damson-cli --pane <id> send-text 'hello'
+damson-cli --pane <id> dump-grid
 ```
+
+**Every pane-addressed command honors `--pane`**: `send-text`, `send-key`, `dump-grid`,
+`zoom`, `resize-pane`, `focus-pane`, `close-pane` and `pane-info` all act on the named pane —
+wherever it lives: the current tab, another tab, another window. The named pane substitutes
+for "the active pane" in the command's meaning, so `resize-pane` nudges the divider governing
+*that* pane and `focus-pane` moves focus relative to *it*. Addressing a pane does not focus
+it: `send-text`/`dump-grid` against a background agent leave the user's focus alone.
+
+A target that resolves to no pane is a **typed error** (`not a pane id: …` for a malformed
+id, `no such pane: …` for a closed one) — never a fallback to the active pane. A driver that
+addressed "pane X" must be told X is gone, not have its bytes land in whatever pane happens
+to be focused.
 
 **`--key` is an idempotency token, and it is not belt-and-braces.** `bindControlSocket`'s
 handler hops to the main actor and waits 2s, then reports a timeout to the client *while the

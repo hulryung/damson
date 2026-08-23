@@ -919,6 +919,53 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
                                                          session: activeSession, window: win))
     }
 
+    // MARK: Id-addressed pane commands (`--pane <id>`)
+
+    /// The surface hosting `session`, searching every tab — an id-addressed command may
+    /// target a pane that is not in the current tab.
+    func surfaceView(for session: DamsonSession) -> DamsonSurfaceView? {
+        for tab in tabs {
+            if let surface = tab.tree.surfaceView(for: session) { return surface }
+        }
+        return nil
+    }
+
+    /// id-addressed `focus-pane` — move focus relative to `session`'s pane, in whichever
+    /// tab it lives. A move within a non-current tab updates that tab's active pane
+    /// without switching tabs. false when no tab of this window owns the pane.
+    func focusPane(from session: DamsonSession, _ dir: PaneFocusDirection) -> Bool {
+        for tab in tabs {
+            guard let leaf = tab.tree.leaf(for: session) else { continue }
+            tab.tree.moveFocus(dir, from: leaf)
+            return true
+        }
+        return false
+    }
+
+    /// id-addressed `close-pane`. false when no tab of this window owns the pane.
+    func closePane(for session: DamsonSession) -> Bool {
+        for tab in tabs {
+            guard let leaf = tab.tree.leaf(for: session) else { continue }
+            tab.tree.requestClose(leaf)
+            return true
+        }
+        return false
+    }
+
+    /// id-addressed `resize-pane`. nil when no tab of this window owns the pane; false
+    /// when the pane has no split on the direction's axis.
+    func resizePane(for session: DamsonSession, _ dir: PaneFocusDirection, cells: Int) -> Bool? {
+        guard let win = window else { return nil }
+        for tab in tabs {
+            guard let leaf = tab.tree.leaf(for: session) else { continue }
+            return tab.tree.resizeDivider(
+                from: leaf, dir,
+                fraction: WindowResize.dividerFraction(dir, cells: cells,
+                                                       session: session, window: win))
+        }
+        return nil
+    }
+
     /// damson-cli `list-panes` — panes of the active tab in traversal order.
     func paneList() -> [PaneInfo] {
         guard currentIndex < tabs.count else { return [] }

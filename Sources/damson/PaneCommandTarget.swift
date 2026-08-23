@@ -21,4 +21,21 @@ protocol PaneCommandTarget: AnyObject {
     func paneList() -> [PaneInfo]
     var activeSurfaceView: DamsonSurfaceView? { get }
     var activeSession: DamsonSession? { get }
+
+    // Id-addressed variants (`--pane <id>`): the named pane substitutes for "the active
+    // pane" in the operation, wherever in this controller it lives — the current tab or
+    // another one. Each returns "did this controller own that pane"; the AppDelegate asks
+    // every controller in turn and reports a typed error when none did. Both controller
+    // kinds implement these identically through their PaneTreeView(s), which is what earns
+    // them a place on this seam.
+    /// The surface hosting `session`, when this controller owns it (id-addressed `zoom`).
+    func surfaceView(for session: DamsonSession) -> DamsonSurfaceView?
+    /// Move focus from `session`'s pane toward `dir` (no neighbor = silent no-op, like the
+    /// active-pane path). false when this controller doesn't own the pane.
+    func focusPane(from session: DamsonSession, _ dir: PaneFocusDirection) -> Bool
+    /// Close `session`'s pane. false when this controller doesn't own the pane.
+    func closePane(for session: DamsonSession) -> Bool
+    /// Nudge the divider governing `session`'s pane. nil when this controller doesn't own
+    /// the pane; false when it does but the pane has no split on that axis.
+    func resizePane(for session: DamsonSession, _ dir: PaneFocusDirection, cells: Int) -> Bool?
 }
