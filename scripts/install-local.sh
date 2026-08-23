@@ -71,7 +71,7 @@ rm -rf "$DEST"
 cp -R "$APP" "$DEST"
 xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 
-echo "==> installed: $DEST  (0.1.0 / $HASH)"
+echo "==> installed: $DEST  ($MARKETING_VERSION / $HASH)"
 
 # 4) Launch (can be skipped with NO_LAUNCH).
 if [[ "${NO_LAUNCH:-0}" != "1" ]]; then
