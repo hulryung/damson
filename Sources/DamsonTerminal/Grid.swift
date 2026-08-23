@@ -357,6 +357,27 @@ public final class Grid {
         bumpVersion()
     }
 
+    /// RI (`ESC M`) — Reverse Index: move the cursor UP one line, same column.
+    /// The mirror of `lineFeed`:
+    /// - At the scroll region top (`scrollTop`), scrollDown(1) within the region — the
+    ///   region's bottom line falls off, a blank appears at the top. Never touches
+    ///   scrollback: RI reveals nothing, it inserts blank space.
+    /// - Outside the region, just move the cursor; no-op at the screen edge.
+    ///
+    /// Silently ignoring this is not harmless: a TUI that repaints by walking UP through
+    /// its frame (Antigravity's model picker does) has its cursor left one row low on every
+    /// RI, so each repaint lands a row further down and frames interleave — duplicated
+    /// lines, leftover tails from longer rows underneath.
+    public func reverseIndex() {
+        pendingWrap = false
+        if cursorRow == scrollTop {
+            scrollDown(count: 1)
+        } else if cursorRow > 0 {
+            cursorRow -= 1
+        }
+        bumpVersion()
+    }
+
     /// CR (`\r`): move the cursor to the start of the line.
     public func carriageReturn() {
         pendingWrap = false

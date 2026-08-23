@@ -1005,6 +1005,77 @@ final class GridTests: XCTestCase {
         XCTAssertEqual(g.scrollback.count, 0) // no push when top != 0
     }
 
+    // MARK: - RI / IND / NEL (ESC M / ESC D / ESC E)
+
+    /// RI moves the cursor UP a line. Away from the top margin it is pure movement.
+    func testReverseIndexMovesUpWithoutScrolling() {
+        let g = makeGrid(cols: 4, rows: 5)
+        for (i, s) in ["AA", "BB", "CC", "DD", "EE"].enumerated() {
+            g.setCursor(row: i + 1, col: 1); write(g, s)
+        }
+        g.setCursor(row: 3, col: 2)   // row 2, col 1
+        g.reverseIndex()
+        XCTAssertEqual(g.cursorRow, 1)
+        XCTAssertEqual(g.cursorCol, 1, "RI keeps the column")
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, "A", "nothing scrolled")
+        XCTAssertEqual(g.cell(row: 4, col: 0).char, "E")
+    }
+
+    /// At the top margin RI scrolls the REGION down: a blank line appears at the top and
+    /// the region's bottom line falls off. This is the mirror of LF at the bottom margin.
+    func testReverseIndexAtTopScrollsRegionDown() {
+        let g = makeGrid(cols: 4, rows: 5)
+        for (i, s) in ["AA", "BB", "CC", "DD", "EE"].enumerated() {
+            g.setCursor(row: i + 1, col: 1); write(g, s)
+        }
+        g.setScrollRegion(top: 1, bottom: 3)
+        g.setCursor(row: 2, col: 1)    // row 1 == scrollTop
+        g.reverseIndex()
+        XCTAssertEqual(g.cursorRow, 1, "the cursor stays at the top margin")
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, "A", "outside the region: untouched")
+        XCTAssertEqual(g.cell(row: 1, col: 0).char, " ", "blank inserted at the region top")
+        XCTAssertEqual(g.cell(row: 2, col: 0).char, "B", "shifted down")
+        XCTAssertEqual(g.cell(row: 3, col: 0).char, "C")
+        XCTAssertEqual(g.cell(row: 4, col: 0).char, "E", "outside the region: untouched")
+    }
+
+    /// With no DECSTBM the region is the whole screen, so RI at row 0 scrolls it down.
+    /// It must NOT pull a line back out of scrollback — RI reveals nothing, it inserts blanks.
+    func testReverseIndexAtRow0DoesNotPullFromScrollback() {
+        let g = makeGrid(cols: 4, rows: 3)
+        for s in ["AA", "BB", "CC", "DD", "EE"] { write(g, s); newline(g) }
+        XCTAssertGreaterThan(g.scrollback.count, 0, "precondition: something scrolled off")
+        let before = g.scrollback.count
+        g.setCursor(row: 1, col: 1)
+        g.reverseIndex()
+        XCTAssertEqual(g.cursorRow, 0)
+        XCTAssertEqual(g.scrollback.count, before, "RI must not consume scrollback")
+        XCTAssertEqual(g.cell(row: 0, col: 0).char, " ", "a blank line, not a recovered one")
+    }
+
+    /// RI is the exact inverse of LF for a cursor that is not on a margin.
+    func testReverseIndexInvertsLineFeed() {
+        let g = makeGrid(cols: 4, rows: 6)
+        g.setCursor(row: 3, col: 3)
+        let (r, c) = (g.cursorRow, g.cursorCol)
+        g.lineFeed()
+        g.reverseIndex()
+        XCTAssertEqual(g.cursorRow, r)
+        XCTAssertEqual(g.cursorCol, c, "neither LF nor RI touches the column")
+    }
+
+    /// IND is LF without the carriage return; NEL is both.
+    func testIndexAndNextLineViaESC() {
+        let g = makeGrid(cols: 4, rows: 4)
+        g.setCursor(row: 1, col: 3)
+        g.lineFeed()                       // ESC D routes here
+        XCTAssertEqual(g.cursorRow, 1)
+        XCTAssertEqual(g.cursorCol, 2, "IND keeps the column")
+        g.carriageReturn(); g.lineFeed()   // ESC E routes here
+        XCTAssertEqual(g.cursorRow, 2)
+        XCTAssertEqual(g.cursorCol, 0, "NEL returns to column 1")
+    }
+
     // MARK: - IL / DL (insert/delete lines)
 
     /// The ordinary case: rows below the cursor pull up, the region tail blanks.

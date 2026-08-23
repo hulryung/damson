@@ -727,6 +727,13 @@ extension DamsonSession: VTParserDelegate {
             grid.saveCursor()
         case 0x38: // '8' — DECRC: restore cursor + pen
             grid.restoreCursor()
+        case 0x44: // 'D' — IND: cursor down one line, scrolling at the region bottom.
+            grid.lineFeed()
+        case 0x45: // 'E' — NEL: IND plus a carriage return.
+            grid.carriageReturn()
+            grid.lineFeed()
+        case 0x4D: // 'M' — RI: cursor UP one line, scrolling the region DOWN at the top.
+            grid.reverseIndex()
         case 0x48: // 'H' — HTS: set a horizontal tab stop at the cursor column
             grid.setTabStop()
         case 0x63: // 'c' — RIS: reset the terminal to its power-on state.
