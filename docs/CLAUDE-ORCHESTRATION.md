@@ -362,7 +362,20 @@ survival: `handOffAll` needs a PTY master to pass, and a headless agent has none
 
 ---
 
-## 6. Where the code lives
+## 6. Skills
+
+Two Claude Code skills ship in `.claude/skills/`, so the parts of this document that a future
+session most needs are loaded when they are relevant rather than found afterwards:
+
+| | |
+|---|---|
+| `damson-orchestration` | driving damson: resolving the binaries, the rules that are not optional, and the shape of a run. Symlink it into `~/.claude/skills/` to have it outside this repo — it is most useful while working on *another* project. |
+| `damson-verify` | hand-verifying a change without producing a convincing wrong answer: the quit-dialog modal, `keeper-bin-<gen>`, the inherited session env, the dump-grid/screenshot split. |
+
+Both point at `--help` and at this document rather than repeating flags, so they cannot drift
+from the binary that will actually run.
+
+## 7. Where the code lives
 
 | | |
 |---|---|
