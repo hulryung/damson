@@ -67,12 +67,21 @@ let package = Package(
             dependencies: ["DamsonTerminal"],
             path: "Sources/DamsonAgents"
         ),
+        // Tab-group model, factored out of the app for the same reason as DamsonAgents: the
+        // `damson` target is an executable with top-level code and cannot be `@testable
+        // import`ed. The contiguity invariant and the restore repair path are the parts that
+        // must be tested — a mistake in the latter costs the user every window's layout.
+        .target(
+            name: "DamsonTabGroups",
+            path: "Sources/DamsonTabGroups"
+        ),
         .executableTarget(
             name: "damson",
             dependencies: [
                 "DamsonTerminal",
                 "DamsonControl",
                 "DamsonAgents",
+                "DamsonTabGroups",
                 "CFDPass",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
@@ -103,6 +112,11 @@ let package = Package(
             name: "damson-keeper",
             dependencies: ["DamsonKeeperCore", "DamsonControl"],
             path: "Sources/damson-keeper"
+        ),
+        .testTarget(
+            name: "DamsonTabGroupsTests",
+            dependencies: ["DamsonTabGroups"],
+            path: "Tests/DamsonTabGroupsTests"
         ),
         .testTarget(
             name: "DamsonTerminalTests",

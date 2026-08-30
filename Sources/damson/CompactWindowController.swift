@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import DamsonControl
 import DamsonAgents
+import DamsonTabGroups
 import DamsonTerminal
 
 /// NSWindow that delivers tab-bar clicks immediately. The tab bar lives in the
@@ -81,6 +82,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         case `switch`(fromIndex: Int, towardRight: Bool?)
     }
     private(set) var tabs: [Tab] = []
+    /// Which tab belongs to which group, held parallel to `tabs`. Every mutation of `tabs`
+    /// must be mirrored here at the same index, so the two never drift; `syncGroupLayout()`
+    /// is the backstop that catches a path that forgot.
+    private(set) var groupLayout = TabGroupLayout()
     private(set) var currentIndex: Int = 0
 
     /// Tab cross-slide / create motion and the interactive trackpad swipe.
@@ -203,12 +208,20 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         WindowChrome.applyFromDefaults(to: window)
 
         if let restore = restoring, !restore.tabs.isEmpty {
-            for (i, paneRestore) in restore.tabs.enumerated() {
-                let root = PaneNode.from(restorable: paneRestore, adopt: adopt)
+            // Groups are rebuilt first because restoring them can REORDER the tabs: saved
+            // data whose groups are interleaved gets normalised, and `order` is the
+            // permutation that says how. Adding the tabs in that order is what keeps the
+            // model and the screen from disagreeing about where a group is.
+            let (layout, order) = TabGroupLayout.restore(restore.tabGroups,
+                                                         tabCount: restore.tabs.count)
+            for i in order {
+                let root = PaneNode.from(restorable: restore.tabs[i], adopt: adopt)
                 let title = restore.tabTitles.flatMap { i < $0.count ? $0[i] : nil }
                 addTab(tree: PaneTreeView(restoredRoot: root), customTitle: title)
             }
-            let sel = restore.selectedTab
+            groupLayout = layout
+            // `selectedTab` is an index into the SAVED order, so it moves with everything else.
+            let sel = order.firstIndex(of: restore.selectedTab) ?? restore.selectedTab
             if sel >= 0 && sel < tabs.count { selectTab(sel) }
         } else {
             addNewTab()
@@ -224,7 +237,8 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         RestorableWindow(
             tabs: tabs.map { $0.tree.root.toRestorable(handoff: handoff) },
             selectedTab: currentIndex,
-            tabTitles: tabs.map { $0.customTitle }
+            tabTitles: tabs.map { $0.customTitle },
+            tabGroups: groupLayout.restorable()
         )
     }
 
@@ -486,6 +500,16 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return true
     }
 
+    /// Backstop for the one thing that can go wrong silently: a tab mutation that forgot to
+    /// mirror itself into `groupLayout`. The two arrays are addressed by the same index, so a
+    /// length drift would quietly attribute tabs to the wrong groups. Cheap enough to run on
+    /// every tab-bar refresh — a count comparison — and it repairs rather than traps, because
+    /// a wrong group is a far smaller problem than a crashed window.
+    private func syncGroupLayout() {
+        while groupLayout.tabCount < tabs.count { groupLayout.append(group: nil) }
+        while groupLayout.tabCount > tabs.count { groupLayout.remove(at: groupLayout.tabCount - 1) }
+    }
+
     /// The label pinned on the tab holding `session`, if this window holds it at all.
     func tabTitle(containing session: DamsonSession) -> String? {
         tabs.first { tab in
@@ -540,6 +564,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             titleSub = AnyCancellable {}
         }
         tabs.append(Tab(tree: tree, titleSub: titleSub, customTitle: customTitle))
+        groupLayout.append(group: nil)
         selectTab(tabs.count - 1, transition: transition)
         refreshTabBar()
     }
@@ -761,6 +786,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         }
         let moved = tabs.remove(at: from)
         tabs.insert(moved, at: to)
+        groupLayout.move(from: from, to: to)
         // Keep currentIndex pointing at the same tab after the shuffle.
         if currentIndex == from {
             currentIndex = to
@@ -809,6 +835,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         // real view here doesn't affect the fade-out.
         closingTree.removeFromSuperview()
         tabs.remove(at: index)
+        groupLayout.remove(at: index)
 
         if tabs.isEmpty {
             // The last tab was closed — close the window (out of scope here). Thanks to the
@@ -1065,6 +1092,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     }
 
     private func refreshTabBar() {
+        syncGroupLayout()
         let titles = tabs.map { displayTitle($0) }
         tabBar.update(titles: titles, selectedIndex: currentIndex)
         // The traffic lights share this row, and a title change is one of the things that

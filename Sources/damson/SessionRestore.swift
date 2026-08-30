@@ -1,5 +1,6 @@
 import AppKit
 import DamsonAgents
+import DamsonTabGroups
 import DamsonTerminal
 
 /// Session-state restoration — on quit, serializes the window/tab/pane layout plus each
@@ -37,6 +38,11 @@ struct RestorableWindow: Codable {
     /// Per-tab custom titles (double-click rename). Same order and length as `tabs`. Optional
     /// so older saved data that lacked this field still decodes (all restored with auto titles).
     var tabTitles: [String?]?
+    /// Tab groups and which tab is in which. Optional, and left out entirely when the window
+    /// has no groups, so an ordinary window's blob is byte-identical to what shipped before
+    /// groups existed. Same reason as every optional above: `load()` is one `try?` over the
+    /// whole state, so a required field would cost every window's layout on a downgrade.
+    var tabGroups: RestorableTabGroups?
 }
 
 /// The full restoration state.
