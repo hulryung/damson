@@ -123,7 +123,8 @@ final class CrewController {
     private var didSeeAgents = false
 
     /// The Claude Code release whose session-record format and status vocabulary
-    /// (`busy` / `shell` / `idle` / `waiting`) this integration was written and verified
-    /// against. Purely informational — see `AgentBadge` for the fail-quiet behaviour.
-    private static let knownGoodVersion = "2.1.228"
+    /// (`busy` / `shell` / `idle` / `waiting`) this integration was last verified against.
+    /// Written against 2.1.228; re-checked against 2.1.251 with the vocabulary unchanged.
+    /// Purely informational — see `AgentBadge` for the fail-quiet behaviour.
+    private static let knownGoodVersion = "2.1.251"
 }

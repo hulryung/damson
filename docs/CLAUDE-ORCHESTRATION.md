@@ -36,7 +36,8 @@ is a job of that shell).
 ### Status vocabulary
 
 `busy` · `shell` · `idle` · `waiting`, plus an optional free-form `waitingFor` string.
-Read out of Claude Code 2.1.228 itself, not from documentation.
+Read out of Claude Code itself, not from documentation — 2.1.228 originally, re-checked
+against 2.1.251 with no change.
 
 `AgentBadge` is the **only** place this vocabulary is written down, and the mapping is
 closed: an unrecognized status yields **no badge**. That direction is deliberate — a stale
@@ -301,6 +302,37 @@ env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID open -n dist/Damson.a
 ## 5. Do not build
 
 Each of these looks like the obvious next step and is a trap.
+
+**A completion signal for a pane.** There isn't one, and this is structural rather than a
+gap someone might close. Measured against Claude Code **2.1.251**, `claude agents --json
+--all` returns two shapes from the same command:
+
+| `kind` | keyed by | field | values seen |
+|---|---|---|---|
+| `interactive` | `pid` | `status` | `busy` · `idle` (· `shell` · `waiting`) |
+| `background` | `id` | `state` | **`done` · `failed`** |
+
+A terminal state exists **only for `kind: background`**, and those rows carry **no pid at
+all**. damson's whole mechanism is the pid join — `tcgetpgrp` on the pane's tty, then
+`~/.claude/sessions/<pid>.json` — so a background session, which has no pane and no pid, is
+unreachable from here by construction. And the sessions that *are* in panes never carry a
+terminal state in the first place: it is not that `idle` is ambiguous, it is that no field
+ever says finished.
+
+So the fork is real and it is a product decision, not an engineering one: **a visible tab a
+human can take over, or a completion signal.** Claude Code does not offer both for the same
+session. A coordinator that wants completion can dispatch `claude --bg` and poll `claude
+agents --json --all` for `state` — but that work is not in a terminal, which is the entire
+reason for running it in damson.
+
+Two smaller findings from the same look, recorded so they are not rediscovered as if new:
+
+- **`statusUpdatedAt`** is in the session record. It does not resolve what `idle` conflates,
+  but "idle and unchanged for 40 minutes" is real information a cockpit could show.
+- **`messagingSocketPath`, `peerProtocol: 1`, `peerFeatures: ["notify_idle", …]`** are in the
+  record too: there is a private inter-session IPC, and it is versioned. Do not build on it.
+  It is undocumented, and this repo already carries the scar of depending on Claude Code's
+  internals — see the screen-scraping entry below.
 
 **A scheduler that dequeues on `status: "idle"`.** `idle` conflates *task finished*, *asked a
 clarifying question and is waiting on you*, and *spawned but never prompted* — live

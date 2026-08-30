@@ -26,10 +26,12 @@ public struct CrewError: Error, Equatable, CustomStringConvertible {
 
 /// Opens one tab per task and reports what happened to each.
 ///
-/// This is fan-out, not a queue. damson cannot tell the coordinator that a task finished:
-/// `status: "idle"` conflates *finished*, *asked you a question*, and *never prompted*, so
-/// anything that dequeued on it would start the next task while an agent sat blocked on
-/// "which auth flow did you mean?". See docs/CLAUDE-ORCHESTRATION.md §5.
+/// This is fan-out, not a queue, and that is structural rather than unfinished work.
+/// Measured against Claude Code 2.1.251: a terminal state (`done` / `failed`) exists only
+/// for `kind: background` sessions, which carry no pid and therefore have no pane — while
+/// the `kind: interactive` sessions that DO live in panes never carry one at all. So a
+/// visible tab a human can take over and a completion signal are alternatives, not a pair.
+/// See docs/CLAUDE-ORCHESTRATION.md §5.
 public struct Coordinator {
     public struct Outcome: Equatable {
         public let task: String
