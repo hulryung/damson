@@ -24,9 +24,18 @@ final class ControlSocketServer {
     private var socketPath: String = ""
     private var thread: Thread?
     private var stopped = false
+    /// Accepted connections still being served. A one-shot exchange removes itself in
+    /// milliseconds; a subscription stays until the client leaves — so `stop()` has to be
+    /// able to close them, or shutdown would block on a listener that never hangs up.
+    private var liveConnections: Set<Int32> = []
 
     /// handler: command → response. Called on a worker thread.
     typealias Handler = (ControlCommand) -> ControlResponse
+
+    /// Streaming hook for `watch-agents`: writes lines to `fd` until the client leaves.
+    /// Installed by the app; a nil hook makes the command an ordinary error rather than a
+    /// hang, so a client always gets an answer.
+    var streamHandler: ((Int32) -> Void)?
 
     /// Throws on failure. socketPath has the form `damsonRuntimeDir()/{pid}.sock`.
     @discardableResult
@@ -80,6 +89,13 @@ final class ControlSocketServer {
             shutdown(fd, SHUT_RDWR)
             close(fd)
         }
+        // Shut down in-flight connections too: a subscriber is blocked in write/poll and
+        // would otherwise keep its thread (and the app's teardown) waiting indefinitely.
+        stateLock.lock()
+        let live = liveConnections
+        liveConnections.removeAll()
+        stateLock.unlock()
+        for c in live { shutdown(c, SHUT_RDWR) }
         if !socketPath.isEmpty {
             unlink(socketPath)
         }
@@ -138,7 +154,26 @@ final class ControlSocketServer {
                 Thread.sleep(forTimeInterval: 0.01)
                 continue
             }
-            handleConnection(fd: conn, handler: handler)
+            // One thread per connection. Serving inline used to be fine when every
+            // exchange was one line in, one line out — but a subscription (`watch-agents`)
+            // holds its connection open for as long as the client cares to listen, and
+            // inline that would wedge the accept loop: no other damson-cli command could
+            // be served for the lifetime of the watcher. A blocking-forever connection is
+            // also why this is a Thread rather than a concurrent DispatchQueue, which such
+            // a connection would occupy a worker of indefinitely.
+            let c = conn
+            stateLock.lock()
+            liveConnections.insert(c)
+            stateLock.unlock()
+            let t = Thread { [weak self] in
+                guard let self else { close(c); return }
+                self.handleConnection(fd: c, handler: handler)
+                self.stateLock.lock()
+                self.liveConnections.remove(c)
+                self.stateLock.unlock()
+            }
+            t.name = "damson.control.conn"
+            t.start()
         }
     }
 
@@ -174,6 +209,18 @@ final class ControlSocketServer {
         let resp: ControlResponse
         do {
             let cmd = try JSONDecoder().decode(ControlCommand.self, from: payload)
+            // A subscription is not a request/response: hand the connection to the stream
+            // hook, which owns it until the client disconnects. The read timeout set above
+            // would otherwise cut a quiet watcher off after 5s, so clear it first.
+            if case .watchAgents = cmd.kind, let stream = streamHandler {
+                var none = timeval(tv_sec: 0, tv_usec: 0)
+                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &none,
+                           socklen_t(MemoryLayout.size(ofValue: none)))
+                setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &none,
+                           socklen_t(MemoryLayout.size(ofValue: none)))
+                stream(fd)
+                return
+            }
             resp = handler(cmd)
         } catch {
             resp = .err("parse error: \(error)")
