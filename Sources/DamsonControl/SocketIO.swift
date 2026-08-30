@@ -186,6 +186,60 @@ public func bindOrConnectUnix(fd: Int32, path: String, listen doListen: Bool) ->
 ///
 /// Unbuffered per line on purpose: the point of a subscription is timeliness, and a consumer
 /// reading with `while read` should see an event when it happens, not when a block fills.
+/// Subscribe and hand each NDJSON line to `onLine` until the server closes.
+///
+/// Separate from the stdout version so a library consumer — the coordinator — can read the
+/// same stream without the bytes going to a terminal. `onLine` runs on the reading thread
+/// and must be quick: damson gives each subscriber a bounded mailbox and DROPS a reader that
+/// falls behind rather than growing its own memory, so slow work here costs the subscription.
+public func streamCommand(socketPath: String, commandJSON: String,
+                          onOpen: () -> Void = {},
+                          onLine: (String) -> Void) -> Result<Void, SocketIOError> {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { return .failure(.connect("socket() failed: errno=\(errno)")) }
+    defer { close(fd) }
+    if let err = bindOrConnectUnix(fd: fd, path: socketPath, listen: false) {
+        return .failure(.connect(err))
+    }
+    disableSIGPIPE(fd)
+    var payload = Data(commandJSON.utf8)
+    payload.append(0x0A)
+    let wrote = payload.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+        guard let base = raw.baseAddress else { return false }
+        var sent = 0
+        while sent < raw.count {
+            let n = write(fd, base.advanced(by: sent), raw.count - sent)
+            if n < 0 { if errno == EINTR { continue }; return false }
+            if n == 0 { return false }
+            sent += n
+        }
+        return true
+    }
+    guard wrote else { return .failure(.write("errno=\(errno)")) }
+    // The subscription is live: what follows is the server's snapshot of the present.
+    onOpen()
+
+    var pending = Data()
+    var buf = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let n = buf.withUnsafeMutableBufferPointer { read(fd, $0.baseAddress, $0.count) }
+        if n > 0 {
+            pending.append(contentsOf: buf[0..<n])
+            // A read can split a line and can carry several; only whole lines are handed on.
+            while let nl = pending.firstIndex(of: 0x0A) {
+                let line = pending[pending.startIndex..<nl]
+                pending = pending[(nl + 1)...]
+                if !line.isEmpty { onLine(String(decoding: line, as: UTF8.self)) }
+            }
+        } else if n == 0 {
+            return .success(())          // server closed
+        } else {
+            if errno == EINTR { continue }
+            return .failure(.read("errno=\(errno)"))
+        }
+    }
+}
+
 public func streamCommand(socketPath: String, commandJSON: String) -> Result<Void, SocketIOError> {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { return .failure(.connect("socket() failed: errno=\(errno)")) }
