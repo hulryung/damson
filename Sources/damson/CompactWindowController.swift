@@ -684,6 +684,13 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         while groupLayout.tabCount > tabs.count { groupLayout.remove(at: groupLayout.tabCount - 1) }
     }
 
+    /// Which tab holds `session`, if this window holds it at all.
+    func tabIndex(containing session: DamsonSession) -> Int? {
+        tabs.firstIndex { tab in
+            tab.tree.root.leaves().contains { $0.session === session }
+        }
+    }
+
     /// The label pinned on the tab holding `session`, if this window holds it at all.
     func tabTitle(containing session: DamsonSession) -> String? {
         tabs.first { tab in

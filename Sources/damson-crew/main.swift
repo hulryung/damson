@@ -13,7 +13,7 @@ damson-crew — open a tab per task in a running damson.
 
 Usage:
   damson-crew run   --tasks FILE [--group NAME] [--pid PID] [--command CMD]
-  damson-crew watch [--tasks FILE] [--pid PID]
+  damson-crew watch [--tasks FILE] [--pid PID] [--notify] [--focus]
 
 Options:
   --tasks FILE     JSON array of tasks. "-" reads stdin. Each entry:
@@ -25,6 +25,9 @@ Options:
   --pid PID        Target a specific damson instance (default: most recent).
   --command CMD    Agent to run. Default: claude.
   -h, --help
+
+  --notify         Post a macOS notification when an agent is blocked on you.
+  --focus          Also bring that agent's tab forward.
 
 `watch` subscribes to damson and prints a line whenever an agent needs you.
 It waits rather than polls: the stream is edge-triggered, so an idle machine
@@ -59,6 +62,8 @@ var tasksPath: String?
 var group: String?
 var pid: Int?
 var command: [String] = ["claude"]
+var notify = false
+var focus = false
 
 var i = 0
 while i < args.count {
@@ -75,6 +80,10 @@ while i < args.count {
     case "--command":
         i += 1; guard i < args.count else { die("--command requires a command") }
         command = [args[i]]; i += 1
+    case "--notify":
+        notify = true; i += 1
+    case "--focus":
+        focus = true; i += 1
     case "-h", "--help":
         print(usage); exit(0)
     default:
@@ -133,6 +142,8 @@ case "watch":
         for (task, pane) in Coordinator(client: client).reattach(list.tasks) { byPane[pane] = task }
     }
 
+    let notifier = SystemNotifier()
+    let focuser = PaneFocuser(client: client)
     let watcher = AgentWatcher(
         stream: AgentWatcher.socketStream {
             // Re-resolved per attempt: damson's socket path carries its pid, so a restart
@@ -145,6 +156,14 @@ case "watch":
         taskFor: { byPane[$0] },
         onChange: { change, _ in
             let stamp = ISO8601DateFormatter().string(from: Date())
+            // Only `waiting` is ever escalated — see Escalation for why nothing else is.
+            if let alert = change.escalation {
+                if notify { notifier.deliver(alert) }
+                if focus, let why = focuser.reveal(paneID: alert.paneID) {
+                    FileHandle.standardError.write(
+                        Data("\(stamp)\tcould not focus \(alert.subject): \(why)\n".utf8))
+                }
+            }
             switch change {
             case .needsAttention(let a):
                 let who = a.task ?? a.paneID

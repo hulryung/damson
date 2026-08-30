@@ -607,8 +607,27 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch resolvePane(target) {
         case .failure(let resp): return resp
         case .session(let session):
-            return .pane(paneInfo(for: session, id: PaneRegistry.shared.id(for: session)))
+            // The tab index matters here as much as in `list-agents`: it is how a driver
+            // brings a pane it is holding an id for into view, and without it a coordinator
+            // can tell the user which agent is blocked but not take them to it.
+            let (tab, active) = placement(of: session)
+            return .pane(paneInfo(for: session, id: PaneRegistry.shared.id(for: session),
+                                  tab: tab, active: active))
         }
+    }
+
+    /// Which tab a pane is in, and whether it is the focused one. `pane-info` reported
+    /// neither: it defaulted `active` to false, so the focused pane described itself as not
+    /// focused, and omitted `tab` entirely — which left a driver holding an id with no way
+    /// to bring that pane into view.
+    @MainActor
+    private func placement(of session: DamsonSession) -> (tab: Int?, active: Bool) {
+        for controller in compactControllers {
+            if let index = controller.tabIndex(containing: session) {
+                return (index, session === controller.activeSession)
+            }
+        }
+        return (nil, false)
     }
 
     /// Label the tab holding the addressed pane. An empty title clears the label and hands
