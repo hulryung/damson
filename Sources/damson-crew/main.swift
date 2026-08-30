@@ -13,7 +13,9 @@ damson-crew — open a tab per task in a running damson.
 
 Usage:
   damson-crew run   --tasks FILE [--group NAME] [--pid PID] [--command CMD]
-  damson-crew watch [--tasks FILE] [--pid PID] [--notify] [--focus]
+  damson-crew watch  [--tasks FILE] [--pid PID] [--notify] [--focus]
+  damson-crew status --tasks FILE [--group NAME] [--pid PID]
+  damson-crew close  --group NAME [--pid PID] [--yes]
 
 Options:
   --tasks FILE     JSON array of tasks. "-" reads stdin. Each entry:
@@ -28,6 +30,12 @@ Options:
 
   --notify         Post a macOS notification when an agent is blocked on you.
   --focus          Also bring that agent's tab forward.
+  --yes            Required by `close`, which shuts several tabs and the
+                   programs inside them.
+
+`run` is safe to repeat: every spawn carries the task name as its key, so a
+second run reattaches to the tabs it already opened. `status` says which
+tasks have tabs and which are blocked on you.
 
 `watch` subscribes to damson and prints a line whenever an agent needs you.
 It waits rather than polls: the stream is edge-triggered, so an idle machine
@@ -64,6 +72,7 @@ var pid: Int?
 var command: [String] = ["claude"]
 var notify = false
 var focus = false
+var confirmed = false
 
 var i = 0
 while i < args.count {
@@ -84,6 +93,8 @@ while i < args.count {
         notify = true; i += 1
     case "--focus":
         focus = true; i += 1
+    case "--yes":
+        confirmed = true; i += 1
     case "-h", "--help":
         print(usage); exit(0)
     default:
@@ -91,7 +102,7 @@ while i < args.count {
     }
 }
 
-guard ["run", "watch"].contains(sub) else { die("unknown command: \(sub)") }
+guard ["run", "watch", "status", "close"].contains(sub) else { die("unknown command: \(sub)") }
 
 func readTasks(_ path: String) -> TaskList {
     let data: Data
@@ -115,21 +126,44 @@ switch sub {
 case "run":
     guard let tasksPath else { die("run requires --tasks") }
     let list = readTasks(tasksPath)
-    let outcomes = Coordinator(client: client, defaultCommand: command)
-        .fanOut(list.tasks, group: group)
+    // Reattach to what is already on screen and open only the rest.
+    //
+    // `--key` alone is NOT enough here. damson keeps its key→pane table in memory, so it
+    // does not survive damson restarting — and a coordinator's whole reason to re-run a
+    // list is that something restarted. Without this the second run opens a duplicate of
+    // every task, measured: a three-task group came back with six tabs.
+    let manager = RunManager(client: client)
+    let existing: [String: String]
+    switch manager.status(of: list.tasks, group: group) {
+    case .success(let status):
+        existing = Dictionary(uniqueKeysWithValues:
+            status.rows.compactMap { row in row.paneID.map { (row.task, $0) } })
+    case .failure:
+        existing = [:]      // cannot see the screen: open everything, `--key` still helps
+    }
+    let needed = list.tasks.filter { existing[$0.name] == nil }
+    if !existing.isEmpty {
+        FileHandle.standardError.write(
+            Data("reattached to \(existing.count) tab(s), starting \(needed.count)\n".utf8))
+    }
 
-    for outcome in outcomes {
-        if let id = outcome.paneID {
-            print("\(outcome.task)\t\(id)")
+    let outcomes = Coordinator(client: client, defaultCommand: command)
+        .fanOut(needed, group: group)
+    var byTask = existing
+    for outcome in outcomes where outcome.paneID != nil { byTask[outcome.task] = outcome.paneID }
+
+    for task in list.tasks {
+        if let id = byTask[task.name] {
+            print("\(task.name)\t\(id)")
         } else {
-            FileHandle.standardError.write(
-                Data("\(outcome.task)\tFAILED: \(outcome.error ?? "?")\n".utf8))
+            let why = outcomes.first { $0.task == task.name }?.error ?? "?"
+            FileHandle.standardError.write(Data("\(task.name)\tFAILED: \(why)\n".utf8))
         }
     }
-    let failed = outcomes.filter { !$0.opened }.count
+    let failed = list.tasks.count - byTask.count
     if failed > 0 {
         FileHandle.standardError.write(
-            Data("\(failed) of \(outcomes.count) task(s) did not start\n".utf8))
+            Data("\(failed) of \(list.tasks.count) task(s) did not start\n".utf8))
         exit(1)
     }
 
@@ -178,6 +212,33 @@ case "watch":
             fflush(stdout)
         })
     watcher.run()
+
+case "status":
+    guard let tasksPath else { die("status requires --tasks") }
+    let list = readTasks(tasksPath)
+    switch RunManager(client: client).status(of: list.tasks, group: group) {
+    case .failure(let e): die("damson-crew: \(e.message)")
+    case .success(let status):
+        for row in status.rows {
+            let where_ = row.paneID ?? "-"
+            print("\(row.task)\t\(where_)\t\(row.agent ?? "-")")
+        }
+        // Non-zero when something is blocked, so a shell script can act on it.
+        if !status.waiting.isEmpty { exit(1) }
+    }
+
+case "close":
+    guard let group else { die("close requires --group") }
+    // Destructive: several tabs and the programs inside them. Making it the natural
+    // consequence of a typo is exactly what a coordinator must not do.
+    guard confirmed else {
+        die("close would shut every tab in group '\(group)' and the programs in them. " +
+            "Re-run with --yes if that is what you want.")
+    }
+    switch RunManager(client: client).close(group: group) {
+    case .failure(let e): die("damson-crew: \(e.message)", code: 1)
+    case .success:        print("closed \(group)")
+    }
 
 default:
     die("unknown command: \(sub)")
