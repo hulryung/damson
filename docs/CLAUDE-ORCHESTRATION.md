@@ -80,7 +80,7 @@ cannot cover this — the collision exists from the instant the address is reuse
 ### Wire surface
 
 `DamsonControl` is a public library product that damson-ide links, so orchestration was added
-as **new** command kinds — `spawn-pane`, `list-agents`, `pane-info` — plus an optional
+as **new** command kinds — `spawn-pane`, `list-agents`, `pane-info`, `watch-agents` — plus an optional
 `"pane"` key on the envelope. Nothing existing was widened: adding an associated value to a
 case is source-breaking at every construction site. `PaneInfo`/`ControlResponse` only gained
 defaulted optionals, encoded with `encodeIfPresent`, so an ordinary pane's row is still the
@@ -93,6 +93,7 @@ damson-cli agents
 damson-cli pane-info --pane <id>
 damson-cli --pane <id> send-text 'hello'
 damson-cli --pane <id> dump-grid
+damson-cli watch-agents
 ```
 
 **Every pane-addressed command honors `--pane`**: `send-text`, `send-key`, `dump-grid`,
@@ -112,6 +113,49 @@ handler hops to the main actor and waits 2s, then reports a timeout to the clien
 queued work still runs to completion*. A spawn that overruns — easy behind a tab-creation
 animation — answers "failed" for a pane that did open, and a client that retries would mint a
 second agent. With a key, the retry is answered with the first pane's id.
+
+### Waiting instead of polling
+
+`watch-agents` is the one command that is not request/response: it keeps its connection open
+and writes one NDJSON line per change until the client disconnects.
+
+```json
+{"event":"appeared","pane":"4E76A4A5-…","pid":16962,"status":"idle","cwd":"/private/tmp"}
+{"event":"changed","pane":"4E76A4A5-…","previousStatus":"idle","status":"busy","cwd":"/private/tmp"}
+{"event":"vanished","pane":"4E76A4A5-…","pid":16962,"previousStatus":"idle"}
+```
+
+A subscriber receives a snapshot of what is already running before any live change, so a
+coordinator connecting mid-run starts from the present rather than from whatever happens
+next. The stream exists because polling `list-agents` is correct but both wasteful and late:
+it asks far more often than anything changes and still learns about a blocked agent up to a
+sweep after it blocked — and `waiting` is precisely the state a human is being held up by.
+
+Three properties a driver can rely on:
+
+- **Edge-triggered.** An unchanged sweep emits nothing, so an idle machine produces no
+  traffic and an inbox measures activity rather than elapsed time.
+- **`waitingFor` is part of the state.** An agent moving from one question to another is
+  `waiting` both times; the thing it is blocked on changed, so the change is reported.
+- **A new process in an old pane is `vanished` + `appeared`, never `changed`.** Reporting a
+  different pid as a status change would let a driver carry conclusions about one
+  conversation into an unrelated one.
+
+A `heartbeat` line every 20s keeps the connection honest: writes are the only liveness signal
+available, so a client that went away is discovered by the write failing rather than leaving
+a server thread parked for the life of the app. Subscribers have bounded per-connection
+mailboxes — a reader that stops reading is dropped rather than allowed to grow damson's
+memory on its behalf.
+
+**This is the substrate, not a scheduler.** damson reports what changed; deciding what to do
+about it — dispatching the next task, holding a gate, escalating — stays in the cockpit. See
+the boundary test at the top of this document.
+
+> Serving a subscription required making the control socket concurrent: `handleConnection`
+> used to run inline in the accept loop, which was harmless while every exchange was one line
+> in and one line out, and would have wedged every other client for a watcher's lifetime.
+> One thread per connection, because a connection that blocks indefinitely would occupy a
+> pool worker indefinitely.
 
 ### Splitting changes the active pane
 
