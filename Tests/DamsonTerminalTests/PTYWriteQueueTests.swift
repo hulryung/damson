@@ -30,7 +30,10 @@ final class PTYWriteQueueTests: XCTestCase {
             env: ["TERM": "xterm-256color", "PATH": "/usr/bin:/bin"],
             cwd: nil, cols: 80, rows: 24
         )
-        pump(until: ready, timeout: 10)
+        // Generous: under full-suite load a fork+exec+stty can take far longer than it
+        // does in isolation, and a timeout here is a flaky failure in every test that
+        // uses this fixture rather than a real defect.
+        pump(until: ready, timeout: 30)
     }
 
     /// The regression test for the app-wide beachball: a raw-mode child that never reads
@@ -66,6 +69,10 @@ final class PTYWriteQueueTests: XCTestCase {
         }
         try spawnRawChild(pty, command: "cat", ready: { sawReady })
         defer { pty.terminate() }
+        // Assert readiness rather than assuming it: if the child hasn't reached raw mode the
+        // tty is still canonical, which truncates the write at MAX_CANON and would surface
+        // as a baffling byte-count mismatch rather than "the fixture wasn't ready".
+        XCTAssertTrue(sawReady, "child never reached raw mode")
         received.removeAll()
 
         // A position-dependent pattern several times the tty input queue, so a dropped or
@@ -93,6 +100,7 @@ final class PTYWriteQueueTests: XCTestCase {
         }
         try spawnRawChild(pty, command: "cat", ready: { sawReady })
         defer { pty.terminate() }
+        XCTAssertTrue(sawReady, "child never reached raw mode")
         received.removeAll()
 
         let big = Data(repeating: 0x58, count: 16_000)      // "X" * 16000
