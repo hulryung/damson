@@ -500,6 +500,92 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return true
     }
 
+    // MARK: - Tab groups
+    //
+    // Addressed by NAME from outside: a coordinator names a run and never sees the UUID.
+    // Names are not unique, so every lookup resolves to the first group on screen.
+
+    /// Put the tab holding `session` into a group, creating the group if this window has
+    /// none by that name. Returns false when the session is in no tab here.
+    ///
+    /// Joining relocates the tab next to the group's other tabs — the contiguity invariant
+    /// is what collapsing and moving a group both rest on — so `tabs` is reordered to match
+    /// the index the layout picks.
+    @discardableResult
+    func joinGroup(containing session: DamsonSession, named name: String) -> Bool {
+        guard let idx = tabs.firstIndex(where: { tab in
+            tab.tree.root.leaves().contains { $0.session === session }
+        }) else { return false }
+        syncGroupLayout()
+        let id: UUID
+        if let existing = groupLayout.group(named: name) {
+            id = existing.id
+        } else {
+            let fresh = TabGroup(name: name)
+            groupLayout.define(fresh)
+            id = fresh.id
+        }
+        let dest = groupLayout.assign(at: idx, to: id)
+        if dest != idx {
+            let moved = tabs.remove(at: idx)
+            tabs.insert(moved, at: dest)
+            if currentIndex == idx { currentIndex = dest }
+            else if idx < currentIndex && dest >= currentIndex { currentIndex -= 1 }
+            else if idx > currentIndex && dest <= currentIndex { currentIndex += 1 }
+        }
+        refreshTabBar()
+        return true
+    }
+
+    /// Every group in this window, in the order they appear.
+    func groupRows() -> [GroupInfo] {
+        syncGroupLayout()
+        return groupLayout.orderedGroups().map { g in
+            GroupInfo(name: g.name, tabs: groupLayout.range(of: g.id)?.count ?? 0,
+                      collapsed: g.collapsed, colorIndex: g.colorIndex)
+        }
+    }
+
+    /// The name of the group holding `session`'s tab, if any.
+    func groupName(containing session: DamsonSession) -> String? {
+        guard let idx = tabs.firstIndex(where: { tab in
+            tab.tree.root.leaves().contains { $0.session === session }
+        }) else { return nil }
+        return groupLayout.group(at: idx)?.name
+    }
+
+    /// Close every tab in a group. Returns the number closed, or nil when this window has no
+    /// group by that name — the caller needs that distinction to report a typed error rather
+    /// than a silent no-op on a destructive command.
+    func closeGroup(named name: String) -> Int? {
+        syncGroupLayout()
+        guard let group = groupLayout.group(named: name),
+              let range = groupLayout.range(of: group.id) else { return nil }
+        // Back to front: closing a tab shifts every index after it.
+        for index in range.reversed() { closeTab(index) }
+        return range.count
+    }
+
+    /// Set a group's collapsed flag. Returns false when there is no such group here.
+    func setGroupCollapsed(named name: String, _ collapsed: Bool) -> Bool {
+        syncGroupLayout()
+        guard var group = groupLayout.group(named: name) else { return false }
+        group.collapsed = collapsed
+        groupLayout.update(group)
+        refreshTabBar()
+        return true
+    }
+
+    /// Rename a group. Returns false when there is no such group here.
+    func renameGroup(named name: String, to newName: String) -> Bool {
+        syncGroupLayout()
+        guard var group = groupLayout.group(named: name) else { return false }
+        group.name = newName
+        groupLayout.update(group)
+        refreshTabBar()
+        return true
+    }
+
     /// Backstop for the one thing that can go wrong silently: a tab mutation that forgot to
     /// mirror itself into `groupLayout`. The two arrays are addressed by the same index, so a
     /// length drift would quietly attribute tabs to the wrong groups. Cheap enough to run on

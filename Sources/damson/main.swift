@@ -441,6 +441,10 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .listAgents:                       return controlListAgents()
         case .paneInfo:                         return controlPaneInfo(cmd.target)
         case .setTitle(let title):              return controlSetTitle(title, cmd.target)
+        case .listGroups:                       return controlListGroups()
+        case .closeGroup(let name):             return controlCloseGroup(name)
+        case .setGroupCollapsed(let n, let c):  return controlSetGroupCollapsed(n, c)
+        case .renameGroup(let n, let to):       return controlRenameGroup(n, to: to)
         case .watchAgents:
             // Never reached: the socket server intercepts this before dispatch, because it
             // is a stream rather than a request/response. Handled here only so the switch
@@ -537,6 +541,9 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Label before answering: a coordinator opening several agents in a loop would
         // otherwise show a row of identically-named tabs until each follow-up call lands.
         if let title = spec.title { _ = window.setTabTitle(containing: session, to: title) }
+        // Grouping can move the tab, so it must happen before the id is reported — the
+        // caller's next command may address this pane immediately.
+        if let group = spec.group { window.joinGroup(containing: session, named: group) }
         let id = PaneRegistry.shared.id(for: session)
         if let key = spec.key { spawnedByKey[key] = id }
         return .pane(paneInfo(for: session, id: id))
@@ -623,6 +630,52 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // MARK: Tab groups
+
+    @MainActor
+    private func controlListGroups() -> ControlResponse {
+        .groups(compactControllers.flatMap { $0.groupRows() })
+    }
+
+    /// Close a whole group. Destructive — several tabs and the processes inside them — so a
+    /// name that matches nothing is a typed error, never a quiet success. A coordinator
+    /// mistyping a run name must not be told the run was cleaned up.
+    @MainActor
+    private func controlCloseGroup(_ name: String) -> ControlResponse {
+        for controller in compactControllers {
+            if let closed = controller.closeGroup(named: name) {
+                return closed > 0 ? .ok() : .err("group '\(name)' has no tabs")
+            }
+        }
+        return .err("no such group: \(name)")
+    }
+
+    @MainActor
+    private func controlSetGroupCollapsed(_ name: String, _ collapsed: Bool) -> ControlResponse {
+        for controller in compactControllers where controller.setGroupCollapsed(named: name, collapsed) {
+            return .ok()
+        }
+        return .err("no such group: \(name)")
+    }
+
+    @MainActor
+    private func controlRenameGroup(_ name: String, to newName: String) -> ControlResponse {
+        for controller in compactControllers where controller.renameGroup(named: name, to: newName) {
+            return .ok()
+        }
+        return .err("no such group: \(name)")
+    }
+
+    /// The group holding a pane's tab, for `agents` / `pane-info`. A coordinator joins its
+    /// task list against these rows, so a group it just created has to be readable back.
+    @MainActor
+    private func groupName(for session: DamsonSession) -> String? {
+        for controller in compactControllers {
+            if let name = controller.groupName(containing: session) { return name }
+        }
+        return nil
+    }
+
     /// What the user actually reads on the tab: a pinned label if one is set, otherwise the
     /// program's own title. A coordinator maps its tasks onto tabs by this field, so
     /// reporting the raw OSC title would hide the very label it just set.
@@ -644,7 +697,8 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                  pid: session.foregroundProcessID,
                  cwd: session.currentDirectory ?? session.currentWorkingDirectory,
                  title: effectiveTitle(for: session),
-                 agent: crew?.badge(for: session)?.rawValue)
+                 agent: crew?.badge(for: session)?.rawValue,
+                 group: groupName(for: session))
     }
 
     // MARK: Tab / window control

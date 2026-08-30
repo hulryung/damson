@@ -61,6 +61,12 @@ public enum ControlCommandKind: Equatable, Sendable {
     /// Pin a label on a pane's tab, or clear it with the empty string. The label wins over
     /// the child's own OSC titles, which shells rewrite on every prompt.
     case setTitle(String)
+    /// Every tab group in every window.
+    case listGroups
+    /// Close every tab in a group. Destructive — see the note on `GroupInfo`.
+    case closeGroup(String)
+    case setGroupCollapsed(String, Bool)
+    case renameGroup(String, to: String)
 }
 
 /// Where a command should land. Absent on the wire means `.active`, so every existing
@@ -89,14 +95,19 @@ public struct SpawnSpec: Equatable, Sendable, Codable {
     /// Label for the new pane's tab, pinned the moment it opens. Optional and appended
     /// only when set, so a spawn without one is byte-identical to what shipped before.
     public let title: String?
+    /// Group for the new tab, by name. Created if absent, joined if present — the same
+    /// idempotency `key` gives the spawn itself, so a coordinator looping over tasks never
+    /// has to ask whether the group exists first.
+    public let group: String?
 
     public init(split: SplitDir? = nil, cwd: String? = nil, argv: [String],
-                key: String? = nil, title: String? = nil) {
+                key: String? = nil, title: String? = nil, group: String? = nil) {
         self.split = split
         self.cwd = cwd
         self.argv = argv
         self.key = key
         self.title = title
+        self.group = group
     }
 }
 
@@ -193,6 +204,33 @@ public struct ControlCommand: Decodable, Equatable, Sendable {
             self.kind = .paneInfo
         case "watch-agents":
             self.kind = .watchAgents
+        case "group-list":
+            self.kind = .listGroups
+        case "group-close":
+            struct NameArgs: Decodable { let name: String }
+            let a = try c.decode(NameArgs.self, forKey: .args)
+            guard !a.name.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .args, in: c, debugDescription: "group-close requires a name")
+            }
+            self.kind = .closeGroup(a.name)
+        case "group-collapse":
+            struct CollapseArgs: Decodable { let name: String; let collapsed: Bool }
+            let a = try c.decode(CollapseArgs.self, forKey: .args)
+            guard !a.name.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .args, in: c, debugDescription: "group-collapse requires a name")
+            }
+            self.kind = .setGroupCollapsed(a.name, a.collapsed)
+        case "group-rename":
+            struct RenameArgs: Decodable { let name: String; let to: String }
+            let a = try c.decode(RenameArgs.self, forKey: .args)
+            guard !a.name.isEmpty, !a.to.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .args, in: c,
+                    debugDescription: "group-rename requires a name and a new name")
+            }
+            self.kind = .renameGroup(a.name, to: a.to)
         case "set-title":
             struct TitleArgs: Decodable { let title: String }
             let a = try c.decode(TitleArgs.self, forKey: .args)
@@ -262,12 +300,20 @@ public func encodeCommand(_ kind: ControlCommandKind) -> String {
         parts.append(#""argv":[\#(spec.argv.map { #""\#(jsonEscape($0))""# }.joined(separator: ","))]"#)
         if let k = spec.key { parts.append(#""key":"\#(jsonEscape(k))""#) }
         if let t = spec.title { parts.append(#""title":"\#(jsonEscape(t))""#) }
+        if let g = spec.group { parts.append(#""group":"\#(jsonEscape(g))""#) }
         return #"{"cmd":"spawn-pane","args":{\#(parts.joined(separator: ","))}}"#
     case .listAgents: return #"{"cmd":"list-agents"}"#
     case .paneInfo: return #"{"cmd":"pane-info"}"#
     case .watchAgents: return #"{"cmd":"watch-agents"}"#
     case .setTitle(let t):
         return #"{"cmd":"set-title","args":{"title":"\#(jsonEscape(t))"}}"#
+    case .listGroups: return #"{"cmd":"group-list"}"#
+    case .closeGroup(let n):
+        return #"{"cmd":"group-close","args":{"name":"\#(jsonEscape(n))"}}"#
+    case .setGroupCollapsed(let n, let c):
+        return #"{"cmd":"group-collapse","args":{"name":"\#(jsonEscape(n))","collapsed":\#(c)}}"#
+    case .renameGroup(let n, let to):
+        return #"{"cmd":"group-rename","args":{"name":"\#(jsonEscape(n))","to":"\#(jsonEscape(to))"}}"#
     }
 }
 
@@ -277,6 +323,35 @@ public func encodeCommand(_ kind: ControlCommandKind, target: PaneTarget) -> Str
     let base = encodeCommand(kind)
     guard case .id(let id) = target else { return base }
     return String(base.dropLast()) + #","pane":"\#(jsonEscape(id))"}"#
+}
+
+/// One `group-list` row.
+///
+/// Reported by name rather than by id: a coordinator names a run and never sees the UUID
+/// damson keys groups on internally. Names are not unique, so a command naming a group acts
+/// on the first one on screen — the only answer a user could predict.
+public struct GroupInfo: Codable, Equatable, Sendable {
+    public let name: String
+    public let tabs: Int
+    public let collapsed: Bool
+    public let colorIndex: Int?
+
+    public init(name: String, tabs: Int, collapsed: Bool = false, colorIndex: Int? = nil) {
+        self.name = name
+        self.tabs = tabs
+        self.collapsed = collapsed
+        self.colorIndex = colorIndex
+    }
+
+    enum CodingKeys: String, CodingKey { case name, tabs, collapsed, colorIndex }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(name, forKey: .name)
+        try c.encode(tabs, forKey: .tabs)
+        try c.encode(collapsed, forKey: .collapsed)
+        try c.encodeIfPresent(colorIndex, forKey: .colorIndex)
+    }
 }
 
 /// A single list-tabs result row.
@@ -307,10 +382,13 @@ public struct PaneInfo: Codable, Equatable, Sendable {
     public let title: String?
     /// Agent status when the pane is running one damson recognizes, else nil.
     public let agent: String?
+    /// The name of the group holding this pane's tab, when it is in one.
+    public let group: String?
 
     public init(index: Int, cols: Int, rows: Int, active: Bool,
                 id: String? = nil, tab: Int? = nil, pid: Int32? = nil,
-                cwd: String? = nil, title: String? = nil, agent: String? = nil) {
+                cwd: String? = nil, title: String? = nil, agent: String? = nil,
+                group: String? = nil) {
         self.index = index
         self.cols = cols
         self.rows = rows
@@ -321,10 +399,11 @@ public struct PaneInfo: Codable, Equatable, Sendable {
         self.cwd = cwd
         self.title = title
         self.agent = agent
+        self.group = group
     }
 
     enum CodingKeys: String, CodingKey {
-        case index, cols, rows, active, id, tab, pid, cwd, title, agent
+        case index, cols, rows, active, id, tab, pid, cwd, title, agent, group
     }
 
     /// Hand-rolled so nil fields are OMITTED rather than encoded as null — a `list-panes`
@@ -341,6 +420,7 @@ public struct PaneInfo: Codable, Equatable, Sendable {
         try c.encodeIfPresent(cwd, forKey: .cwd)
         try c.encodeIfPresent(title, forKey: .title)
         try c.encodeIfPresent(agent, forKey: .agent)
+        try c.encodeIfPresent(group, forKey: .group)
     }
 }
 
@@ -477,15 +557,18 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     public let grid: String?
     /// spawn-pane / pane-info result. Defaulted, so the original initializer is unchanged.
     public let pane: PaneInfo?
+    /// group-list result.
+    public let groups: [GroupInfo]?
 
     public init(ok: Bool, err: String? = nil, tabs: [TabInfo]? = nil, panes: [PaneInfo]? = nil,
-                grid: String? = nil, pane: PaneInfo? = nil) {
+                grid: String? = nil, pane: PaneInfo? = nil, groups: [GroupInfo]? = nil) {
         self.ok = ok
         self.err = err
         self.tabs = tabs
         self.panes = panes
         self.grid = grid
         self.pane = pane
+        self.groups = groups
     }
 
     public static func ok() -> Self { .init(ok: true) }
@@ -504,8 +587,12 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     public static func pane(_ info: PaneInfo) -> Self {
         .init(ok: true, pane: info)
     }
+    /// `group-list` — every group in every window.
+    public static func groups(_ list: [GroupInfo]) -> Self {
+        .init(ok: true, groups: list)
+    }
 
-    enum CodingKeys: String, CodingKey { case ok, err, tabs, panes, grid, pane }
+    enum CodingKeys: String, CodingKey { case ok, err, tabs, panes, grid, pane, groups }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -515,5 +602,6 @@ public struct ControlResponse: Codable, Equatable, Sendable {
         if let panes = panes { try c.encode(panes, forKey: .panes) }
         if let grid = grid { try c.encode(grid, forKey: .grid) }
         if let pane = pane { try c.encode(pane, forKey: .pane) }
+        if let groups = groups { try c.encode(groups, forKey: .groups) }
     }
 }

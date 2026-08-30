@@ -54,11 +54,17 @@ Commands:
   dump-grid               Print the active pane's visible grid as plain text.
   zoom <in|out|reset>     Font zoom on the active pane (same path as Cmd+=/-).
 
-  spawn [--split-h|--split-v] [--cwd P] [--key K] [--title T] -- argv...
+  spawn [--split-h|--split-v] [--cwd P] [--key K] [--title T] [--group G] -- argv...
                           Open a pane running argv; prints its pane id as JSON.
                           --key makes a repeat return the SAME pane rather than
                           opening a second one, so a retry is safe.
                           --title labels the new tab (see set-title).
+                          --group puts it in a tab group, creating it if needed.
+  group list              Print every tab group as JSON.
+  group close <name>      Close every tab in a group, and the programs in them.
+  group collapse <name>   Fold a group down to its header.
+  group expand <name>
+  group rename <name> <new>
   set-title <text>        Label the tab holding the addressed pane. The label wins over
                           the program's own title, which shells rewrite on every prompt,
                           and it survives a restart. Empty text clears it.
@@ -95,6 +101,7 @@ var spawnSplit: SplitDir?
 var spawnCwd: String?
 var spawnKey: String?
 var spawnTitle: String?
+var spawnGroup: String?
 
 var i = 0
 while i < args.count {
@@ -141,6 +148,11 @@ while i < args.count {
         i += 1
         guard i < args.count else { die("--title requires a label") }
         spawnTitle = args[i]
+        i += 1
+    case "--group":
+        i += 1
+        guard i < args.count else { die("--group requires a name") }
+        spawnGroup = args[i]
         i += 1
     default:
         // Options must precede the subcommand. Once a positional (the subcommand) is
@@ -262,13 +274,36 @@ case "spawn":
         die("spawn requires a command, after `--`: spawn [--split-h|--split-v] [--cwd P] [--key K] -- argv…")
     }
     cmdKind = .spawnPane(SpawnSpec(split: spawnSplit, cwd: spawnCwd, argv: rest,
-                                   key: spawnKey, title: spawnTitle))
+                                   key: spawnKey, title: spawnTitle, group: spawnGroup))
 case "agents":
     guard rest.isEmpty else { die("agents takes no arguments") }
     cmdKind = .listAgents
 case "watch-agents":
     guard rest.isEmpty else { die("watch-agents takes no arguments") }
     cmdKind = .watchAgents
+case "group":
+    guard let verb = rest.first else {
+        die("group requires: list | close <name> | collapse <name> | expand <name> | rename <name> <new>")
+    }
+    let groupArgs = Array(rest.dropFirst())
+    switch verb {
+    case "list":
+        guard groupArgs.isEmpty else { die("group list takes no arguments") }
+        cmdKind = .listGroups
+    case "close":
+        guard groupArgs.count == 1, !groupArgs[0].isEmpty else { die("group close requires a name") }
+        cmdKind = .closeGroup(groupArgs[0])
+    case "collapse", "expand":
+        guard groupArgs.count == 1, !groupArgs[0].isEmpty else { die("group \(verb) requires a name") }
+        cmdKind = .setGroupCollapsed(groupArgs[0], verb == "collapse")
+    case "rename":
+        guard groupArgs.count == 2, !groupArgs[0].isEmpty, !groupArgs[1].isEmpty else {
+            die("group rename requires <name> <new>")
+        }
+        cmdKind = .renameGroup(groupArgs[0], to: groupArgs[1])
+    default:
+        die("unknown group subcommand: \(verb)")
+    }
 case "set-title":
     // Joined like send-text so an unquoted multi-word label works; no args clears it.
     cmdKind = .setTitle(rest.joined(separator: " "))
@@ -324,6 +359,11 @@ case .success(let resp):
     }
     if let grid = resp.grid {
         print(grid)
+    }
+    if let groups = resp.groups,
+       let data = try? encoder.encode(groups),
+       let s = String(data: data, encoding: .utf8) {
+        print(s)
     }
     if let pane = resp.pane,
        let data = try? encoder.encode(pane),

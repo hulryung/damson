@@ -88,13 +88,14 @@ original four keys and `ok()` is still `{"ok":true}`. A payload with no `"pane"`
 to `.active` — what every client meant before the key existed.
 
 ```
-damson-cli spawn [--split-h|--split-v] [--cwd P] [--key K] [--title T] -- argv...
+damson-cli spawn [--split-h|--split-v] [--cwd P] [--key K] [--title T] [--group G] -- argv...
 damson-cli agents
 damson-cli pane-info --pane <id>
 damson-cli --pane <id> send-text 'hello'
 damson-cli --pane <id> set-title 'review-api'
 damson-cli --pane <id> dump-grid
 damson-cli watch-agents
+damson-cli group list|close <name>|collapse <name>|expand <name>|rename <name> <new>
 ```
 
 **Every pane-addressed command honors `--pane`**: `send-text`, `send-key`, `dump-grid`,
@@ -186,6 +187,31 @@ properties that a separate coordinator-only field would not have:
 `agents` and `pane-info` report `title` as **what the user actually reads** — the label if
 one is set, the program's title otherwise. That is the field a coordinator joins its task
 list against, so reporting the raw OSC title there would hide the label it just set.
+
+### Grouping a run
+
+`--group` puts the new tab in a named group, creating it if this window has none by that
+name. That is the same idempotency `--key` gives the spawn itself, so a coordinator looping
+over tasks never has to ask whether the group exists first.
+
+```sh
+for t in review-api fix-parser write-docs; do
+  damson-cli spawn --key "$t" --title "$t" --group run-7 --cwd "$wt" -- claude "$prompt"
+done
+damson-cli group close run-7      # when the run is over
+```
+
+Groups are addressed **by name**: a coordinator names a run and never sees the UUID damson
+keys groups on internally. Names are not unique, so a command naming a group acts on the
+first one on screen — the only answer a user could predict.
+
+A group's tabs are kept **contiguous**, so a tab joining late is relocated next to the
+others rather than left where it was opened. `agents` and `pane-info` report `group`,
+which is what a coordinator joins its task list against.
+
+**`group close` is destructive** — several tabs and the programs inside them. A name that
+matches nothing is a typed error and a non-zero exit, never a quiet success: a coordinator
+that mistyped a run name must not be told the run was cleaned up.
 
 ### Splitting changes the active pane
 
