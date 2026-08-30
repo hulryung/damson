@@ -30,6 +30,16 @@ let package = Package(
             name: "damson-cli",
             targets: ["damson-cli"]
         ),
+        // Coordinator — drives damson from OUTSIDE through the public wire. A separate
+        // binary on purpose: damson.app still does not schedule anything, and deleting this
+        // target leaves damson unchanged. It lives in this repo rather than its own because
+        // it tracks the wire format, and a separate repo would have to pin a version of it —
+        // which is exactly why damson-ide, pinned at 0.4.1, cannot see any of the 0.5.x
+        // commands today.
+        .executable(
+            name: "damson-crew",
+            targets: ["damson-crew"]
+        ),
         // Session keeper — holds PTY master fds across an app restart so the
         // children (shells, TUIs) survive an update relaunch. See docs/SESSION-KEEPER.md.
         .executable(
@@ -88,6 +98,19 @@ let package = Package(
             path: "Sources/damson",
             resources: [.copy("Resources/Damson.icns")]
         ),
+        // The coordinator's logic, split from its process setup so it can be tested: the
+        // failures that matter are partial ones — three tasks of five opened — and those are
+        // neither quick nor repeatable to reproduce against a running app.
+        .target(
+            name: "DamsonCrew",
+            dependencies: ["DamsonControl"],
+            path: "Sources/DamsonCrew"
+        ),
+        .executableTarget(
+            name: "damson-crew",
+            dependencies: ["DamsonCrew", "DamsonControl"],
+            path: "Sources/damson-crew"
+        ),
         .executableTarget(
             name: "damson-cli",
             dependencies: ["DamsonControl"],
@@ -112,6 +135,11 @@ let package = Package(
             name: "damson-keeper",
             dependencies: ["DamsonKeeperCore", "DamsonControl"],
             path: "Sources/damson-keeper"
+        ),
+        .testTarget(
+            name: "DamsonCrewTests",
+            dependencies: ["DamsonCrew", "DamsonControl"],
+            path: "Tests/DamsonCrewTests"
         ),
         .testTarget(
             name: "DamsonTabGroupsTests",
