@@ -275,6 +275,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabBar.onNewTab = { [weak self] in self?.addNewTab() }
         tabBar.onTabReordered = { [weak self] from, to in self?.reorderTab(from: from, to: to) }
         tabBar.onTabRenamed = { [weak self] idx, title in self?.renameTab(idx, to: title) }
+        tabBar.onGroupToggled = { [weak self] name in self?.toggleGroupCollapsed(named: name) }
+        tabBar.onGroupRenamed = { [weak self] name, new in
+            _ = self?.renameGroup(named: name, to: new)
+        }
         contentView.addSubview(tabBar)
 
         // Container holding the session surfaces — fills below the tab bar.
@@ -566,14 +570,18 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return range.count
     }
 
-    /// Set a group's collapsed flag. Returns false when there is no such group here.
-    func setGroupCollapsed(named name: String, _ collapsed: Bool) -> Bool {
-        syncGroupLayout()
-        guard var group = groupLayout.group(named: name) else { return false }
-        group.collapsed = collapsed
-        groupLayout.update(group)
-        refreshTabBar()
-        return true
+    /// Why a fold did not happen. Two different refusals, reported apart on purpose: telling
+    /// a caller "no such group" for a group that plainly exists sends them looking for a
+    /// naming bug that isn't there.
+    enum GroupCollapseResult {
+        case ok
+        case noSuchGroup
+        /// Every tab in the window is in this group, so folding it would leave nothing.
+        case wouldHideEverything
+    }
+
+    func setGroupCollapsed(named name: String, _ collapsed: Bool) -> GroupCollapseResult {
+        toggleGroupCollapsed(named: name, to: collapsed)
     }
 
     /// Rename a group. Returns false when there is no such group here.
@@ -584,6 +592,60 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         groupLayout.update(group)
         refreshTabBar()
         return true
+    }
+
+    /// Per-tab group information for the tab bar, parallel to `tabs`.
+    private func groupSlots() -> [CompactTabBarView.GroupSlot?] {
+        guard !groupLayout.isEmpty else {
+            return Array(repeating: nil, count: tabs.count)
+        }
+        return tabs.indices.map { i in
+            guard let group = groupLayout.group(at: i),
+                  let range = groupLayout.range(of: group.id) else { return nil }
+            // Only `waiting` ever reaches a tab title, and it is the one state a user must
+            // not miss while looking elsewhere. Folding a group must not be the reason they
+            // do, so the header carries whether anything inside is asking for them.
+            let attention = groupLayout.needsAttention(group.id) { idx in
+                tabs[idx].agentSuffix?.isEmpty == false
+            }
+            return CompactTabBarView.GroupSlot(
+                name: group.name, colorIndex: group.colorIndex, collapsed: group.collapsed,
+                isFirst: i == range.lowerBound, memberCount: range.count, attention: attention)
+        }
+    }
+
+    /// Fold or unfold a group by name, from the header click or the control socket.
+    ///
+    /// Folding the group that holds the active tab would leave the user unable to see where
+    /// they are, so activation moves to the nearest tab outside the group first. If there is
+    /// no tab outside it, the group is left open: hiding every tab in the window is never
+    /// what was meant.
+    @discardableResult
+    func toggleGroupCollapsed(named name: String, to collapsed: Bool? = nil) -> GroupCollapseResult {
+        syncGroupLayout()
+        guard var group = groupLayout.group(named: name),
+              let range = groupLayout.range(of: group.id) else { return .noSuchGroup }
+        let target = collapsed ?? !group.collapsed
+        if target, range.contains(currentIndex) {
+            let outside = (0..<tabs.count).filter { !range.contains($0) }
+            guard let nearest = outside.min(by: {
+                abs($0 - currentIndex) < abs($1 - currentIndex)
+            }) else { return .wouldHideEverything }
+            selectTab(nearest)
+        }
+        group.collapsed = target
+        groupLayout.update(group)
+        refreshTabBar()
+        return .ok
+    }
+
+    /// Unfold the group holding `index`, if it is folded. Called before activation, because
+    /// selecting a tab the user cannot see is indistinguishable from nothing happening.
+    private func revealTabIfFolded(_ index: Int) {
+        guard let group = groupLayout.group(at: index), group.collapsed else { return }
+        var opened = group
+        opened.collapsed = false
+        groupLayout.update(opened)
     }
 
     /// Backstop for the one thing that can go wrong silently: a tab mutation that forgot to
@@ -658,6 +720,9 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     func selectTab(_ index: Int, transition: TabTransition = .none) {
         guard index >= 0, index < tabs.count else { return }
         tabTransitions.abortSwipeIfNeeded()
+        // Activating a tab inside a folded group unfolds it. Selecting something the user
+        // cannot see is indistinguishable from nothing having happened.
+        revealTabIfFolded(index)
 
         // Cross-slide the LIVE outgoing tree instead of a snapshot. Snapshotting was the
         // visible pre-animation hitch: cacheDisplay + one offscreen Metal re-render and
@@ -1180,7 +1245,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     private func refreshTabBar() {
         syncGroupLayout()
         let titles = tabs.map { displayTitle($0) }
-        tabBar.update(titles: titles, selectedIndex: currentIndex)
+        tabBar.update(titles: titles, selectedIndex: currentIndex, groups: groupSlots())
         // The traffic lights share this row, and a title change is one of the things that
         // makes AppKit relayout the titlebar — so this is both the moment a light can be
         // knocked out of place and the cheapest moment to notice. `windowDidUpdate` alone

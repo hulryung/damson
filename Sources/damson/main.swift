@@ -652,8 +652,13 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @MainActor
     private func controlSetGroupCollapsed(_ name: String, _ collapsed: Bool) -> ControlResponse {
-        for controller in compactControllers where controller.setGroupCollapsed(named: name, collapsed) {
-            return .ok()
+        for controller in compactControllers {
+            switch controller.setGroupCollapsed(named: name, collapsed) {
+            case .ok: return .ok()
+            case .wouldHideEverything:
+                return .err("group '\(name)' holds every tab in its window; folding it would leave nothing visible")
+            case .noSuchGroup: continue
+            }
         }
         return .err("no such group: \(name)")
     }

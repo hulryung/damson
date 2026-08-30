@@ -90,6 +90,13 @@ final class CompactTabBarView: NSView {
     private let tabSpacing: CGFloat = 2
     private let maxTabWidth: CGFloat = 200
     private let minTabWidth: CGFloat = 80
+    /// The width below which a tab stops being readable. `minTabWidth` is what the bar
+    /// prefers; this is what it will actually go down to before it would rather overflow.
+    private let hardMinTabWidth: CGFloat = 34
+    /// A header squeezed this far still shows its colour dot and the start of its name.
+    private let hardMinHeaderWidth: CGFloat = 26
+    /// How much every group header is shrunk this pass so the row fits. 1 = no squeeze.
+    private var headerScale: CGFloat = 1
     /// Tabs sit flush with the bar's BOTTOM edge (Chrome-style) so the selected tab's
     /// shape can run straight into the content below it.
     private let tabHeight: CGFloat = 30
@@ -130,8 +137,36 @@ final class CompactTabBarView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(titles: [String], selectedIndex: Int) {
+    /// What the bar needs to know about the group a tab is in. nil = the tab is loose.
+    struct GroupSlot: Equatable {
+        let name: String
+        let colorIndex: Int?
+        let collapsed: Bool
+        /// True on the group's first tab — the one that gets a header in front of it.
+        let isFirst: Bool
+        let memberCount: Int
+        /// Any tab in this group needs the user. Surfaced on the header while folded.
+        let attention: Bool
+    }
+
+    /// Group membership per tab, parallel to `titles`. Empty means no groups at all, which
+    /// is the ordinary case and the one that must lay out exactly as it always did.
+    private var groupSlots: [GroupSlot?] = []
+    private var groupHeaders: [Int: TabGroupHeaderView] = [:]     // keyed by tab index
+    var onGroupToggled: ((String) -> Void)?
+    var onGroupRenamed: ((String, String) -> Void)?
+
+    /// Tabs hidden because their group is folded. Everything that indexes tab buttons has to
+    /// agree on this set, so it is computed once per update.
+    private var hiddenTabs: Set<Int> = []
+
+    func update(titles: [String], selectedIndex: Int, groups: [GroupSlot?] = []) {
         self.selectedIndex = selectedIndex
+        self.groupSlots = groups.count == titles.count ? groups : Array(repeating: nil, count: titles.count)
+        hiddenTabs = Set(self.groupSlots.enumerated().compactMap { i, slot in
+            (slot?.collapsed == true) ? i : nil
+        })
+        rebuildGroupHeaders()
         // When only titles/selection change (the common case — every PTY title
         // refresh calls here), reuse the existing buttons in place. Recreating
         // them would remove the view the user is mid-click on: a title refresh
@@ -142,6 +177,7 @@ final class CompactTabBarView: NSView {
             for (i, title) in titles.enumerated() {
                 tabButtons[i].setTitle(title)
                 tabButtons[i].setSelected(i == selectedIndex)
+                tabButtons[i].isHidden = hiddenTabs.contains(i)
             }
             needsLayout = true
             return
@@ -159,10 +195,43 @@ final class CompactTabBarView: NSView {
             btn.onDragMoved = { [weak self] dx in self?.updateDrag(dx) }
             btn.onDragEnded = { [weak self] in self?.finishDrag() }
             if reorderModeActive { btn.setReorderMode(true) }
+            btn.isHidden = hiddenTabs.contains(i)
             addSubview(btn)
             tabButtons.append(btn)
         }
         needsLayout = true
+    }
+
+    /// One header per group, in front of its first tab. Reused across refreshes for the same
+    /// reason the tab buttons are: rebuilding would remove the view mid-click.
+    private func rebuildGroupHeaders() {
+        var wanted: Set<Int> = []
+        for (i, slot) in groupSlots.enumerated() {
+            guard let slot, slot.isFirst else { continue }
+            wanted.insert(i)
+            if let existing = groupHeaders[i] {
+                existing.configure(name: slot.name, colorIndex: slot.colorIndex,
+                                   collapsed: slot.collapsed, memberCount: slot.memberCount,
+                                   attention: slot.attention)
+            } else {
+                let header = TabGroupHeaderView(name: slot.name, colorIndex: slot.colorIndex,
+                                                collapsed: slot.collapsed,
+                                                memberCount: slot.memberCount,
+                                                attention: slot.attention)
+                header.onToggle = { [weak self] in self?.onGroupToggled?(slot.name) }
+                header.onRename = { [weak self] new in self?.onGroupRenamed?(slot.name, new) }
+                addSubview(header)
+                groupHeaders[i] = header
+            }
+            // The closures captured the old name; refresh them so a renamed group still
+            // addresses itself correctly.
+            groupHeaders[i]?.onToggle = { [weak self] in self?.onGroupToggled?(slot.name) }
+            groupHeaders[i]?.onRename = { [weak self] new in self?.onGroupRenamed?(slot.name, new) }
+        }
+        for (index, header) in groupHeaders where !wanted.contains(index) {
+            header.removeFromSuperview()
+            groupHeaders.removeValue(forKey: index)
+        }
     }
 
     // MARK: - Reorder mode (Cmd+Shift)
@@ -289,8 +358,17 @@ final class CompactTabBarView: NSView {
         super.mouseDown(with: event)
     }
 
+    /// Where tab `i` rests when nothing is being dragged. Recorded during layout rather
+    /// than recomputed: with group headers on the row, and folded groups giving their width
+    /// back, positions are no longer `i * (perTab + spacing)` and a formula would drift from
+    /// what is on screen the moment a group exists.
+    private var restingX: [CGFloat] = []
+
     private func tabBaseX(_ i: Int) -> CGFloat {
-        leadingReservation + CGFloat(i) * (perTab + tabSpacing)
+        guard restingX.indices.contains(i) else {
+            return leadingReservation + CGFloat(i) * (perTab + tabSpacing)
+        }
+        return restingX[i]
     }
 
     /// Move a tab to a new x. View-backed layers have implicit animation
@@ -395,29 +473,58 @@ final class CompactTabBarView: NSView {
         )
 
         guard !tabButtons.isEmpty else { return }
-        let count = CGFloat(tabButtons.count)
-        let available = bounds.width - leadingReservation - trailingReservation - btnSize - 4
-            - tabSpacing * (count - 1)
-        perTab = max(minTabWidth, min(maxTabWidth, available / count))
+        // Headers take their width off the top; a folded group's tabs give theirs back. So
+        // the tabs still on screen share what is left, and a header can never overlap the
+        // first tab of its own group.
+        let visible = tabButtons.indices.filter { !hiddenTabs.contains($0) }
+        let count = CGFloat(max(visible.count, 1))
+        // `rightEdge` already has the dev label subtracted; using it here rather than the
+        // constant reservation is what stops the badge being drawn over the last tab.
+        let barSpace = rightEdge - leadingReservation - btnSize - 4
+        let spacing = tabSpacing * (count - 1 + CGFloat(groupHeaders.count))
+
+        // Headers must not be able to starve the tabs. When the row cannot hold every
+        // header at its preferred width plus a readable sliver of every tab, the headers
+        // give way first: a truncated group name is still a group name, whereas a tab
+        // squeezed to nothing is gone. Without this the row simply overflowed and the
+        // headers, tabs and the new-tab button drew on top of each other.
+        let wantHeaders = groupHeaders.values.reduce(0) { $0 + $1.preferredWidth }
+        let tabsFloor = count * hardMinTabWidth
+        let headerTotal = min(wantHeaders, max(0, barSpace - tabsFloor - spacing))
+        headerScale = wantHeaders > 0 ? headerTotal / wantHeaders : 1
+
+        let available = barSpace - headerTotal - spacing
+        // `minTabWidth` is a preference, `hardMinTabWidth` a limit: past the preference the
+        // tabs keep shrinking rather than running off the end of the bar.
+        perTab = max(hardMinTabWidth, min(maxTabWidth, available / count))
         // Flush with the bar's bottom edge — the selected tab's shape continues into
         // the content area below, Chrome-style.
         let tabY: CGFloat = 0
 
+        // One left-to-right pass so headers and tabs cannot disagree about where the run
+        // starts: each group's header is placed immediately before its own first tab.
+        var x = leadingReservation
+        restingX = Array(repeating: leadingReservation, count: tabButtons.count)
         for (i, btn) in tabButtons.enumerated() {
-            btn.frame = NSRect(
-                x: leadingReservation + CGFloat(i) * (perTab + tabSpacing),
-                y: tabY,
-                width: perTab,
-                height: tabHeight
-            )
-        }
-        // Pin the new-tab button just to the right of the last tab.
-        if let last = tabButtons.last {
-            let nx = last.frame.maxX + 6
-            if nx + btnSize + trailingReservation <= bounds.width {
-                newTabButton.frame.origin.x = nx
+            if let header = groupHeaders[i] {
+                let w = max(hardMinHeaderWidth, (header.preferredWidth * headerScale).rounded())
+                header.frame = NSRect(x: x, y: tabY, width: w, height: tabHeight)
+                x += w + tabSpacing
             }
+            restingX[i] = x
+            guard !hiddenTabs.contains(i) else {
+                // Folded away: park it under its header so any animation that reads the
+                // frame has something sane rather than a stale position from before.
+                btn.frame = NSRect(x: x, y: tabY, width: 0, height: tabHeight)
+                continue
+            }
+            btn.frame = NSRect(x: x, y: tabY, width: perTab, height: tabHeight)
+            x += perTab + tabSpacing
         }
+        // Pin the new-tab button just past the last thing on the row, but never past the
+        // trailing reservation — otherwise a row that still overruns leaves it drawn on top
+        // of a tab instead of at the end.
+        newTabButton.frame.origin.x = max(leadingReservation, min(x + 4, rightEdge - btnSize))
         updatePillPathIfNeeded()
         layoutSeparators()
         positionSelectionPill()
@@ -488,7 +595,11 @@ final class CompactTabBarView: NSView {
             let x = tabButtons[b].frame.maxX + tabSpacing / 2
             sep.frame = NSRect(x: x.rounded(), y: (tabHeight - sepHeight) / 2,
                                width: 1, height: sepHeight)
+            // A boundary touching a folded-away tab has no two tabs to divide, and a group
+            // header already draws the edge in front of its own run.
             sep.isHidden = (b == selectedIndex - 1 || b == selectedIndex)
+                || hiddenTabs.contains(b) || hiddenTabs.contains(b + 1)
+                || groupHeaders[b + 1] != nil
         }
         CATransaction.commit()
     }

@@ -186,6 +186,16 @@ public struct TabGroupLayout: Equatable {
         return at
     }
 
+    /// Whether a group should show an attention marker while folded: any tab in it is
+    /// flagged. `flagged` is asked per tab index, so this stays free of what a badge is.
+    ///
+    /// Folding must never be the reason someone misses a blocked agent. A folded group hides
+    /// the tabs that would have carried the badge, so the header has to carry it instead.
+    public func needsAttention(_ id: UUID, flagged: (Int) -> Bool) -> Bool {
+        guard let r = range(of: id) else { return false }
+        return r.contains(where: flagged)
+    }
+
     // MARK: - Invariant
 
     /// True when every group occupies one unbroken range. Production code maintains this;

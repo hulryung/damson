@@ -194,3 +194,47 @@ final class TabGroupLayoutTests: XCTestCase {
         XCTAssertFalse(l.isContiguous)
     }
 }
+
+/// Folding a group hides the tabs that would have carried a badge, so the header has to
+/// carry it instead. Only `waiting` ever reaches a tab title, and it is the one state a
+/// user must not miss while looking elsewhere — if folding swallowed it, the feature would
+/// actively cost them time rather than save it.
+final class TabGroupAttentionTests: XCTestCase {
+    private let a = TabGroup(name: "run-a")
+    private let b = TabGroup(name: "run-b")
+
+    private func twoGroups() -> TabGroupLayout {
+        var l = TabGroupLayout()
+        l.define(a); l.define(b)
+        l.append(group: a.id); l.append(group: a.id)
+        l.append(group: nil)
+        l.append(group: b.id)
+        return l
+    }
+
+    func testAFlaggedTabRaisesItsOwnGroup() {
+        let l = twoGroups()
+        XCTAssertTrue(l.needsAttention(a.id) { $0 == 1 })
+        XCTAssertFalse(l.needsAttention(b.id) { $0 == 1 },
+                       "one group's blocked agent must not light up another's header")
+    }
+
+    /// The loose tab between the groups belongs to neither.
+    func testAFlaggedLooseTabRaisesNoGroup() {
+        let l = twoGroups()
+        XCTAssertFalse(l.needsAttention(a.id) { $0 == 2 })
+        XCTAssertFalse(l.needsAttention(b.id) { $0 == 2 })
+    }
+
+    func testNothingFlaggedRaisesNothing() {
+        let l = twoGroups()
+        XCTAssertFalse(l.needsAttention(a.id) { _ in false })
+    }
+
+    /// A group with no tabs left cannot be asking for anything.
+    func testAGroupWithNoTabsNeedsNoAttention() {
+        var l = twoGroups()
+        l.remove(at: 3)
+        XCTAssertFalse(l.needsAttention(b.id) { _ in true })
+    }
+}
