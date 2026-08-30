@@ -179,3 +179,46 @@ public func bindOrConnectUnix(fd: Int32, path: String, listen doListen: Bool) ->
     }
     return nil
 }
+
+/// Connect, send one command, then copy every NDJSON line the server pushes to stdout until
+/// it closes or the process is interrupted. For `watch-agents`, which is a stream rather
+/// than a request/response.
+///
+/// Unbuffered per line on purpose: the point of a subscription is timeliness, and a consumer
+/// reading with `while read` should see an event when it happens, not when a block fills.
+public func streamCommand(socketPath: String, commandJSON: String) -> Result<Void, SocketIOError> {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { return .failure(.connect("socket() failed: errno=\(errno)")) }
+    defer { close(fd) }
+    if let err = bindOrConnectUnix(fd: fd, path: socketPath, listen: false) {
+        return .failure(.connect(err))
+    }
+    disableSIGPIPE(fd)
+    var payload = Data(commandJSON.utf8)
+    payload.append(0x0A)
+    let wrote = payload.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+        guard let base = raw.baseAddress else { return false }
+        var sent = 0
+        while sent < raw.count {
+            let n = write(fd, base.advanced(by: sent), raw.count - sent)
+            if n < 0 { if errno == EINTR { continue }; return false }
+            if n == 0 { return false }
+            sent += n
+        }
+        return true
+    }
+    guard wrote else { return .failure(.write("errno=\(errno)")) }
+
+    var buf = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let n = buf.withUnsafeMutableBufferPointer { read(fd, $0.baseAddress, $0.count) }
+        if n > 0 {
+            FileHandle.standardOutput.write(Data(buf[0..<n]))
+        } else if n == 0 {
+            return .success(())          // server closed
+        } else {
+            if errno == EINTR { continue }
+            return .failure(.read("errno=\(errno)"))
+        }
+    }
+}

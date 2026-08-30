@@ -32,8 +32,18 @@ final class CrewController {
 
     private var didLogVersion = false
 
-    init(windows: @escaping () -> [CompactWindowController]) {
+    /// Publishes state changes to `watch-agents` subscribers. Owned by the delegate so it
+    /// outlives any one connection.
+    private let broadcaster: AgentEventBroadcaster
+    /// Resolves a session to its stable pane id, so an event names the pane a driver holds.
+    private let paneID: (DamsonSession) -> UUID?
+
+    init(windows: @escaping () -> [CompactWindowController],
+         broadcaster: AgentEventBroadcaster,
+         paneID: @escaping (DamsonSession) -> UUID?) {
         self.windows = windows
+        self.broadcaster = broadcaster
+        self.paneID = paneID
     }
 
     /// Begin sweeping. Safe to call twice — the previous timer is cancelled first.
@@ -82,14 +92,28 @@ final class CrewController {
 
         guard !registry.byPID.isEmpty || didSeeAgents else { return }
         var sawAny = false
+        // Built while the badges are applied, so the events a subscriber sees and the pills
+        // the user sees come from ONE observation of the world rather than two sweeps that
+        // could disagree.
+        var observed: [AgentObservation] = []
         for controller in windows() {
-            controller.refreshAgentBadges { [registry] session in
-                guard let row = registry.session(forForegroundPID: session.foregroundProcessID),
-                      let badge = AgentBadge(status: row.status) else { return nil }
+            controller.refreshAgentBadges { [registry, paneID] session in
+                guard let row = registry.session(forForegroundPID: session.foregroundProcessID)
+                else { return nil }
                 sawAny = true
-                return badge
+                // An id is minted here: a pane running an agent is exactly the pane a driver
+                // will want to name, and an event with no id would be unactionable.
+                if let id = paneID(session) {
+                    observed.append(AgentObservation(
+                        paneID: id.uuidString, pid: row.pid, status: row.status,
+                        waitingFor: row.waitingFor, cwd: row.cwd))
+                }
+                // The badge vocabulary is closed; the event stream forwards the raw status
+                // so a driver isn't limited to what damson happens to draw.
+                return AgentBadge(status: row.status)
             }
         }
+        broadcaster.publish(observed)
         // Once agents have been seen, keep sweeping even after the table empties, so the
         // last badges get cleared rather than frozen on screen.
         didSeeAgents = sawAny

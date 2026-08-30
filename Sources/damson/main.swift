@@ -234,6 +234,8 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Agent-status badges for panes running Claude Code. Owned here so its sweep timer
     /// lives exactly as long as the app does.
     private var crew: CrewController?
+    /// Fans agent state changes out to `watch-agents` subscribers.
+    let agentEvents = AgentEventBroadcaster()
 
     // Restart-survival intent flags (see docs/SESSION-KEEPER.md). All three mean
     // "this termination should hand sessions to the keeper" when the feature is on:
@@ -317,7 +319,9 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ = DamsonUpdater.shared
         // Label panes with what the Claude Code session inside them is doing. Reads only —
         // a timer sweep, never the output path. Costs nothing on a machine with no agents.
-        crew = CrewController(windows: { [weak self] in self?.compactControllers ?? [] })
+        crew = CrewController(windows: { [weak self] in self?.compactControllers ?? [] },
+                              broadcaster: agentEvents,
+                              paneID: { PaneRegistry.shared.id(for: $0) })
         crew?.start()
     }
 
@@ -382,6 +386,12 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func bindControlSocket() {
         let server = ControlSocketServer()
+        // Before start(): start() launches the accept thread, and a client that connects in
+        // that instant must already find the stream hook installed — otherwise `watch-agents`
+        // falls through to the request/response dispatch and gets an error.
+        server.streamHandler = { [weak self] fd in
+            self?.serveAgentWatch(fd: fd)
+        }
         do {
             let path = try server.start(handler: { [weak self] cmd in
                 // handler is called on a worker thread → hop to main and wait for the result.
@@ -430,6 +440,61 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .spawnPane(let spec):              return controlSpawnPane(spec)
         case .listAgents:                       return controlListAgents()
         case .paneInfo:                         return controlPaneInfo(cmd.target)
+        case .watchAgents:
+            // Never reached: the socket server intercepts this before dispatch, because it
+            // is a stream rather than a request/response. Handled here only so the switch
+            // stays exhaustive and a future command can't be forgotten.
+            return .err("watch-agents is a streaming command")
+        }
+    }
+
+    /// Serve one `watch-agents` subscription. Runs on that connection's own thread and
+    /// owns the fd until the client leaves.
+    ///
+    /// Writes are the only liveness signal available: a subscriber that has gone away is
+    /// discovered when a write fails (EPIPE — SIGPIPE is already disabled on the socket),
+    /// which is why the loop keeps a heartbeat rather than blocking forever on a quiet
+    /// machine. Without it a killed client would leave a thread parked on a semaphore for
+    /// the life of the app.
+    private func serveAgentWatch(fd: Int32) {
+        let (handle, backlog) = agentEvents.subscribe()
+        defer { agentEvents.unsubscribe(handle) }
+
+        func send(_ lines: [AgentEventLine]) -> Bool {
+            for line in lines {
+                guard var data = try? JSONEncoder().encode(line) else { continue }
+                data.append(0x0A)
+                let ok = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+                    guard let base = raw.baseAddress else { return false }
+                    var sent = 0
+                    while sent < data.count {
+                        let n = write(fd, base.advanced(by: sent), data.count - sent)
+                        if n < 0 {
+                            if errno == EINTR { continue }
+                            return false   // EPIPE: the subscriber is gone
+                        }
+                        if n == 0 { return false }
+                        sent += n
+                    }
+                    return true
+                }
+                if !ok { return false }
+            }
+            return true
+        }
+
+        // Start from the present: a coordinator connecting mid-run needs what is already
+        // running, not just what changes next.
+        guard send(backlog) else { return }
+        while true {
+            guard let lines = agentEvents.next(handle, timeout: 20) else { return }
+            if lines.isEmpty {
+                // Heartbeat — an empty JSON object, so a reader that parses per line sees
+                // something harmless and a dead peer is detected by the write failing.
+                guard send([AgentEventLine(event: "heartbeat", pane: "")]) else { return }
+                continue
+            }
+            guard send(lines) else { return }
         }
     }
 

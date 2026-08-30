@@ -54,6 +54,10 @@ public enum ControlCommandKind: Equatable, Sendable {
     case listAgents
     /// One pane's details, by id (or the active pane when no target is given).
     case paneInfo
+    /// Subscribe to agent state changes. Unlike every other command this one does not
+    /// answer and hang up: the connection stays open and each change arrives as one more
+    /// NDJSON line until the client disconnects.
+    case watchAgents
 }
 
 /// Where a command should land. Absent on the wire means `.active`, so every existing
@@ -179,6 +183,8 @@ public struct ControlCommand: Decodable, Equatable, Sendable {
             self.kind = .listAgents
         case "pane-info":
             self.kind = .paneInfo
+        case "watch-agents":
+            self.kind = .watchAgents
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .cmd, in: c,
@@ -246,6 +252,7 @@ public func encodeCommand(_ kind: ControlCommandKind) -> String {
         return #"{"cmd":"spawn-pane","args":{\#(parts.joined(separator: ","))}}"#
     case .listAgents: return #"{"cmd":"list-agents"}"#
     case .paneInfo: return #"{"cmd":"pane-info"}"#
+    case .watchAgents: return #"{"cmd":"watch-agents"}"#
     }
 }
 
@@ -319,6 +326,48 @@ public struct PaneInfo: Codable, Equatable, Sendable {
         try c.encodeIfPresent(cwd, forKey: .cwd)
         try c.encodeIfPresent(title, forKey: .title)
         try c.encodeIfPresent(agent, forKey: .agent)
+    }
+}
+
+/// One line of a `watch-agents` stream.
+///
+/// A separate type from `PaneInfo` on purpose: that one answers "what is this pane", this
+/// one answers "what just changed", and a subscriber needs the BEFORE as well as the after.
+public struct AgentEventLine: Codable, Equatable, Sendable {
+    /// "appeared" | "changed" | "vanished".
+    public let event: String
+    public let pane: String
+    public let pid: Int32?
+    public let status: String?
+    public let previousStatus: String?
+    public let waitingFor: String?
+    public let cwd: String?
+
+    public init(event: String, pane: String, pid: Int32? = nil, status: String? = nil,
+                previousStatus: String? = nil, waitingFor: String? = nil, cwd: String? = nil) {
+        self.event = event
+        self.pane = pane
+        self.pid = pid
+        self.status = status
+        self.previousStatus = previousStatus
+        self.waitingFor = waitingFor
+        self.cwd = cwd
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case event, pane, pid, status, previousStatus, waitingFor, cwd
+    }
+
+    /// Nils omitted, so a `vanished` line doesn't carry a wall of nulls.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(event, forKey: .event)
+        try c.encode(pane, forKey: .pane)
+        try c.encodeIfPresent(pid, forKey: .pid)
+        try c.encodeIfPresent(status, forKey: .status)
+        try c.encodeIfPresent(previousStatus, forKey: .previousStatus)
+        try c.encodeIfPresent(waitingFor, forKey: .waitingFor)
+        try c.encodeIfPresent(cwd, forKey: .cwd)
     }
 }
 

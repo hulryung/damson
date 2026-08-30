@@ -61,6 +61,9 @@ Commands:
   agents                  Every pane, with its stable id, tab, pid, cwd and
                           agent status.
   pane-info               Details for --pane <id>, or the active pane.
+  watch-agents            Stream agent state changes as NDJSON until interrupted.
+                          Starts with one line per agent already running, then one
+                          per change. Lets a coordinator wait instead of poll.
 
 Options:
   --pid PID               Target the instance with this PID (default: most recent).
@@ -252,6 +255,9 @@ case "spawn":
 case "agents":
     guard rest.isEmpty else { die("agents takes no arguments") }
     cmdKind = .listAgents
+case "watch-agents":
+    guard rest.isEmpty else { die("watch-agents takes no arguments") }
+    cmdKind = .watchAgents
 case "pane-info":
     guard rest.isEmpty else { die("pane-info takes no arguments (use --pane <id>)") }
     cmdKind = .paneInfo
@@ -273,6 +279,16 @@ case .failure(let e): die(e.message)
 }
 
 let json = encodeCommand(cmdKind, target: paneArg.map { .id($0) } ?? .active)
+
+// A subscription has no single response to wait for: connect, send, then copy lines to
+// stdout until the server (or the user) closes it. Flush per line so a consumer piping
+// this into `while read` sees each event as it happens rather than a block at a time.
+if case .watchAgents = cmdKind {
+    switch streamCommand(socketPath: socketPath, commandJSON: json) { case .failure(let e):
+        die("damson-cli: \(e.description)")
+    case .success: exit(0)
+    }
+}
 switch sendCommand(socketPath: socketPath, commandJSON: json) {
 case .success(let resp):
     if !resp.ok {
