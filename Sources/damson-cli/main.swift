@@ -54,10 +54,14 @@ Commands:
   dump-grid               Print the active pane's visible grid as plain text.
   zoom <in|out|reset>     Font zoom on the active pane (same path as Cmd+=/-).
 
-  spawn [--split-h|--split-v] [--cwd P] [--key K] -- argv...
+  spawn [--split-h|--split-v] [--cwd P] [--key K] [--title T] -- argv...
                           Open a pane running argv; prints its pane id as JSON.
                           --key makes a repeat return the SAME pane rather than
                           opening a second one, so a retry is safe.
+                          --title labels the new tab (see set-title).
+  set-title <text>        Label the tab holding the addressed pane. The label wins over
+                          the program's own title, which shells rewrite on every prompt,
+                          and it survives a restart. Empty text clears it.
   agents                  Every pane, with its stable id, tab, pid, cwd and
                           agent status.
   pane-info               Details for --pane <id>, or the active pane.
@@ -70,7 +74,7 @@ Options:
   --list-instances        List running damson instances and exit.
   --pane <id>             Address a specific pane (id from `agents` / `spawn`) instead of
                           the active one. Honored by send-text, send-key, dump-grid, zoom,
-                          resize-pane, focus-pane, close-pane and pane-info; an id that no
+                          resize-pane, focus-pane, close-pane, set-title and pane-info; an id that no
                           longer resolves is an error, never a fallback to the active pane.
   -h, --help              Show this help.
 """
@@ -90,6 +94,7 @@ var paneArg: String?
 var spawnSplit: SplitDir?
 var spawnCwd: String?
 var spawnKey: String?
+var spawnTitle: String?
 
 var i = 0
 while i < args.count {
@@ -131,6 +136,11 @@ while i < args.count {
         i += 1
         guard i < args.count else { die("--key requires a token") }
         spawnKey = args[i]
+        i += 1
+    case "--title":
+        i += 1
+        guard i < args.count else { die("--title requires a label") }
+        spawnTitle = args[i]
         i += 1
     default:
         // Options must precede the subcommand. Once a positional (the subcommand) is
@@ -251,13 +261,17 @@ case "spawn":
     guard !rest.isEmpty else {
         die("spawn requires a command, after `--`: spawn [--split-h|--split-v] [--cwd P] [--key K] -- argv…")
     }
-    cmdKind = .spawnPane(SpawnSpec(split: spawnSplit, cwd: spawnCwd, argv: rest, key: spawnKey))
+    cmdKind = .spawnPane(SpawnSpec(split: spawnSplit, cwd: spawnCwd, argv: rest,
+                                   key: spawnKey, title: spawnTitle))
 case "agents":
     guard rest.isEmpty else { die("agents takes no arguments") }
     cmdKind = .listAgents
 case "watch-agents":
     guard rest.isEmpty else { die("watch-agents takes no arguments") }
     cmdKind = .watchAgents
+case "set-title":
+    // Joined like send-text so an unquoted multi-word label works; no args clears it.
+    cmdKind = .setTitle(rest.joined(separator: " "))
 case "pane-info":
     guard rest.isEmpty else { die("pane-info takes no arguments (use --pane <id>)") }
     cmdKind = .paneInfo

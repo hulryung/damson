@@ -440,6 +440,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .spawnPane(let spec):              return controlSpawnPane(spec)
         case .listAgents:                       return controlListAgents()
         case .paneInfo:                         return controlPaneInfo(cmd.target)
+        case .setTitle(let title):              return controlSetTitle(title, cmd.target)
         case .watchAgents:
             // Never reached: the socket server intercepts this before dispatch, because it
             // is a stream rather than a request/response. Handled here only so the switch
@@ -533,6 +534,9 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             session = window.addNewTab(configOverride: config)
         }
         guard let session else { return .err("failed to open a pane") }
+        // Label before answering: a coordinator opening several agents in a loop would
+        // otherwise show a row of identically-named tabs until each follow-up call lands.
+        if let title = spec.title { _ = window.setTabTitle(containing: session, to: title) }
         let id = PaneRegistry.shared.id(for: session)
         if let key = spec.key { spawnedByKey[key] = id }
         return .pane(paneInfo(for: session, id: id))
@@ -599,6 +603,39 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Label the tab holding the addressed pane. An empty title clears the label and hands
+    /// the tab back to the child's own title, which is what a double-click rename to "" does.
+    ///
+    /// Tab-level rather than pane-level on purpose: `spawn` without a split opens a tab per
+    /// agent, and the tab is what the user reads when scanning for the one that needs them.
+    @MainActor
+    private func controlSetTitle(_ title: String, _ target: PaneTarget) -> ControlResponse {
+        switch resolvePane(target) {
+        case .failure(let resp): return resp
+        case .session(let session):
+            // A pane can live in any window, not just the active one — addressing it must
+            // not depend on which window happens to be in front.
+            for controller in compactControllers
+            where controller.setTabTitle(containing: session, to: title) {
+                return .ok()
+            }
+            return .err("pane is not in any open tab")
+        }
+    }
+
+    /// What the user actually reads on the tab: a pinned label if one is set, otherwise the
+    /// program's own title. A coordinator maps its tasks onto tabs by this field, so
+    /// reporting the raw OSC title would hide the very label it just set.
+    @MainActor
+    private func effectiveTitle(for session: DamsonSession) -> String? {
+        for controller in compactControllers {
+            if let label = controller.tabTitle(containing: session), !label.isEmpty {
+                return label
+            }
+        }
+        return session.title.isEmpty ? nil : session.title
+    }
+
     @MainActor
     private func paneInfo(for session: DamsonSession, id: UUID,
                           tab: Int? = nil, active: Bool = false) -> PaneInfo {
@@ -606,7 +643,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                  id: id.uuidString, tab: tab,
                  pid: session.foregroundProcessID,
                  cwd: session.currentDirectory ?? session.currentWorkingDirectory,
-                 title: session.title.isEmpty ? nil : session.title,
+                 title: effectiveTitle(for: session),
                  agent: crew?.badge(for: session)?.rawValue)
     }
 

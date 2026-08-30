@@ -58,6 +58,9 @@ public enum ControlCommandKind: Equatable, Sendable {
     /// answer and hang up: the connection stays open and each change arrives as one more
     /// NDJSON line until the client disconnects.
     case watchAgents
+    /// Pin a label on a pane's tab, or clear it with the empty string. The label wins over
+    /// the child's own OSC titles, which shells rewrite on every prompt.
+    case setTitle(String)
 }
 
 /// Where a command should land. Absent on the wire means `.active`, so every existing
@@ -83,12 +86,17 @@ public struct SpawnSpec: Equatable, Sendable, Codable {
     /// retries would mint a second agent. With a key, the retry is answered with the first
     /// pane's id.
     public let key: String?
+    /// Label for the new pane's tab, pinned the moment it opens. Optional and appended
+    /// only when set, so a spawn without one is byte-identical to what shipped before.
+    public let title: String?
 
-    public init(split: SplitDir? = nil, cwd: String? = nil, argv: [String], key: String? = nil) {
+    public init(split: SplitDir? = nil, cwd: String? = nil, argv: [String],
+                key: String? = nil, title: String? = nil) {
         self.split = split
         self.cwd = cwd
         self.argv = argv
         self.key = key
+        self.title = title
     }
 }
 
@@ -185,6 +193,10 @@ public struct ControlCommand: Decodable, Equatable, Sendable {
             self.kind = .paneInfo
         case "watch-agents":
             self.kind = .watchAgents
+        case "set-title":
+            struct TitleArgs: Decodable { let title: String }
+            let a = try c.decode(TitleArgs.self, forKey: .args)
+            self.kind = .setTitle(a.title)
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .cmd, in: c,
@@ -249,10 +261,13 @@ public func encodeCommand(_ kind: ControlCommandKind) -> String {
         if let c = spec.cwd { parts.append(#""cwd":"\#(jsonEscape(c))""#) }
         parts.append(#""argv":[\#(spec.argv.map { #""\#(jsonEscape($0))""# }.joined(separator: ","))]"#)
         if let k = spec.key { parts.append(#""key":"\#(jsonEscape(k))""#) }
+        if let t = spec.title { parts.append(#""title":"\#(jsonEscape(t))""#) }
         return #"{"cmd":"spawn-pane","args":{\#(parts.joined(separator: ","))}}"#
     case .listAgents: return #"{"cmd":"list-agents"}"#
     case .paneInfo: return #"{"cmd":"pane-info"}"#
     case .watchAgents: return #"{"cmd":"watch-agents"}"#
+    case .setTitle(let t):
+        return #"{"cmd":"set-title","args":{"title":"\#(jsonEscape(t))"}}"#
     }
 }
 

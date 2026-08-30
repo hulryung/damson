@@ -88,10 +88,11 @@ original four keys and `ok()` is still `{"ok":true}`. A payload with no `"pane"`
 to `.active` — what every client meant before the key existed.
 
 ```
-damson-cli spawn [--split-h|--split-v] [--cwd P] [--key K] -- argv...
+damson-cli spawn [--split-h|--split-v] [--cwd P] [--key K] [--title T] -- argv...
 damson-cli agents
 damson-cli pane-info --pane <id>
 damson-cli --pane <id> send-text 'hello'
+damson-cli --pane <id> set-title 'review-api'
 damson-cli --pane <id> dump-grid
 damson-cli watch-agents
 ```
@@ -156,6 +157,35 @@ the boundary test at the top of this document.
 > in and one line out, and would have wedged every other client for a watcher's lifetime.
 > One thread per connection, because a connection that blocks indefinitely would occupy a
 > pool worker indefinitely.
+
+### Naming the tabs
+
+`spawn` with no `--split-*` opens a **new tab**, so the natural shape for a coordinator is
+one tab per task. That only helps a human if the tabs are distinguishable, and by default
+they are not: the tab shows the program's own title, so five `claude` panes are five
+identical tabs.
+
+`--title` (at spawn) and `set-title` (any time, on any pane, by id) write the tab label.
+Empty text clears it and hands the tab back to the program.
+
+```sh
+id=$(damson-cli spawn --key review-api --title review-api --cwd "$wt" -- claude \
+       | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+damson-cli --pane "$id" set-title 'review-api ✱ blocked'   # e.g. on a `waiting` event
+```
+
+This deliberately writes the **same slot as a double-click rename**, which buys two
+properties that a separate coordinator-only field would not have:
+
+- **It beats the program.** A stock shell rewrites the title on every prompt via OSC 0/2,
+  so a label that merely won the race at spawn time would be gone by the first prompt —
+  briefly right, then quietly wrong, which is worse than no label.
+- **It survives a restart.** Labels ride in `RestorableWindow.tabTitles`, so an agent tab
+  that rides a keeper handoff keeps the name its coordinator gave it.
+
+`agents` and `pane-info` report `title` as **what the user actually reads** — the label if
+one is set, the program's title otherwise. That is the field a coordinator joins its task
+list against, so reporting the raw OSC title there would hide the label it just set.
 
 ### Splitting changes the active pane
 

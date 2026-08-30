@@ -469,6 +469,30 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         refreshTabBar()
     }
 
+    /// Pin a label on the tab holding `session`, or clear it with nil/empty. Returns false
+    /// when the session is in no tab of this window, so the caller can keep looking.
+    ///
+    /// This is the SAME slot a double-click rename writes, deliberately: it already wins
+    /// over the child's OSC title (which a shell rewrites on every prompt) and it is
+    /// already persisted in `RestorableWindow.tabTitles`, so a coordinator's label rides a
+    /// keeper handoff along with the agent it names.
+    func setTabTitle(containing session: DamsonSession, to title: String?) -> Bool {
+        guard let idx = tabs.firstIndex(where: { tab in
+            tab.tree.root.leaves().contains { $0.session === session }
+        }) else { return false }
+        tabs[idx].customTitle = (title?.isEmpty == false) ? title : nil
+        refreshTabBar()
+        if idx == currentIndex { window?.title = displayTitle(tabs[idx]) }
+        return true
+    }
+
+    /// The label pinned on the tab holding `session`, if this window holds it at all.
+    func tabTitle(containing session: DamsonSession) -> String? {
+        tabs.first { tab in
+            tab.tree.root.leaves().contains { $0.session === session }
+        }?.customTitle
+    }
+
     /// Close the tab whose tree matches (by reference). No-op if it's already gone.
     func closeTab(matching tree: PaneTreeView) {
         if let idx = tabs.firstIndex(where: { $0.tree === tree }) {
