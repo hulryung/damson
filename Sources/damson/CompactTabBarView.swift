@@ -97,6 +97,8 @@ final class CompactTabBarView: NSView {
     private let hardMinHeaderWidth: CGFloat = 26
     /// How much every group header is shrunk this pass so the row fits. 1 = no squeeze.
     private var headerScale: CGFloat = 1
+    /// Where the dragged tab settles on drop — the slot the gap opened at.
+    private var dragDropX: CGFloat?
     /// Tabs sit flush with the bar's BOTTOM edge (Chrome-style) so the selected tab's
     /// shape can run straight into the content below it.
     private let tabHeight: CGFloat = 30
@@ -218,15 +220,18 @@ final class CompactTabBarView: NSView {
                                                 collapsed: slot.collapsed,
                                                 memberCount: slot.memberCount,
                                                 attention: slot.attention)
-                header.onToggle = { [weak self] in self?.onGroupToggled?(slot.name) }
-                header.onRename = { [weak self] new in self?.onGroupRenamed?(slot.name, new) }
                 addSubview(header)
                 groupHeaders[i] = header
             }
             // The closures captured the old name; refresh them so a renamed group still
             // addresses itself correctly.
+            // Rebound every pass: the closures capture the group's name and its first tab's
+            // index, and both move when tabs are reordered or the group is renamed.
             groupHeaders[i]?.onToggle = { [weak self] in self?.onGroupToggled?(slot.name) }
             groupHeaders[i]?.onRename = { [weak self] new in self?.onGroupRenamed?(slot.name, new) }
+            groupHeaders[i]?.onDragBegan = { [weak self] in self?.beginGroupDrag(slot.name, firstTab: i) }
+            groupHeaders[i]?.onDragMoved = { [weak self] dx in self?.updateGroupDrag(dx) }
+            groupHeaders[i]?.onDragEnded = { [weak self] in self?.finishGroupDrag() }
         }
         for (index, header) in groupHeaders where !wanted.contains(index) {
             header.removeFromSuperview()
@@ -405,28 +410,117 @@ final class CompactTabBarView: NSView {
     /// `dx` is the cursor offset from where this tab was grabbed, supplied by
     /// TabButton's responder-chain drag. The grabbed tab tracks the cursor; the
     /// neighbors glide to open a gap at the insertion slot.
+    /// The width a group header takes on the row this pass. One definition, used by both the
+    /// layout pass and the drag, so a dragged tab's gap cannot land somewhere the layout
+    /// would not have put it.
+    private func headerWidth(at index: Int) -> CGFloat {
+        guard let header = groupHeaders[index] else { return 0 }
+        return max(hardMinHeaderWidth, (header.preferredWidth * headerScale).rounded())
+    }
+
+    /// Where each tab sits when the row is laid out in `order`, left to right — the same
+    /// walk `layout()` does: a header takes its width in front of the tab it is attached to,
+    /// and a folded-away tab takes none.
+    private func rowPositions(order: [Int]) -> [Int: CGFloat] {
+        var out: [Int: CGFloat] = [:]
+        var x = leadingReservation
+        for i in order {
+            let hw = headerWidth(at: i)
+            if hw > 0 { x += hw + tabSpacing }
+            out[i] = x
+            if hiddenTabs.contains(i) { continue }
+            x += perTab + tabSpacing
+        }
+        return out
+    }
+
+    /// Where the dragged tab would be dropped, as an index into the array AFTER it is
+    /// removed — which is what `reorderTab(from:to:)` expects.
+    ///
+    /// Counted from actual positions rather than from `dx / slotWidth`. Slots stopped being
+    /// uniform the moment group headers joined the row: a header's width sits between two
+    /// tabs, and a folded group's tabs take no width at all, so displacement arithmetic
+    /// would commit the swap in the wrong place — visibly, and worse, it would report a
+    /// different index than the one the gap opened at.
+    private func dropTargetIndex(centerX: CGFloat, dragging idx: Int) -> Int {
+        tabButtons.indices.filter { j in
+            guard j != idx else { return false }
+            // A folded tab has no width; it is passed as soon as its header is.
+            let mid = tabBaseX(j) + (hiddenTabs.contains(j) ? 0 : perTab / 2)
+            return mid < centerX
+        }.count
+    }
+
     private func updateDrag(_ dx: CGFloat) {
         guard let idx = draggingIndex, idx < tabButtons.count else { return }
         let btn = tabButtons[idx]
         // The grabbed tab follows the cursor 1:1 (no animation on this one).
         btn.frame.origin.x = tabBaseX(idx) + dx
-        // Insertion slot from displacement. Rounding gives a half-slot
-        // hysteresis (no start jitter); the small same-direction bias commits
-        // the swap a bit earlier (~⅓ slot) so wide tabs don't feel sluggish.
-        let slotW = perTab + tabSpacing
-        let step = (dx / slotW + CGFloat(copysign(0.15, Double(dx)))).rounded()
-        let target = max(0, min(tabButtons.count - 1, idx + Int(step)))
+        let target = dropTargetIndex(centerX: btn.frame.midX, dragging: idx)
         dragTargetIndex = target
         // Re-open the gap (animated) only when the insertion slot changes, so
         // neighbors glide once per crossing instead of restarting per pixel.
         guard target != lastGapTarget else { return }
         lastGapTarget = target
-        var slot = 0
+        var order = tabButtons.indices.filter { $0 != idx }
+        order.insert(idx, at: min(max(target, 0), order.count))
+        let positions = rowPositions(order: order)
+        dragDropX = positions[idx]
         for (i, other) in tabButtons.enumerated() where i != idx {
-            if slot == target { slot += 1 }  // leave room for the dragged tab
-            moveTab(other, toX: tabBaseX(slot), animated: true)
-            slot += 1
+            if let x = positions[i] { moveTab(other, toX: x, animated: true) }
         }
+    }
+
+    // MARK: - Group drag
+    //
+    // A group moves as a RANGE. Dragging one of its member tabs can only ever take that tab
+    // out of the group — which for a group of one would destroy the thing being dragged — so
+    // the header is the handle for moving the group itself.
+
+    private var groupDrag: (name: String, first: Int, count: Int, startX: CGFloat)?
+    var onGroupMoved: ((String, Int) -> Void)?
+
+    private func beginGroupDrag(_ name: String, firstTab: Int) {
+        // The run is contiguous, so it is the header's tab plus every following tab in the
+        // same group — which the bar knows from the slots it was handed.
+        var count = 0
+        var i = firstTab
+        while i < groupSlots.count, groupSlots[i]?.name == name { count += 1; i += 1 }
+        guard count > 0 else { return }
+        groupDrag = (name, firstTab, count, tabBaseX(firstTab))
+        if let header = groupHeaders[firstTab] { header.layer?.zPosition = 10 }
+        for j in firstTab..<(firstTab + count) where j < tabButtons.count {
+            tabButtons[j].layer?.zPosition = 10
+        }
+    }
+
+    private func updateGroupDrag(_ dx: CGFloat) {
+        guard let drag = groupDrag else { return }
+        // The whole block tracks the cursor together.
+        if let header = groupHeaders[drag.first] {
+            header.frame.origin.x = drag.startX - headerWidth(at: drag.first) - tabSpacing + dx
+        }
+        for j in drag.first..<(drag.first + drag.count) where j < tabButtons.count {
+            tabButtons[j].frame.origin.x = tabBaseX(j) + dx
+        }
+    }
+
+    private func finishGroupDrag() {
+        guard let drag = groupDrag else { return }
+        groupDrag = nil
+        if let header = groupHeaders[drag.first] { header.layer?.zPosition = 0 }
+        for j in drag.first..<(drag.first + drag.count) where j < tabButtons.count {
+            tabButtons[j].layer?.zPosition = 0
+        }
+        // Where the block's leading edge came to rest, as an index among the tabs that are
+        // NOT in this group — the same space `moveGroup` inserts into.
+        let block = Set(drag.first..<(drag.first + drag.count))
+        let leadX = tabButtons.indices.contains(drag.first) ? tabButtons[drag.first].frame.minX : drag.startX
+        let target = tabButtons.indices.filter { j in
+            guard !block.contains(j) else { return false }
+            return tabBaseX(j) + (hiddenTabs.contains(j) ? 0 : perTab / 2) < leadX
+        }.count
+        onGroupMoved?(drag.name, target)
     }
 
     private func finishDrag() {
@@ -450,7 +544,9 @@ final class CompactTabBarView: NSView {
         CATransaction.setCompletionBlock { [weak self] in
             self?.onTabReordered?(idx, target)
         }
-        moveTab(btn, toX: tabBaseX(target), animated: true)
+        // Settle onto the position the gap actually opened at, not a uniform-slot guess.
+        moveTab(btn, toX: dragDropX ?? tabBaseX(target), animated: true)
+        dragDropX = nil
         CATransaction.commit()
     }
 
@@ -507,7 +603,7 @@ final class CompactTabBarView: NSView {
         restingX = Array(repeating: leadingReservation, count: tabButtons.count)
         for (i, btn) in tabButtons.enumerated() {
             if let header = groupHeaders[i] {
-                let w = max(hardMinHeaderWidth, (header.preferredWidth * headerScale).rounded())
+                let w = headerWidth(at: i)
                 header.frame = NSRect(x: x, y: tabY, width: w, height: tabHeight)
                 x += w + tabSpacing
             }

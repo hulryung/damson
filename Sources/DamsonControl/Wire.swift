@@ -67,6 +67,9 @@ public enum ControlCommandKind: Equatable, Sendable {
     case closeGroup(String)
     case setGroupCollapsed(String, Bool)
     case renameGroup(String, to: String)
+    /// Move a whole group so its first tab lands at `to`, counted among the tabs that are
+    /// not in it. The same operation the group header's drag performs.
+    case moveGroup(String, to: Int)
 }
 
 /// Where a command should land. Absent on the wire means `.active`, so every existing
@@ -231,6 +234,15 @@ public struct ControlCommand: Decodable, Equatable, Sendable {
                     debugDescription: "group-rename requires a name and a new name")
             }
             self.kind = .renameGroup(a.name, to: a.to)
+        case "group-move":
+            struct MoveArgs: Decodable { let name: String; let to: Int }
+            let a = try c.decode(MoveArgs.self, forKey: .args)
+            guard !a.name.isEmpty, a.to >= 0 else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .args, in: c,
+                    debugDescription: "group-move requires a name and a non-negative index")
+            }
+            self.kind = .moveGroup(a.name, to: a.to)
         case "set-title":
             struct TitleArgs: Decodable { let title: String }
             let a = try c.decode(TitleArgs.self, forKey: .args)
@@ -314,6 +326,8 @@ public func encodeCommand(_ kind: ControlCommandKind) -> String {
         return #"{"cmd":"group-collapse","args":{"name":"\#(jsonEscape(n))","collapsed":\#(c)}}"#
     case .renameGroup(let n, let to):
         return #"{"cmd":"group-rename","args":{"name":"\#(jsonEscape(n))","to":"\#(jsonEscape(to))"}}"#
+    case .moveGroup(let n, let to):
+        return #"{"cmd":"group-move","args":{"name":"\#(jsonEscape(n))","to":\#(to)}}"#
     }
 }
 

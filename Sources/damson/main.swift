@@ -445,6 +445,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .closeGroup(let name):             return controlCloseGroup(name)
         case .setGroupCollapsed(let n, let c):  return controlSetGroupCollapsed(n, c)
         case .renameGroup(let n, let to):       return controlRenameGroup(n, to: to)
+        case .moveGroup(let n, let to):         return controlMoveGroup(n, to: to)
         case .watchAgents:
             // Never reached: the socket server intercepts this before dispatch, because it
             // is a stream rather than a request/response. Handled here only so the switch
@@ -666,6 +667,17 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @MainActor
     private func controlRenameGroup(_ name: String, to newName: String) -> ControlResponse {
         for controller in compactControllers where controller.renameGroup(named: name, to: newName) {
+            return .ok()
+        }
+        return .err("no such group: \(name)")
+    }
+
+    /// Move a whole group. Exercises the same controller path the header drag uses, so the
+    /// two cannot drift.
+    @MainActor
+    private func controlMoveGroup(_ name: String, to index: Int) -> ControlResponse {
+        for controller in compactControllers where controller.groupName(exists: name) {
+            controller.moveGroup(named: name, to: index)
             return .ok()
         }
         return .err("no such group: \(name)")

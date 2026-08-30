@@ -276,6 +276,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabBar.onTabReordered = { [weak self] from, to in self?.reorderTab(from: from, to: to) }
         tabBar.onTabRenamed = { [weak self] idx, title in self?.renameTab(idx, to: title) }
         tabBar.onGroupToggled = { [weak self] name in self?.toggleGroupCollapsed(named: name) }
+        tabBar.onGroupMoved = { [weak self] name, to in self?.moveGroup(named: name, to: to) }
         tabBar.onGroupRenamed = { [weak self] name, new in
             _ = self?.renameGroup(named: name, to: new)
         }
@@ -541,6 +542,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return true
     }
 
+    /// Whether this window holds a group by that name.
+    func groupName(exists name: String) -> Bool {
+        syncGroupLayout()
+        return groupLayout.group(named: name) != nil
+    }
+
     /// Every group in this window, in the order they appear.
     func groupRows() -> [GroupInfo] {
         syncGroupLayout()
@@ -637,6 +644,25 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         groupLayout.update(group)
         refreshTabBar()
         return .ok
+    }
+
+    /// Move a whole group so its first tab lands at `to`, counted among the tabs that are
+    /// not in it. `tabs` is reordered to match exactly what the layout decided, so the model
+    /// and the screen cannot disagree about where the run ended up.
+    func moveGroup(named name: String, to destination: Int) {
+        syncGroupLayout()
+        guard let group = groupLayout.group(named: name),
+              let range = groupLayout.range(of: group.id) else { return }
+        let activeTab = tabs.indices.contains(currentIndex) ? tabs[currentIndex].tree : nil
+        let block = Array(tabs[range])
+        tabs.removeSubrange(range)
+        let landed = groupLayout.moveGroup(group.id, to: destination)
+        tabs.insert(contentsOf: block, at: min(max(landed, 0), tabs.count))
+        // Follow the tab the user was on rather than an index that now means another tab.
+        if let activeTab, let i = tabs.firstIndex(where: { $0.tree === activeTab }) {
+            currentIndex = i
+        }
+        refreshTabBar()
     }
 
     /// Unfold the group holding `index`, if it is folded. Called before activation, because

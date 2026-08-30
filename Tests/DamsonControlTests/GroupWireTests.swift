@@ -67,6 +67,8 @@ final class GroupWireTests: XCTestCase {
             (.setGroupCollapsed("run-7", true), #"{"cmd":"group-collapse","args":{"name":"run-7","collapsed":true}}"#),
             (.setGroupCollapsed("run-7", false), #"{"cmd":"group-collapse","args":{"name":"run-7","collapsed":false}}"#),
             (.renameGroup("run-7", to: "run-8"), #"{"cmd":"group-rename","args":{"name":"run-7","to":"run-8"}}"#),
+            (.moveGroup("run-7", to: 0), #"{"cmd":"group-move","args":{"name":"run-7","to":0}}"#),
+            (.moveGroup("run-7", to: 3), #"{"cmd":"group-move","args":{"name":"run-7","to":3}}"#),
         ]
         for (kind, expected) in cases {
             XCTAssertEqual(encodeCommand(kind), expected)
@@ -93,7 +95,9 @@ final class GroupWireTests: XCTestCase {
     /// interpolating an unset variable, and must not decode into "close the group called ''".
     func testEmptyGroupNameIsRejected() {
         for json in [#"{"cmd":"group-close","args":{"name":""}}"#,
-                     #"{"cmd":"group-rename","args":{"name":"a","to":""}}"#] {
+                     #"{"cmd":"group-rename","args":{"name":"a","to":""}}"#,
+                     #"{"cmd":"group-move","args":{"name":"","to":0}}"#,
+                     #"{"cmd":"group-move","args":{"name":"a","to":-1}}"#] {
             XCTAssertThrowsError(try decode(json), json)
         }
     }

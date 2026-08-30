@@ -95,7 +95,7 @@ damson-cli --pane <id> send-text 'hello'
 damson-cli --pane <id> set-title 'review-api'
 damson-cli --pane <id> dump-grid
 damson-cli watch-agents
-damson-cli group list|close <name>|collapse <name>|expand <name>|rename <name> <new>
+damson-cli group list|close <name>|collapse <name>|expand <name>|rename <name> <new>|move <name> <i>
 ```
 
 **Every pane-addressed command honors `--pane`**: `send-text`, `send-key`, `dump-grid`,
@@ -208,6 +208,10 @@ first one on screen — the only answer a user could predict.
 A group's tabs are kept **contiguous**, so a tab joining late is relocated next to the
 others rather than left where it was opened. `agents` and `pane-info` report `group`,
 which is what a coordinator joins its task list against.
+
+`group move` reorders a whole run: the index counts among the tabs that are *not* in the
+group, which is the same space the header's drag resolves to. Group order is not stored
+anywhere — a group sits where its first tab sits — so moving one is moving its range.
 
 **`group close` is destructive** — several tabs and the programs inside them. A name that
 matches nothing is a typed error and a non-zero exit, never a quiet success: a coordinator

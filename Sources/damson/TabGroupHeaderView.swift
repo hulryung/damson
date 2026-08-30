@@ -8,6 +8,14 @@ import AppKit
 final class TabGroupHeaderView: NSView, ImmediateTitlebarClick {
     var onToggle: (() -> Void)?
     var onRename: ((String) -> Void)?
+    /// Drag-to-reorder the whole group. `dx` is the cursor's horizontal offset from the
+    /// grab point, matching what a tab reports.
+    var onDragBegan: (() -> Void)?
+    var onDragMoved: ((CGFloat) -> Void)?
+    var onDragEnded: (() -> Void)?
+
+    private var dragStartX: CGFloat?
+    private var didDrag = false
 
     private let dot = NSView()
     private let nameLabel = NSTextField(labelWithString: "")
@@ -116,8 +124,30 @@ final class TabGroupHeaderView: NSView, ImmediateTitlebarClick {
 
     // MARK: - Interaction
 
+    // A press is a drag until it turns out not to be: folding happens on mouse-UP, so a
+    // grab that moves reorders the group instead of collapsing it under the cursor.
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 2 { beginRename() } else { onToggle?() }
+        if event.clickCount == 2 { beginRename(); return }
+        dragStartX = convert(event.locationInWindow, from: nil).x
+        didDrag = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = dragStartX else { return }
+        let dx = convert(event.locationInWindow, from: nil).x - start
+        if !didDrag {
+            // A few pixels of slop, so a click with an unsteady hand still folds.
+            guard abs(dx) > 3 else { return }
+            didDrag = true
+            onDragBegan?()
+        }
+        onDragMoved?(dx)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer { dragStartX = nil; didDrag = false }
+        guard dragStartX != nil else { return }
+        if didDrag { onDragEnded?() } else { onToggle?() }
     }
 
     private func beginRename() {

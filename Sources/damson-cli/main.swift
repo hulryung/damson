@@ -65,6 +65,8 @@ Commands:
   group collapse <name>   Fold a group down to its header.
   group expand <name>
   group rename <name> <new>
+  group move <name> <index>   Move a whole group; index counts among the tabs
+                              that are not in it.
   set-title <text>        Label the tab holding the addressed pane. The label wins over
                           the program's own title, which shells rewrite on every prompt,
                           and it survives a restart. Empty text clears it.
@@ -296,6 +298,12 @@ case "group":
     case "collapse", "expand":
         guard groupArgs.count == 1, !groupArgs[0].isEmpty else { die("group \(verb) requires a name") }
         cmdKind = .setGroupCollapsed(groupArgs[0], verb == "collapse")
+    case "move":
+        guard groupArgs.count == 2, !groupArgs[0].isEmpty,
+              let to = Int(groupArgs[1]), to >= 0 else {
+            die("group move requires <name> <index>")
+        }
+        cmdKind = .moveGroup(groupArgs[0], to: to)
     case "rename":
         guard groupArgs.count == 2, !groupArgs[0].isEmpty, !groupArgs[1].isEmpty else {
             die("group rename requires <name> <new>")
