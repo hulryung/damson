@@ -34,6 +34,7 @@ fi
 echo "==> swift build -c release"
 swift build -c release --product damson
 swift build -c release --product damson-cli
+swift build -c release --product damson-crew
 swift build -c release --product damson-keeper
 
 # To build an arm64 + x86_64 universal binary, add --arch arm64 --arch x86_64
@@ -42,9 +43,10 @@ swift build -c release --product damson-keeper
 BIN_DIR="$(swift build -c release --show-bin-path)"
 DAMSON_BIN="$BIN_DIR/damson"
 CLI_BIN="$BIN_DIR/damson-cli"
+CREW_BIN="$BIN_DIR/damson-crew"
 KEEPER_BIN="$BIN_DIR/damson-keeper"
 
-if [[ ! -x "$DAMSON_BIN" || ! -x "$CLI_BIN" || ! -x "$KEEPER_BIN" ]]; then
+if [[ ! -x "$DAMSON_BIN" || ! -x "$CLI_BIN" || ! -x "$CREW_BIN" || ! -x "$KEEPER_BIN" ]]; then
     echo "error: built binaries missing under $BIN_DIR" >&2
     exit 1
 fi
@@ -62,6 +64,12 @@ chmod 0755 "$MACOS_DIR/damson"
 #  both MacOS/ and Resources/ still signs fine, so Resources/ is cleaner.)
 cp "$CLI_BIN" "$RESOURCES_DIR/damson-cli"
 chmod 0755 "$RESOURCES_DIR/damson-cli"
+
+# damson-crew — the coordinator. Ships beside damson-cli because the Claude Code skill
+# tells people to run it; a skill whose main tool only exists in a source checkout would
+# be broken for everyone who installed the .dmg.
+cp "$CREW_BIN" "$RESOURCES_DIR/damson-crew"
+chmod 0755 "$RESOURCES_DIR/damson-crew"
 
 # damson-keeper — session-survival daemon spawned by the app at restart handoff.
 cp "$KEEPER_BIN" "$MACOS_DIR/damson-keeper"
@@ -119,6 +127,7 @@ echo "==> verifying bundle"
 plutil -lint "$CONTENTS/Info.plist" > /dev/null
 file "$MACOS_DIR/damson" | head -1
 file "$RESOURCES_DIR/damson-cli" | head -1
+file "$RESOURCES_DIR/damson-crew" | head -1
 
 # Trampoline self-consistency — when the built binary is inside the .app, the
 # trampoline detects this via isInsideAppBundle() and skips, so there's no extra wrap. OK.

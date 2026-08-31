@@ -42,6 +42,59 @@ Grab the latest `.dmg` from [GitHub Releases](https://github.com/hulryung/damson
 
 Damson is in active beta. The developer uses it as their daily-driver terminal and polishes it through daily dogfooding.
 
+## Running AI agents in Damson
+
+Damson can open, label and observe panes running Anthropic's `claude`, and there's a Claude
+Code skill that teaches Claude how to drive it. Ask for "a tab per task" and you get one
+labelled tab per piece of work, grouped so the whole run folds or closes as a unit — and a
+notification when one of them is blocked waiting on you.
+
+```sh
+claude plugin marketplace add hulryung/damson
+claude plugin install damson-orchestration@damson
+```
+
+Damson is a terminal emulator, so its repository is large. If you'd rather not have all of it
+checked out for one skill, take just the plugin (about 250 KB):
+
+```sh
+claude plugin marketplace add hulryung/damson --sparse .claude-plugin plugins
+```
+
+The skill drives two command-line tools that ship inside the app, at
+`Damson.app/Contents/Resources/`. Link them onto your `PATH` — `install-local.sh` does this
+for you, or by hand:
+
+```sh
+sudo ln -sf /Applications/Damson.app/Contents/Resources/damson-cli  /usr/local/bin/
+sudo ln -sf /Applications/Damson.app/Contents/Resources/damson-crew /usr/local/bin/
+```
+
+`damson-cli` addresses panes one at a time; `damson-crew` runs a whole list of tasks and
+waits for the one that needs you:
+
+```sh
+damson-crew run    --tasks tasks.json --group refactor
+damson-crew watch  --tasks tasks.json --notify --focus
+damson-crew close  --group refactor --yes
+```
+
+`tasks.json` is just a list. Each `name` becomes the tab's label, so you can tell the run
+apart at a glance:
+
+```json
+[
+  {"name": "review-api",  "cwd": "~/dev/api",  "prompt": "review the auth changes"},
+  {"name": "fix-parser",  "cwd": "~/dev/core", "prompt": "fix the failing parser tests"}
+]
+```
+
+**What this deliberately isn't:** a queue. Claude Code has no completion signal for a session
+running in a terminal, so nothing here decides a task is finished and starts the next one.
+It fans work out and routes your attention to whichever agent is stuck — the judgement stays
+with you. [docs/CLAUDE-ORCHESTRATION.md](docs/CLAUDE-ORCHESTRATION.md) has the measurements
+behind that, and everything else that was tried and rejected.
+
 ## Embedding Damson in your app
 
 Damson's engine ships as a Swift Package, `DamsonTerminal` — the same VT parser, grid, and Metal renderer the app uses, available as a library so you can put a terminal view inside your own macOS app. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
@@ -55,3 +108,4 @@ If you're curious about the internals:
 - [docs/SMOOTH-SCROLL.md](docs/SMOOTH-SCROLL.md) — the concrete recipe for guaranteed-smooth scrolling
 - [docs/KOREAN-IME.md](docs/KOREAN-IME.md) — root-cause analysis and fix for the Korean first-jamo race
 - [docs/KOREAN-FONT-CASCADE.md](docs/KOREAN-FONT-CASCADE.md) — Korean font fallback design
+- [docs/CLAUDE-ORCHESTRATION.md](docs/CLAUDE-ORCHESTRATION.md) — running agents in panes, and where that stops

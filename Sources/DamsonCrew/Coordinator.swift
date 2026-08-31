@@ -62,7 +62,7 @@ public struct Coordinator {
     /// that task.
     public func fanOut(_ tasks: [CrewTask], group: String?) -> [Outcome] {
         tasks.map { task in
-            let spec = SpawnSpec(cwd: task.cwd,
+            let spec = SpawnSpec(cwd: task.resolvedCWD,
                                  argv: task.argv(defaultCommand: defaultCommand),
                                  key: task.name,
                                  title: task.name,

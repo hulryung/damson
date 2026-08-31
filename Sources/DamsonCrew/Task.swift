@@ -21,6 +21,16 @@ public struct CrewTask: Codable, Equatable, Sendable {
         self.command = command
     }
 
+    /// Where the agent should run, as a path the OS will accept.
+    ///
+    /// A task list is written by a human, so it contains `~`. damson `chdir`s to whatever it
+    /// is given and **discards the failure**, so an unexpanded tilde does not error — the
+    /// pane just opens somewhere else, and an agent quietly works in the wrong directory.
+    public var resolvedCWD: String? {
+        guard let cwd, !cwd.isEmpty else { return nil }
+        return cwd.hasPrefix("~") ? (cwd as NSString).expandingTildeInPath : cwd
+    }
+
     /// What to run in the pane. The prompt goes last, as an argument.
     public func argv(defaultCommand: [String]) -> [String] {
         var out = (command?.isEmpty == false) ? command! : defaultCommand

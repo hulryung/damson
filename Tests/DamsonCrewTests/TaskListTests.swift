@@ -61,3 +61,25 @@ final class TaskListTests: XCTestCase {
                        ["codex", "-q", "go"])
     }
 }
+
+/// A task list is written by a human, so it contains `~`. damson `chdir`s to whatever it is
+/// handed and discards the failure, so an unexpanded tilde produces no error at all — the
+/// pane just opens somewhere else and the agent works in the wrong directory. Silent, and
+/// only noticed after the agent has done something.
+final class TaskCWDTests: XCTestCase {
+    func testTildeIsExpanded() {
+        let home = NSHomeDirectory()
+        XCTAssertEqual(CrewTask(name: "a", cwd: "~/dev/api").resolvedCWD, "\(home)/dev/api")
+        XCTAssertEqual(CrewTask(name: "a", cwd: "~").resolvedCWD, home)
+    }
+
+    func testAbsoluteAndRelativePathsPassThrough() {
+        XCTAssertEqual(CrewTask(name: "a", cwd: "/tmp/x").resolvedCWD, "/tmp/x")
+        XCTAssertEqual(CrewTask(name: "a", cwd: "./sub").resolvedCWD, "./sub")
+    }
+
+    func testNoCWDStaysNil() {
+        XCTAssertNil(CrewTask(name: "a").resolvedCWD)
+        XCTAssertNil(CrewTask(name: "a", cwd: "").resolvedCWD)
+    }
+}

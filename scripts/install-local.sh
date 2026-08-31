@@ -77,17 +77,18 @@ echo "==> installed: $DEST  ($MARKETING_VERSION / $HASH)"
 #     without this `damson-cli` is not a command and nothing outside the app — a script, a
 #     coordinator driving `spawn`/`watch-agents` — can reach the control socket at all.
 #     Skipped rather than sudo-prompting if the target directory is not writable.
-CLI_SRC="$DEST/Contents/Resources/damson-cli"
 CLI_LINK_DIR="${CLI_LINK_DIR:-/usr/local/bin}"
-if [[ -x "$CLI_SRC" ]]; then
+for tool in damson-cli damson-crew; do
+    SRC="$DEST/Contents/Resources/$tool"
+    [[ -x "$SRC" ]] || continue
     if [[ -d "$CLI_LINK_DIR" && -w "$CLI_LINK_DIR" ]]; then
-        ln -sf "$CLI_SRC" "$CLI_LINK_DIR/damson-cli"
-        echo "==> linked $CLI_LINK_DIR/damson-cli -> $CLI_SRC"
+        ln -sf "$SRC" "$CLI_LINK_DIR/$tool"
+        echo "==> linked $CLI_LINK_DIR/$tool -> $SRC"
     else
         echo "==> note: $CLI_LINK_DIR not writable; link it yourself:"
-        echo "    sudo ln -sf \"$CLI_SRC\" $CLI_LINK_DIR/damson-cli"
+        echo "    sudo ln -sf \"$SRC\" $CLI_LINK_DIR/$tool"
     fi
-fi
+done
 
 # 4) Launch (can be skipped with NO_LAUNCH).
 if [[ "${NO_LAUNCH:-0}" != "1" ]]; then

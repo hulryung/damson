@@ -84,6 +84,13 @@ codesign --force --options runtime --timestamp \
     --sign "$APPLE_SIGNING_IDENTITY" \
     "$APP/Contents/Resources/damson-cli"
 
+# damson-crew — nested executable. Every Mach-O in the bundle must be signed itself or
+# notarization rejects the whole app (learned from v0.4.0's failed staple).
+codesign --force --options runtime --timestamp \
+    --entitlements "$ENTITLEMENTS" \
+    --sign "$APPLE_SIGNING_IDENTITY" \
+    "$APP/Contents/Resources/damson-crew"
+
 # damson-keeper — nested executable (session survival daemon). Signing the bundle
 # covers only the MAIN executable; every other Mach-O must be signed itself or
 # notarization rejects the whole app (learned from v0.4.0's failed staple).
