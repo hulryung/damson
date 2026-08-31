@@ -79,5 +79,26 @@ damson-crew watch  --tasks tasks.json --notify --focus
 damson-crew close  --group run-7 --yes
 ```
 
-`tasks.json` is an array of `{"name", "cwd", "prompt"}`. `name` is both the tab label and the
-spawn key, so it must be unique — a duplicate silently collapses two tasks into one pane.
+A task is `{"name", "prompt"}` plus where to run: either `"cwd"`, or `"repo"` with optional
+`"branch"` and `"base"`, in which case damson-crew makes a git worktree and uses it. `name`
+is both the tab label and the spawn key, so it must be unique — a duplicate silently
+collapses two tasks into one pane.
+
+## Any agent, not just claude
+
+`"command"` overrides the agent. The prompt is appended as the **last argument**, which
+`claude`, `codex`, `grok` and `cursor-agent` all take; put `{prompt}` in the command for a
+tool that wants it behind a flag.
+
+Make the worktree here rather than reaching for the agent's own flag. Support is per-tool and
+inconsistent — `claude -w`, `grok --worktree=<name>`, nothing in `codex` or `cursor-agent` —
+so a task list that used them would only work for some of its tasks.
+
+**`close --remove-worktrees` never forces.** git refuses to remove a worktree holding
+uncommitted or untracked files; report that refusal, never work around it. Those files are
+the agent's work and they are uncommitted exactly when losing them would matter most.
+
+**The watching half is Claude-only.** `watch`/`--notify` join panes to Claude Code's session
+records. Agents from other tools open, get labelled and grouped, and run — but never raise a
+`waiting` alert, because nothing publishes that state. Say so rather than letting someone
+plan a run around alerts that will not arrive.

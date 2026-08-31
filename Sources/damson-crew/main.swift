@@ -15,13 +15,22 @@ Usage:
   damson-crew run   --tasks FILE [--group NAME] [--pid PID] [--command CMD]
   damson-crew watch  [--tasks FILE] [--pid PID] [--notify] [--focus]
   damson-crew status --tasks FILE [--group NAME] [--pid PID]
-  damson-crew close  --group NAME [--pid PID] [--yes]
+  damson-crew close  --group NAME [--pid PID] [--yes] [--remove-worktrees]
 
 Options:
-  --tasks FILE     JSON array of tasks. "-" reads stdin. Each entry:
+  --tasks FILE     JSON array of tasks. "-" reads stdin. Each entry needs a
+                   name, a prompt, and somewhere to run — either a `cwd`, or a
+                   `repo` (plus optional `branch` and `base`), in which case a
+                   git worktree is made and used:
                      {"name": "review-api", "cwd": "/path", "prompt": "…"}
+                     {"name": "review-api", "repo": "~/dev/api",
+                      "branch": "agent/review-api", "base": "main",
+                      "prompt": "…", "command": ["codex"]}
                    `name` is the tab label AND the spawn key, so re-running a
                    list reattaches to its tabs instead of duplicating them.
+                   `command` overrides the agent; the prompt is appended last,
+                   which claude, codex, grok and cursor-agent all take. Put
+                   {prompt} in the command for a tool that wants a flag.
   --group NAME     Put every tab in this group, so the run can be folded or
                    closed as a unit (damson-cli group close NAME).
   --pid PID        Target a specific damson instance (default: most recent).
@@ -32,6 +41,10 @@ Options:
   --focus          Also bring that agent's tab forward.
   --yes            Required by `close`, which shuts several tabs and the
                    programs inside them.
+  --remove-worktrees  With `close` (and --tasks): also remove the git worktrees
+                   the run created. Never forced — git refuses a tree holding
+                   uncommitted or untracked files, and that refusal is
+                   reported rather than worked around.
 
 `run` is safe to repeat: every spawn carries the task name as its key, so a
 second run reattaches to the tabs it already opened. `status` says which
@@ -73,6 +86,7 @@ var command: [String] = ["claude"]
 var notify = false
 var focus = false
 var confirmed = false
+var removeWorktrees = false
 
 var i = 0
 while i < args.count {
@@ -95,6 +109,8 @@ while i < args.count {
         focus = true; i += 1
     case "--yes":
         confirmed = true; i += 1
+    case "--remove-worktrees":
+        removeWorktrees = true; i += 1
     case "-h", "--help":
         print(usage); exit(0)
     default:
@@ -235,9 +251,26 @@ case "close":
         die("close would shut every tab in group '\(group)' and the programs in them. " +
             "Re-run with --yes if that is what you want.")
     }
-    switch RunManager(client: client).close(group: group) {
+    let manager = RunManager(client: client)
+    switch manager.close(group: group) {
     case .failure(let e): die("damson-crew: \(e.message)", code: 1)
     case .success:        print("closed \(group)")
+    }
+    if removeWorktrees {
+        guard let tasksPath else { die("--remove-worktrees needs --tasks to know which ones") }
+        var kept = 0
+        for outcome in manager.removeWorktrees(of: readTasks(tasksPath).tasks) {
+            if let why = outcome.kept {
+                kept += 1
+                FileHandle.standardError.write(Data("kept \(outcome.path): \(why)\n".utf8))
+            } else {
+                print("removed \(outcome.path)")
+            }
+        }
+        if kept > 0 {
+            FileHandle.standardError.write(
+                Data("\(kept) worktree(s) kept because they hold uncommitted work\n".utf8))
+        }
     }
 
 default:

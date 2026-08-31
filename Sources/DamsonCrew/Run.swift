@@ -29,7 +29,12 @@ public struct RunStatus: Equatable {
 /// pane ids and tab labels both survive a restart.
 public struct RunManager {
     private let client: DamsonClient
-    public init(client: DamsonClient) { self.client = client }
+    private let worktrees: WorktreeManager
+
+    public init(client: DamsonClient, worktrees: WorktreeManager = WorktreeManager()) {
+        self.client = client
+        self.worktrees = worktrees
+    }
 
     /// Join the task list to what is on screen, by tab label.
     public func status(of tasks: [CrewTask], group: String?) -> Result<RunStatus, CrewError> {
@@ -66,6 +71,31 @@ public struct RunManager {
     /// Requires a group. Closing "the tabs whose labels match my task list" would be a much
     /// worse rule for a destructive command — a coordinator with a task called `build` would
     /// close a tab the user had named `build` themselves.
+    /// What happened to each of a run's worktrees when tearing it down.
+    public struct WorktreeOutcome: Equatable {
+        public let task: String
+        public let path: String
+        /// nil when it was removed; otherwise git's reason for refusing.
+        public let kept: String?
+    }
+
+    /// Remove the worktrees a run created. Never forces.
+    ///
+    /// `git worktree remove` refuses a tree with uncommitted or untracked files, and that
+    /// refusal is the point: those files are the agent's work, and it is uncommitted exactly
+    /// when losing it would matter most. A refusal is reported, not worked around.
+    public func removeWorktrees(of tasks: [CrewTask]) -> [WorktreeOutcome] {
+        tasks.compactMap { task -> WorktreeOutcome? in
+            guard let repo = task.repo, let branch = task.worktreeBranch else { return nil }
+            guard case .success(let trees) = worktrees.list(repo: repo),
+                  let tree = trees.first(where: { $0.branch == branch }) else { return nil }
+            switch worktrees.remove(repo: repo, path: tree.path) {
+            case .success:        return WorktreeOutcome(task: task.name, path: tree.path, kept: nil)
+            case .failure(let e): return WorktreeOutcome(task: task.name, path: tree.path, kept: e.message)
+            }
+        }
+    }
+
     public func close(group: String) -> Result<Void, CrewError> {
         switch client.send(.closeGroup(group)) {
         case .failure(let e): return .failure(e)

@@ -45,10 +45,26 @@ public struct Coordinator {
 
     private let client: DamsonClient
     private let defaultCommand: [String]
+    private let worktrees: WorktreeManager
 
-    public init(client: DamsonClient, defaultCommand: [String] = ["claude"]) {
+    public init(client: DamsonClient, defaultCommand: [String] = ["claude"],
+                worktrees: WorktreeManager = WorktreeManager()) {
         self.client = client
         self.defaultCommand = defaultCommand
+        self.worktrees = worktrees
+    }
+
+    /// Where a task should run: its worktree if it asked for one, else its `cwd`.
+    ///
+    /// Worktrees are made here rather than left to the agent because support for them is
+    /// per-tool and inconsistent — `claude -w`, `grok --worktree=<name>`, and nothing at all
+    /// in `codex` or `cursor-agent`. All any of them needs is to be started in the right
+    /// directory, so doing it once here makes a task list portable across every one.
+    func workingDirectory(for task: CrewTask) -> Result<String?, CrewError> {
+        guard let repo = task.repo, let branch = task.worktreeBranch else {
+            return .success(task.resolvedCWD)
+        }
+        return worktrees.ensure(repo: repo, branch: branch, base: task.base).map { $0 }
     }
 
     /// Open a tab per task. One task failing does not stop the rest: a run of five where the
@@ -62,7 +78,16 @@ public struct Coordinator {
     /// that task.
     public func fanOut(_ tasks: [CrewTask], group: String?) -> [Outcome] {
         tasks.map { task in
-            let spec = SpawnSpec(cwd: task.resolvedCWD,
+            // A worktree that cannot be made is this task's failure, not the run's: the
+            // others should still start.
+            let cwd: String?
+            switch workingDirectory(for: task) {
+            case .failure(let e):
+                return Outcome(task: task.name, paneID: nil, error: e.message)
+            case .success(let path):
+                cwd = path
+            }
+            let spec = SpawnSpec(cwd: cwd,
                                  argv: task.argv(defaultCommand: defaultCommand),
                                  key: task.name,
                                  title: task.name,

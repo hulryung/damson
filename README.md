@@ -80,14 +80,30 @@ damson-crew close  --group refactor --yes
 ```
 
 `tasks.json` is just a list. Each `name` becomes the tab's label, so you can tell the run
-apart at a glance:
+apart at a glance. Give a task a `repo` instead of a `cwd` and a git worktree is made for it:
 
 ```json
 [
-  {"name": "review-api",  "cwd": "~/dev/api",  "prompt": "review the auth changes"},
-  {"name": "fix-parser",  "cwd": "~/dev/core", "prompt": "fix the failing parser tests"}
+  {"name": "review-api", "cwd": "~/dev/api", "prompt": "review the auth changes"},
+  {"name": "fix-parser", "repo": "~/dev/core", "branch": "agent/fix-parser",
+   "prompt": "fix the failing parser tests", "command": ["codex"]}
 ]
 ```
+
+**It is not tied to Claude.** Worktree support is per-tool and inconsistent — `claude -w`,
+`grok --worktree=<name>`, nothing at all in `codex` or `cursor-agent` — so damson-crew makes
+the worktree itself and starts the agent in it. The prompt is appended as the last argument,
+which `claude`, `codex`, `grok` and `cursor-agent` all accept; a tool that wants it behind a
+flag takes `{prompt}` in its `command`.
+
+`close --remove-worktrees` tidies them up afterwards, and **never forces**: git refuses to
+remove a worktree holding uncommitted or untracked files, and that refusal is reported rather
+than worked around. Teardown cannot destroy an agent's unsaved work.
+
+One caveat worth knowing before you plan around it: **the watching half is Claude-only.**
+`watch --notify` works by joining a pane to Claude Code's own session records, so agents from
+other tools open, get labelled and grouped, and run — but never raise a "blocked on you"
+alert, because nothing publishes that state.
 
 **What this deliberately isn't:** a queue. Claude Code has no completion signal for a session
 running in a terminal, so nothing here decides a task is finished and starts the next one.
