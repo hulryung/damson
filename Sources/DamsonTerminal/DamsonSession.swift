@@ -10,6 +10,8 @@ public final class DamsonSession: ObservableObject {
     @Published public private(set) var title: String = ""
     @Published public private(set) var workingDirectory: String?
     @Published public private(set) var processExited: Bool = false
+    /// Why the child never started, when it didn't. nil on the ordinary path.
+    public private(set) var spawnFailure: String?
     public private(set) var exitCode: Int32?
 
     /// Semantic events emitted by VTParser (for debug/test hooks).
@@ -142,6 +144,10 @@ public final class DamsonSession: ObservableObject {
                 rows: rows
             )
         } catch {
+            // Recorded, not just logged: the child never started, so a caller that opened
+            // this pane on someone's behalf has to be able to say why rather than handing
+            // back a terminal with nothing in it.
+            spawnFailure = String(describing: error)
             NSLog("damson: PTY spawn failed: \(error)")
         }
     }

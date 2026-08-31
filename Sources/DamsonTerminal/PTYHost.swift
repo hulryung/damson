@@ -8,8 +8,35 @@ import os
 /// This is the default `SessionIOBackend` (local forkpty). A tmux control-mode
 /// backend will be a sibling conformance — see `docs/TMUX-INTEGRATION.md`.
 public final class PTYHost: SessionIOBackend {
-    public enum SpawnError: Error {
+    public enum SpawnError: Error, CustomStringConvertible {
         case forkptyFailed(errno: Int32)
+        /// The working directory could not be entered. Checked in the PARENT before forking,
+        /// because `chdir` runs in the child where there is no way to report anything.
+        case cwdUnusable(path: String, reason: String)
+
+        public var description: String {
+            switch self {
+            case .forkptyFailed(let e):
+                return "forkpty failed: \(String(cString: strerror(e)))"
+            case .cwdUnusable(let path, let reason):
+                return "cannot use working directory '\(path)': \(reason)"
+            }
+        }
+    }
+
+    /// Why `path` cannot be used as a working directory, or nil when it can.
+    ///
+    /// This has to happen in the parent. `chdir` runs in the child between `forkpty` and
+    /// `execve`, and its result used to be discarded — so a bad path did not fail, it just
+    /// left the program running in whatever the app inherited (`/`, under LaunchServices)
+    /// while the spawn reported success. Existence alone is not the question either:
+    /// `stat` succeeds on a file, and entering a directory needs execute permission.
+    public static func cwdProblem(_ path: String) -> String? {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return String(cString: strerror(errno)) }
+        guard (st.st_mode & S_IFMT) == S_IFDIR else { return "not a directory" }
+        guard access(path, X_OK) == 0 else { return String(cString: strerror(errno)) }
+        return nil
     }
 
     public var onData: ((Data) -> Void)?
@@ -187,6 +214,12 @@ public final class PTYHost: SessionIOBackend {
         }
         precondition(!argv.isEmpty, "argv must not be empty")
 
+        // Before the fork, so the caller gets a real error instead of a pane running in the
+        // wrong place. Nothing has been allocated yet, so throwing here leaks nothing.
+        if let cwd, let problem = Self.cwdProblem(cwd) {
+            throw SpawnError.cwdUnusable(path: cwd, reason: problem)
+        }
+
         var ws = winsize(
             ws_row: UInt16(rows),
             ws_col: UInt16(cols),
@@ -204,7 +237,10 @@ public final class PTYHost: SessionIOBackend {
         if pid == 0 {
             // === child process ===
             if let cwd = cwd {
-                _ = chdir(cwd)
+                // The parent already checked, but the directory can disappear in between.
+                // Refuse to exec rather than run somewhere else: a pane that visibly fails
+                // to open is far better than an agent quietly working in the wrong tree.
+                if chdir(cwd) != 0 { _exit(126) }
             }
 
             // argv → C

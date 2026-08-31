@@ -524,6 +524,12 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             spawnedByKey.removeValue(forKey: key)   // its pane closed; a repeat opens a new one
         }
         guard !spec.argv.isEmpty else { return .err("spawn-pane requires a non-empty argv") }
+        // Checked before a tab is created, so a bad path costs nothing. Without this the
+        // pane opened, ran in whatever the app inherited (`/`), and reported success —
+        // and a driver that read the cwd back was told the placement had happened.
+        if let cwd = spec.cwd, let problem = PTYHost.cwdProblem(cwd) {
+            return .err("cannot use cwd '\(cwd)': \(problem)")
+        }
         guard let window = activeCompact() ?? { spawnWindow(); return activeCompact() }() else {
             return .err("no window to spawn into")
         }
@@ -731,7 +737,10 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         PaneInfo(index: 0, cols: session.grid.cols, rows: session.grid.rows, active: active,
                  id: id.uuidString, tab: tab,
                  pid: session.foregroundProcessID,
-                 cwd: session.currentDirectory ?? session.currentWorkingDirectory,
+                 // Observed before tracked. `currentDirectory` starts life as the cwd that
+                 // was REQUESTED and is only corrected by OSC 7, which most non-shells never
+                 // emit — so preferring it reports an intention as a fact.
+                 cwd: session.currentWorkingDirectory ?? session.currentDirectory,
                  title: effectiveTitle(for: session),
                  agent: crew?.badge(for: session)?.rawValue,
                  group: groupName(for: session))

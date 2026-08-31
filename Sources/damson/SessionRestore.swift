@@ -241,8 +241,13 @@ extension PaneNode {
         case .leaf(let cwd, let scrollbackID, let sessionID, let preamble,
                    let paneID, let savedArgv):
             var config = DamsonConfig.fromUserDefaults()
-            // If the saved cwd still exists, use it; otherwise fall back to fromUserDefaults' default (home).
-            if let cwd = cwd, FileManager.default.fileExists(atPath: cwd) {
+            // If the saved cwd can still be entered, use it; otherwise fall back to
+            // fromUserDefaults' default (home). Restoring is not the place to fail: a
+            // worktree deleted since last quit should cost that pane its directory, not the
+            // whole window. `cwdProblem` rather than `fileExists` so this agrees with what
+            // the spawn itself will accept — existence is not the question, since `stat`
+            // succeeds on a file and entering a directory needs execute permission.
+            if let cwd = cwd, PTYHost.cwdProblem(cwd) == nil {
                 config.cwd = cwd
             }
             /// Re-attach the pane's saved id, so a driver that was addressing this pane
