@@ -9,8 +9,10 @@
   "plugins": [
     {
       "name": "damson-orchestration",
-      "description": "Run several coding agents as labelled tabs inside a running damson terminal, watch them for the one that is blocked on you, and tear the run down. Wraps damson-cli and damson-crew.",
-      "author": { "name": "Daekeun Kang" },
+      "description": "Run several coding agents as labelled tabs inside a running damson terminal, each in its own git worktree, watch for the one that is blocked on you, and tear the run down. Agent-agnostic: claude, codex, grok, cursor-agent. Wraps damson-cli and damson-crew.",
+      "author": {
+        "name": "Daekeun Kang"
+      },
       "category": "productivity",
       "source": "./plugins/damson-orchestration"
     }
