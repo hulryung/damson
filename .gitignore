@@ -8,5 +8,10 @@ Package.resolved
 dist/
 # build artifact from scripts/build-icon.sh; regenerated from icon-source.svg.
 Resources/Damson-1024.png
-.claude/
+# Per-user Claude Code state (worktrees, local settings) — but the project skills in
+# .claude/skills/ are part of the repo: they are for people working ON damson, who by
+# definition have the clone. A directory pattern blocks descent, so this excludes the
+# CONTENTS and re-includes the one subtree that ships.
+.claude/*
+!.claude/skills/
 __pycache__/

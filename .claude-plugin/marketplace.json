@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "damson",
+  "owner": {
+    "name": "Daekeun Kang",
+    "email": "dkkang@huconn.com"
+  },
+  "description": "Skills for driving damson, the native macOS GPU terminal, from Claude Code.",
+  "plugins": [
+    {
+      "name": "damson-orchestration",
+      "description": "Run several coding agents as labelled tabs inside a running damson terminal, watch them for the one that is blocked on you, and tear the run down. Wraps damson-cli and damson-crew.",
+      "author": { "name": "Daekeun Kang" },
+      "category": "productivity",
+      "source": "./plugins/damson-orchestration"
+    }
+  ]
+}

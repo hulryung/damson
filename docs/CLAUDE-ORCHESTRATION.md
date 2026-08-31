@@ -364,13 +364,29 @@ survival: `handOffAll` needs a PTY master to pass, and a headless agent has none
 
 ## 6. Skills
 
-Two Claude Code skills ship in `.claude/skills/`, so the parts of this document that a future
-session most needs are loaded when they are relevant rather than found afterwards:
+Two Claude Code skills carry the parts of this document a future session most needs, so they
+load when they are relevant rather than being found afterwards. They are distributed
+**differently, because they have different audiences** — and the split is forced by how
+damson ships.
 
-| | |
-|---|---|
-| `damson-orchestration` | driving damson: resolving the binaries, the rules that are not optional, and the shape of a run. Symlink it into `~/.claude/skills/` to have it outside this repo — it is most useful while working on *another* project. |
-| `damson-verify` | hand-verifying a change without producing a convincing wrong answer: the quit-dialog modal, `keeper-bin-<gen>`, the inherited session env, the dump-grid/screenshot split. |
+damson is installed from a DMG. Somebody using damson never clones this repo, so a skill that
+lives only in `.claude/skills/` reaches people working **on** damson and nobody else.
+
+| skill | audience | how it ships |
+|---|---|---|
+| `damson-verify` | people working **on** damson | project skill in `.claude/skills/`, which they get with the clone. `.gitignore` excludes `.claude/*` but re-includes `skills/` — a directory pattern blocks descent, so it has to be written that way. |
+| `damson-orchestration` | people **using** damson | a plugin, so it can be installed without a clone: `.claude-plugin/marketplace.json` here, plugin under `plugins/`. |
+
+```sh
+claude plugin marketplace add hulryung/damson
+claude plugin install damson-orchestration@damson
+```
+
+For a consumer who does not want a whole terminal emulator checked out to get one skill:
+
+```sh
+claude plugin marketplace add hulryung/damson --sparse .claude-plugin plugins
+```
 
 Both point at `--help` and at this document rather than repeating flags, so they cannot drift
 from the binary that will actually run.

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "damson-orchestration",
+  "version": "0.1.0",
+  "description": "Run several coding agents as labelled tabs inside a running damson terminal, watch them, and tear the run down.",
+  "author": {
+    "name": "Daekeun Kang",
+    "email": "dkkang@huconn.com"
+  },
+  "homepage": "https://github.com/hulryung/damson",
+  "skills": ["./skills"]
+}
