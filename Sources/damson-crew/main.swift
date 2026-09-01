@@ -74,6 +74,54 @@ func die(_ msg: String, code: Int32 = 2) -> Never {
     exit(code)
 }
 
+/// Pane id → task name, refreshed when a pane turns up that the cache does not know.
+///
+/// Kept behind a lock because the reading thread reads it and the delivery queue refills it.
+final class PaneNames {
+    private let client: DamsonClient
+    private let tasks: [CrewTask]
+    private let lock = NSLock()
+    private var map: [String: String] = [:]
+
+    init(client: DamsonClient, tasks: [CrewTask]) {
+        self.client = client
+        self.tasks = tasks
+        refresh()
+    }
+
+    func cached(_ pane: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return map[pane]
+    }
+
+    /// Fill in a change's task name, asking damson once if this pane is new to us.
+    func naming(_ change: AgentBoard.Change) -> AgentBoard.Change {
+        guard !tasks.isEmpty else { return change }
+        switch change {
+        case .needsAttention(let a) where a.task == nil: return .needsAttention(resolve(a))
+        case .released(let a) where a.task == nil:       return .released(resolve(a))
+        case .appeared(let a) where a.task == nil:       return .appeared(resolve(a))
+        case .vanished(let pane, nil):                   return .vanished(paneID: pane, task: cached(pane))
+        default:                                         return change
+        }
+    }
+
+    private func resolve(_ agent: AgentState) -> AgentState {
+        if cached(agent.paneID) == nil { refresh() }
+        var named = agent
+        named.task = cached(agent.paneID)
+        return named
+    }
+
+    private func refresh() {
+        guard !tasks.isEmpty else { return }
+        let found = Coordinator(client: client).reattach(tasks)
+        lock.lock()
+        for (task, pane) in found { map[pane] = task }
+        lock.unlock()
+    }
+}
+
 /// Talks to damson over the same unix socket `damson-cli` uses. Linking `DamsonControl`
 /// rather than shelling out to the CLI is deliberate: the CLI is shipped inside the app
 /// bundle and only reaches PATH if something linked it there, so a coordinator that ran it
@@ -226,13 +274,13 @@ case "run":
     }
 
 case "watch":
-    // Pane → task, so a line names the work rather than a UUID. Resolved once at startup
-    // from what is on screen; a pane that appears later still reports its id.
-    var byPane: [String: String] = [:]
-    if let tasksPath {
-        let list = readTasks(tasksPath)
-        for (task, pane) in Coordinator(client: client).reattach(list.tasks) { byPane[pane] = task }
-    }
+    // Pane → task, so a line names the work rather than a UUID.
+    //
+    // Resolved lazily as well as at startup. The normal shape is `watch` in one terminal and
+    // `run` in another, so the panes a watcher most wants to name are created AFTER it
+    // connects — a startup-only lookup left every one of them reported as a bare id for the
+    // rest of the run, which is most of the value of naming them at all.
+    let names = PaneNames(client: client, tasks: tasksPath.map { readTasks($0).tasks } ?? [])
 
     let notifier = SystemNotifier()
     let focuser = PaneFocuser(client: client)
@@ -245,9 +293,14 @@ case "watch":
             case .failure(let e): return .failure(CrewError(e.message))
             }
         },
-        taskFor: { byPane[$0] },
+        // Called on the reading thread, so it only ever touches the cache — damson drops a
+        // subscriber whose mailbox fills, and a socket round-trip here would risk exactly that.
+        taskFor: { names.cached($0) },
         onChange: { change, _ in
             let stamp = ISO8601DateFormatter().string(from: Date())
+            // Delivery runs off the reading thread, so this is where a miss can afford to go
+            // and ask damson which task the pane belongs to.
+            let change = names.naming(change)
             // Only `waiting` is ever escalated — see Escalation for why nothing else is.
             if let alert = change.escalation {
                 if notify { notifier.deliver(alert) }
