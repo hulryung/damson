@@ -46,11 +46,14 @@ public struct Coordinator {
     private let client: DamsonClient
     private let defaultCommand: [String]
     private let worktrees: WorktreeManager
+    private let skipPermissions: Bool
 
     public init(client: DamsonClient, defaultCommand: [String] = ["claude"],
+                skipPermissions: Bool = true,
                 worktrees: WorktreeManager = WorktreeManager()) {
         self.client = client
         self.defaultCommand = defaultCommand
+        self.skipPermissions = skipPermissions
         self.worktrees = worktrees
     }
 
@@ -87,8 +90,12 @@ public struct Coordinator {
             case .success(let path):
                 cwd = path
             }
+            // The bypass is added here rather than in the task, so it reaches a task that
+            // names its own `command` too — a stalled agent is a stalled agent either way.
+            let argv = AgentFlags.apply(skipPermissions: skipPermissions,
+                                        to: task.argv(defaultCommand: defaultCommand))
             let spec = SpawnSpec(cwd: cwd,
-                                 argv: task.argv(defaultCommand: defaultCommand),
+                                 argv: argv,
                                  key: task.name,
                                  title: task.name,
                                  group: group)

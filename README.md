@@ -100,6 +100,11 @@ flag takes `{prompt}` in its `command`.
 remove a worktree holding uncommitted or untracked files, and that refusal is reported rather
 than worked around. Teardown cannot destroy an agent's unsaved work.
 
+Agents run with `--dangerously-skip-permissions` by default, so a task runs through instead
+of stopping to ask — an agent waiting on an approval is the most common way a run stalls.
+That does mean agents edit files and run commands without asking; **Settings → Agents** turns
+it off, along with the default agent, the notification behaviour, and where worktrees go.
+
 One caveat worth knowing before you plan around it: **the watching half is Claude-only.**
 `watch --notify` works by joining a pane to Claude Code's own session records, so agents from
 other tools open, get labelled and grouped, and run — but never raise a "blocked on you"

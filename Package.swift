@@ -92,6 +92,7 @@ let package = Package(
                 "DamsonControl",
                 "DamsonAgents",
                 "DamsonTabGroups",
+                "DamsonCrew",
                 "CFDPass",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],

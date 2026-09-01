@@ -34,11 +34,19 @@ Options:
   --group NAME     Put every tab in this group, so the run can be folded or
                    closed as a unit (damson-cli group close NAME).
   --pid PID        Target a specific damson instance (default: most recent).
-  --command CMD    Agent to run. Default: claude.
+  --command CMD    Agent to run. Default: from Settings → Orchestration.
+  --skip-permissions / --no-skip-permissions
+                   Pass --dangerously-skip-permissions to claude, so it does not
+                   stop on approval prompts. On by default; change the default in
+                   Settings → Orchestration. Applies to claude only — other agents
+                   spell this differently or not at all.
   -h, --help
 
-  --notify         Post a macOS notification when an agent is blocked on you.
-  --focus          Also bring that agent's tab forward.
+  --notify / --no-notify
+                   Post a macOS notification when an agent is blocked on you.
+  --focus / --no-focus
+                   Also bring that agent's tab forward.
+                   Both default to Settings → Orchestration.
   --yes            Required by `close`, which shuts several tabs and the
                    programs inside them.
   --remove-worktrees  With `close` (and --tasks): also remove the git worktrees
@@ -82,9 +90,12 @@ args = Array(args.dropFirst())
 var tasksPath: String?
 var group: String?
 var pid: Int?
-var command: [String] = ["claude"]
-var notify = false
-var focus = false
+// Defaults come from damson's Orchestration settings; every one can be overridden per run.
+let settings = OrchestrationSettings.load()
+var command: [String] = settings.agentCommand
+var skipPermissions = settings.skipPermissions
+var notify = settings.notifyOnWaiting
+var focus = settings.focusOnWaiting
 var confirmed = false
 var removeWorktrees = false
 
@@ -105,8 +116,16 @@ while i < args.count {
         command = [args[i]]; i += 1
     case "--notify":
         notify = true; i += 1
+    case "--no-notify":
+        notify = false; i += 1
     case "--focus":
         focus = true; i += 1
+    case "--no-focus":
+        focus = false; i += 1
+    case "--skip-permissions":
+        skipPermissions = true; i += 1
+    case "--no-skip-permissions":
+        skipPermissions = false; i += 1
     case "--yes":
         confirmed = true; i += 1
     case "--remove-worktrees":
@@ -137,6 +156,15 @@ case .success(let p): socketPath = p
 case .failure(let e): die(e.message)
 }
 let client = SocketClient(socketPath: socketPath)
+// An explicit worktree root keeps every run's trees in one place; empty means beside the
+// repo, which is the default because it keeps them obviously related to what they branch from.
+let worktrees: WorktreeManager = settings.worktreeRoot.isEmpty
+    ? WorktreeManager()
+    : WorktreeManager(rootFor: { repo in
+        let root = (settings.worktreeRoot as NSString).expandingTildeInPath
+        return URL(fileURLWithPath: root)
+            .appendingPathComponent(URL(fileURLWithPath: repo).lastPathComponent).path
+      })
 
 switch sub {
 case "run":
@@ -148,7 +176,7 @@ case "run":
     // does not survive damson restarting — and a coordinator's whole reason to re-run a
     // list is that something restarted. Without this the second run opens a duplicate of
     // every task, measured: a three-task group came back with six tabs.
-    let manager = RunManager(client: client)
+    let manager = RunManager(client: client, worktrees: worktrees)
     let existing: [String: String]
     switch manager.status(of: list.tasks, group: group) {
     case .success(let status):
@@ -163,7 +191,8 @@ case "run":
             Data("reattached to \(existing.count) tab(s), starting \(needed.count)\n".utf8))
     }
 
-    let outcomes = Coordinator(client: client, defaultCommand: command)
+    let outcomes = Coordinator(client: client, defaultCommand: command,
+                               skipPermissions: skipPermissions, worktrees: worktrees)
         .fanOut(needed, group: group)
     var byTask = existing
     for outcome in outcomes where outcome.paneID != nil { byTask[outcome.task] = outcome.paneID }
@@ -232,7 +261,7 @@ case "watch":
 case "status":
     guard let tasksPath else { die("status requires --tasks") }
     let list = readTasks(tasksPath)
-    switch RunManager(client: client).status(of: list.tasks, group: group) {
+    switch RunManager(client: client, worktrees: worktrees).status(of: list.tasks, group: group) {
     case .failure(let e): die("damson-crew: \(e.message)")
     case .success(let status):
         for row in status.rows {
@@ -251,7 +280,7 @@ case "close":
         die("close would shut every tab in group '\(group)' and the programs in them. " +
             "Re-run with --yes if that is what you want.")
     }
-    let manager = RunManager(client: client)
+    let manager = RunManager(client: client, worktrees: worktrees)
     switch manager.close(group: group) {
     case .failure(let e): die("damson-crew: \(e.message)", code: 1)
     case .success:        print("closed \(group)")

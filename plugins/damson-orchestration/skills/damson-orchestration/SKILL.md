@@ -94,6 +94,19 @@ Make the worktree here rather than reaching for the agent's own flag. Support is
 inconsistent — `claude -w`, `grok --worktree=<name>`, nothing in `codex` or `cursor-agent` —
 so a task list that used them would only work for some of its tasks.
 
+**Permission prompts are bypassed by default.** `damson-crew` passes
+`--dangerously-skip-permissions` to `claude`, because an agent stopped on an approval is the
+most common way a fan-out stalls — the tabs look alive while every one of them waits for a
+keypress. It means agents edit files and run commands without asking. `--no-skip-permissions`
+turns it off for a run; Settings → Agents changes the default. It applies to `claude` only:
+other agents spell this differently or not at all, and passing a flag a CLI does not know
+turns a working spawn into a pane that exits instantly.
+
+A caller who already wrote `--permission-mode` is never overridden.
+
+**Defaults come from Settings → Agents** — the agent command, the bypass, whether a blocked
+agent notifies, and where worktrees go. Every one can be overridden per run with a flag.
+
 **`close --remove-worktrees` never forces.** git refuses to remove a worktree holding
 uncommitted or untracked files; report that refusal, never work around it. Those files are
 the agent's work and they are uncommitted exactly when losing them would matter most.

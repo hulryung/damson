@@ -223,6 +223,23 @@ which is what a coordinator joins its task list against.
 group, which is the same space the header's drag resolves to. Group order is not stored
 anywhere — a group sits where its first tab sits — so moving one is moving its range.
 
+### Permission prompts
+
+`damson-crew` passes `--dangerously-skip-permissions` to `claude` by default. An agent stopped
+on an approval is the most common way a fan-out stalls, and it stalls invisibly: the tabs look
+alive, several are idle, and every one is waiting for a keypress.
+
+The name is the warning, and the default is a judgement, not a claim that it is safe: agents
+edit files and run commands without asking. It is defensible only because someone who opened
+a terminal to run agents in can see what they are doing — so it is a setting (Settings →
+Agents), and `--no-skip-permissions` turns it off for one run.
+
+Two limits are deliberate. It applies to **`claude` only** — `codex`, `grok` and
+`cursor-agent` spell this differently or not at all, and passing a flag a CLI does not know
+turns a working spawn into a pane that exits instantly on an unknown argument. And a caller
+who already wrote `--permission-mode` is **never** overridden: they said what they wanted, and
+this is the one flag whose effect cannot be taken back once the agent has acted.
+
 **`group close` is destructive** — several tabs and the programs inside them. A name that
 matches nothing is a typed error and a non-zero exit, never a quiet success: a coordinator
 that mistyped a run name must not be told the run was cleaned up.

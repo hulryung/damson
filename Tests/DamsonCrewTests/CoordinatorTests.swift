@@ -36,11 +36,37 @@ final class CoordinatorTests: XCTestCase {
     func testPromptGoesInArgv() {
         let fake = FakeDamson()
         fake.answers = [.success(pane("A")), .success(pane("B"))]
-        _ = Coordinator(client: fake).fanOut(tasks, group: nil)
+        // Permission bypass off, so this test is only about where the prompt lands.
+        _ = Coordinator(client: fake, skipPermissions: false).fanOut(tasks, group: nil)
 
         guard case .spawnPane(let spec) = fake.sent.first else { return XCTFail("no spawn") }
         XCTAssertEqual(spec.argv, ["claude", "review it"])
         XCTAssertEqual(spec.cwd, "/a")
+    }
+
+    /// An agent stopped on an approval prompt is the most common way a fan-out stalls, so
+    /// the bypass is on unless the caller turns it off — and the prompt still ends up last,
+    /// which is the one argv shape every agent CLI accepts.
+    func testPermissionsAreBypassedByDefault() {
+        let fake = FakeDamson()
+        fake.answers = [.success(pane("A")), .success(pane("B"))]
+        _ = Coordinator(client: fake).fanOut(tasks, group: nil)
+
+        guard case .spawnPane(let spec) = fake.sent.first else { return XCTFail("no spawn") }
+        XCTAssertEqual(spec.argv, ["claude", "--dangerously-skip-permissions", "review it"])
+    }
+
+    /// A task that names its own command gets it too — a stalled agent is a stalled agent
+    /// however it was launched.
+    func testAPerTaskCommandAlsoGetsTheBypass() {
+        let fake = FakeDamson()
+        fake.answers = [.success(pane("A"))]
+        _ = Coordinator(client: fake).fanOut(
+            [CrewTask(name: "t", prompt: "go", command: ["/opt/homebrew/bin/claude"])], group: nil)
+
+        guard case .spawnPane(let spec) = fake.sent.first else { return XCTFail("no spawn") }
+        XCTAssertEqual(spec.argv,
+                       ["/opt/homebrew/bin/claude", "--dangerously-skip-permissions", "go"])
     }
 
     /// The task name is the spawn key, so a repeat is answered with the first pane rather

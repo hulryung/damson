@@ -1,4 +1,5 @@
 import AppKit
+import DamsonCrew
 import DamsonTerminal
 import SwiftUI
 
@@ -39,6 +40,20 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.wordSeparators") private var wordSeparators: String = ""
     @AppStorage("damson.tabBarTransparent") private var tabBarTransparent: Bool = false
 
+    // Orchestration — read by `damson-crew`, which runs as a separate process and reads this
+    // app's defaults domain. The key strings live in `OrchestrationSettings.Keys`; they are
+    // repeated here because @AppStorage needs literals, and a mismatch would fail silently.
+    @AppStorage(OrchestrationSettings.Keys.agentCommand)
+    private var agentCommand: String = "claude"
+    @AppStorage(OrchestrationSettings.Keys.skipPermissions)
+    private var skipPermissions: Bool = true
+    @AppStorage(OrchestrationSettings.Keys.notifyOnWaiting)
+    private var notifyOnWaiting: Bool = true
+    @AppStorage(OrchestrationSettings.Keys.focusOnWaiting)
+    private var focusOnWaiting: Bool = false
+    @AppStorage(OrchestrationSettings.Keys.worktreeRoot)
+    private var worktreeRoot: String = ""
+
     @ObservedObject private var updater = DamsonUpdater.shared
 
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
@@ -51,6 +66,7 @@ struct DamsonSettingsView: View {
             effectsTab.tabItem { Label("Effects", systemImage: "sparkles") }
             terminalTab.tabItem { Label("Terminal", systemImage: "terminal") }
             KeysSettingsTab().tabItem { Label("Keys", systemImage: "keyboard") }
+            orchestrationTab.tabItem { Label("Agents", systemImage: "person.2") }
             advancedTab.tabItem { Label("Advanced", systemImage: "gearshape") }
         }
         .padding(.top, 14)
@@ -362,6 +378,59 @@ struct DamsonSettingsView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    /// Settings for running several coding agents as tabs — read by `damson-crew`.
+    ///
+    /// These live here rather than in a config file because the CLI ships inside this app
+    /// bundle: someone who installed the .dmg has the tool but no obvious place to configure
+    /// it. Every one of them can still be overridden per run with a flag.
+    private var orchestrationTab: some View {
+        Form {
+            Section("Agent") {
+                TextField("Command", text: $agentCommand)
+                    .textFieldStyle(.roundedBorder)
+                Text("What `damson-crew run` starts when a task does not name its own command. "
+                     + "claude, codex, grok and cursor-agent all work.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Toggle("Skip permission prompts", isOn: $skipPermissions)
+                Text("Passes --dangerously-skip-permissions to claude, so an agent runs a task "
+                     + "through instead of stopping to ask. An agent waiting on an approval is "
+                     + "the most common way a run stalls — the tabs look alive while every one "
+                     + "of them waits for a keypress.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if skipPermissions {
+                    Label("Agents will edit files and run commands without asking. "
+                          + "Only claude is affected; other agents spell this differently.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+
+            Section("When an agent is blocked") {
+                Toggle("Notify me", isOn: $notifyOnWaiting)
+                Toggle("Bring its tab forward", isOn: $focusOnWaiting)
+                Text("Only a blocked agent is announced. Anything else would become noise, "
+                     + "and then the one that mattered gets dismissed with the rest.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section("Worktrees") {
+                TextField("Root folder", text: $worktreeRoot, prompt: Text("Beside each repository"))
+                    .textFieldStyle(.roundedBorder)
+                Text("Where damson-crew makes a git worktree for a task. Leave empty to keep "
+                     + "them next to the repository they came from, as <repo>-worktrees.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
         .formStyle(.grouped)
