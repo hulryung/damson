@@ -62,6 +62,39 @@ codesign --force --deep --options runtime \
 echo "==> verify signature"
 codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | tail -1
 
+# 2b) Refuse to run from inside the app being replaced.
+#     Step 3 kills the running damson and only then removes and re-copies the bundle. Run
+#     from a terminal hosted BY that damson, the kill takes this script's own shell with it,
+#     part-way through — the app is deleted and never replaced, leaving no damson at all.
+#     Dogfooding means the maintainer's terminal usually IS the app under test, so this is
+#     the normal case, not a corner one.
+ancestor_is_target() {
+    local pid=$$ target_inode
+    target_inode="$(stat -f %i "$DEST/Contents/MacOS/damson" 2>/dev/null || echo -)"
+    [[ "$target_inode" == "-" ]] && return 1
+    for _ in {1..24}; do
+        local exe
+        exe="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
+        if [[ "$exe" == "$DEST/Contents/MacOS/damson" ]]; then return 0; fi
+        pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+        [[ -z "$pid" || "$pid" == "0" || "$pid" == "1" ]] && break
+    done
+    return 1
+}
+if ancestor_is_target; then
+    cat >&2 <<MSG
+error: this shell is running inside $DEST, which this script is about to replace.
+
+  Killing it would take this script down mid-install and could leave you with no
+  damson at all. The build is already done and signed at:
+      $APP
+
+  Finish the install from a terminal that is NOT damson — Terminal.app or iTerm:
+      cd "$REPO_ROOT" && ./scripts/install-local.sh
+MSG
+    exit 1
+fi
+
 # 3) Install — kill the running instance and replace it. Remove the quarantine bit
 #    (usually absent for local builds, but if present it triggers a first-run Gatekeeper prompt).
 echo "==> install to $DEST"
