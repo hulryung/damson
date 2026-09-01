@@ -116,7 +116,19 @@ public struct WorktreeManager {
     /// Idempotent on purpose, like every other step a coordinator takes: re-running a task
     /// list must reattach to the worktree it made last time rather than failing, or making a
     /// second one under a mangled name.
+    /// A worktree, and whether this call is what brought it into being.
+    public struct Ensured: Equatable {
+        public let path: String
+        /// False when an existing worktree was reused. Callers that act on a worktree's
+        /// newness — pre-accepting a trust prompt, say — must only act on ones they made.
+        public let created: Bool
+    }
+
     public func ensure(repo: String, branch: String, base: String?) -> Result<String, CrewError> {
+        ensureWorktree(repo: repo, branch: branch, base: base).map(\.path)
+    }
+
+    public func ensureWorktree(repo: String, branch: String, base: String?) -> Result<Ensured, CrewError> {
         let expanded = (repo as NSString).expandingTildeInPath
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue else {
@@ -135,7 +147,7 @@ public struct WorktreeManager {
         case .failure(let e): return .failure(e)
         case .success(let existing):
             if let match = existing.first(where: { $0.branch == branch }) {
-                return .success(match.path)      // already there; reuse it
+                return .success(Ensured(path: match.path, created: false))   // reuse it
             }
         }
 
@@ -159,7 +171,7 @@ public struct WorktreeManager {
             args += ["-b", branch, path]
             if let base, !base.isEmpty { args.append(base) }
         }
-        return git.run(args).map { _ in path }
+        return git.run(args).map { _ in Ensured(path: path, created: true) }
     }
 
     /// Remove a worktree. **Never forces.**

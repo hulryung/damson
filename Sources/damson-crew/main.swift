@@ -42,6 +42,12 @@ Options:
                    spell this differently or not at all.
   -h, --help
 
+  --trust-new-worktrees / --no-trust-new-worktrees
+                   Pre-accept Claude Code's workspace-trust prompt for a worktree
+                   this run creates. Claude Code asks on any git repository root
+                   it has not seen, and a worktree is one — so without this a
+                   fan-out stops once per task. Only worktrees this tool made,
+                   and only Claude Code.
   --notify / --no-notify
                    Post a macOS notification when an agent is blocked on you.
   --focus / --no-focus
@@ -94,6 +100,7 @@ var pid: Int?
 let settings = OrchestrationSettings.load()
 var command: [String] = settings.agentCommand
 var skipPermissions = settings.skipPermissions
+var trustNewWorktrees = settings.trustNewWorktrees
 var notify = settings.notifyOnWaiting
 var focus = settings.focusOnWaiting
 var confirmed = false
@@ -126,6 +133,10 @@ while i < args.count {
         skipPermissions = true; i += 1
     case "--no-skip-permissions":
         skipPermissions = false; i += 1
+    case "--trust-new-worktrees":
+        trustNewWorktrees = true; i += 1
+    case "--no-trust-new-worktrees":
+        trustNewWorktrees = false; i += 1
     case "--yes":
         confirmed = true; i += 1
     case "--remove-worktrees":
@@ -192,7 +203,9 @@ case "run":
     }
 
     let outcomes = Coordinator(client: client, defaultCommand: command,
-                               skipPermissions: skipPermissions, worktrees: worktrees)
+                               skipPermissions: skipPermissions,
+                               trustNewWorktrees: trustNewWorktrees,
+                               worktrees: worktrees)
         .fanOut(needed, group: group)
     var byTask = existing
     for outcome in outcomes where outcome.paneID != nil { byTask[outcome.task] = outcome.paneID }

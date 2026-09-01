@@ -530,6 +530,14 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let cwd = spec.cwd, let problem = PTYHost.cwdProblem(cwd) {
             return .err("cannot use cwd '\(cwd)': \(problem)")
         }
+        // Same, for the program itself. `execve` does not search PATH, so a bare name used
+        // to open a tab that vanished the instant the child failed to exec — with `spawn`
+        // reporting success. Resolved against the environment the pane will actually get.
+        var probeConfig = DamsonConfig.fromUserDefaults()
+        probeConfig.argv = spec.argv
+        if PTYHost.resolveProgram(spec.argv[0], env: probeConfig.env) == nil {
+            return .err("no executable named '\(spec.argv[0])' on PATH")
+        }
         guard let window = activeCompact() ?? { spawnWindow(); return activeCompact() }() else {
             return .err("no window to spawn into")
         }

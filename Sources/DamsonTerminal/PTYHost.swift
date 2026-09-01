@@ -13,6 +13,8 @@ public final class PTYHost: SessionIOBackend {
         /// The working directory could not be entered. Checked in the PARENT before forking,
         /// because `chdir` runs in the child where there is no way to report anything.
         case cwdUnusable(path: String, reason: String)
+        /// `argv[0]` is a bare name that is on no directory of the child's `PATH`.
+        case programNotFound(String)
 
         public var description: String {
             switch self {
@@ -20,8 +22,34 @@ public final class PTYHost: SessionIOBackend {
                 return "forkpty failed: \(String(cString: strerror(e)))"
             case .cwdUnusable(let path, let reason):
                 return "cannot use working directory '\(path)': \(reason)"
+            case .programNotFound(let name):
+                return "no executable named '\(name)' on PATH"
             }
         }
+    }
+
+    /// Turn `argv[0]` into a path `execve` can actually use, or nil when there is none.
+    ///
+    /// `execve` does **not** search `PATH` — that is `execvp`, which takes the caller's own
+    /// environment rather than the one being handed to the child, so it is the wrong tool
+    /// when the child gets a different `PATH`. Resolving here, against the child's `PATH`,
+    /// is what makes `spawn -- claude` work at all: before this a bare name reached `execve`,
+    /// failed, and the child `_exit(127)`d, which closed the pane. The tab opened and
+    /// vanished with nothing reported anywhere.
+    ///
+    /// A name containing `/` is already a path and is passed through untouched.
+    public static func resolveProgram(_ program: String, env: [String: String]) -> String? {
+        guard !program.isEmpty else { return nil }
+        if program.contains("/") { return program }
+        guard let path = env["PATH"] else { return nil }
+        for dir in path.split(separator: ":") where !dir.isEmpty {
+            let candidate = "\(dir)/\(program)"
+            var st = stat()
+            guard stat(candidate, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG,
+                  access(candidate, X_OK) == 0 else { continue }
+            return candidate
+        }
+        return nil
     }
 
     /// Why `path` cannot be used as a working directory, or nil when it can.
@@ -219,6 +247,11 @@ public final class PTYHost: SessionIOBackend {
         if let cwd, let problem = Self.cwdProblem(cwd) {
             throw SpawnError.cwdUnusable(path: cwd, reason: problem)
         }
+        // Same reason as the cwd check: the child cannot report, so resolve here where a
+        // failure can be answered with an error instead of a pane that opens and vanishes.
+        guard let program = Self.resolveProgram(argv[0], env: env) else {
+            throw SpawnError.programNotFound(argv[0])
+        }
 
         var ws = winsize(
             ws_row: UInt16(rows),
@@ -254,7 +287,7 @@ public final class PTYHost: SessionIOBackend {
             argvCStrings.withUnsafeBufferPointer { argvBuf in
                 envCStrings.withUnsafeBufferPointer { envBuf in
                     _ = execve(
-                        argv[0],
+                        program,
                         UnsafeMutablePointer(mutating: argvBuf.baseAddress),
                         UnsafeMutablePointer(mutating: envBuf.baseAddress)
                     )

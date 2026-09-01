@@ -53,6 +53,8 @@ struct DamsonSettingsView: View {
     private var focusOnWaiting: Bool = false
     @AppStorage(OrchestrationSettings.Keys.worktreeRoot)
     private var worktreeRoot: String = ""
+    @AppStorage(OrchestrationSettings.Keys.trustNewWorktrees)
+    private var trustNewWorktrees: Bool = true
 
     @ObservedObject private var updater = DamsonUpdater.shared
 
@@ -431,6 +433,21 @@ struct DamsonSettingsView: View {
                      + "them next to the repository they came from, as <repo>-worktrees.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                Toggle("Trust new worktrees automatically", isOn: $trustNewWorktrees)
+                Text("Claude Code asks before working in a git repository it has not seen, and "
+                     + "a worktree is a new one every time — so a run of five tasks stops five "
+                     + "times. This answers that once, for worktrees damson-crew created "
+                     + "itself from a repository you named.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if trustNewWorktrees {
+                    Label("Writes ~/.claude.json, keeping a .damson-backup copy. Only Claude "
+                          + "Code — codex and cursor-agent have their own prompts.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
             }
         }
         .formStyle(.grouped)

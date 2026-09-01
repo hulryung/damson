@@ -47,14 +47,23 @@ public struct Coordinator {
     private let defaultCommand: [String]
     private let worktrees: WorktreeManager
     private let skipPermissions: Bool
+    private let trustNewWorktrees: Bool
+    /// Injected so the trust write can be tested without touching a real config.
+    private let acceptTrust: (String) -> Result<Bool, CrewError>
 
     public init(client: DamsonClient, defaultCommand: [String] = ["claude"],
                 skipPermissions: Bool = true,
-                worktrees: WorktreeManager = WorktreeManager()) {
+                trustNewWorktrees: Bool = false,
+                worktrees: WorktreeManager = WorktreeManager(),
+                acceptTrust: @escaping (String) -> Result<Bool, CrewError> = {
+                    WorkspaceTrust.accept(path: $0)
+                }) {
         self.client = client
         self.defaultCommand = defaultCommand
         self.skipPermissions = skipPermissions
+        self.trustNewWorktrees = trustNewWorktrees
         self.worktrees = worktrees
+        self.acceptTrust = acceptTrust
     }
 
     /// Where a task should run: its worktree if it asked for one, else its `cwd`.
@@ -67,7 +76,14 @@ public struct Coordinator {
         guard let repo = task.repo, let branch = task.worktreeBranch else {
             return .success(task.resolvedCWD)
         }
-        return worktrees.ensure(repo: repo, branch: branch, base: task.base).map { $0 }
+        return worktrees.ensureWorktree(repo: repo, branch: branch, base: task.base)
+            .map { made in
+                // Only a worktree this call CREATED. A reused one either was already
+                // trusted or the user declined once, and re-deciding for them would
+                // silently overturn that.
+                if trustNewWorktrees, made.created { _ = acceptTrust(made.path) }
+                return made.path
+            }
     }
 
     /// Open a tab per task. One task failing does not stop the rest: a run of five where the

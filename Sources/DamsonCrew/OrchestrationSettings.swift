@@ -25,10 +25,19 @@ public struct OrchestrationSettings: Equatable {
     public var focusOnWaiting: Bool
     /// Where worktrees are made. Empty means beside the repo, as `<repo>-worktrees`.
     public var worktreeRoot: String
+    /// Pre-accept Claude Code's workspace-trust prompt for a worktree damson-crew created.
+    ///
+    /// Claude Code prompts on a git repository root it has not seen, and a worktree is one
+    /// by definition — so without this a fan-out stops once per task with every agent
+    /// waiting on a keypress. It applies only to worktrees this tool made itself, from a
+    /// repository the user named, and only to Claude Code: codex and cursor-agent have
+    /// their own gates and their own stores, which damson does not pretend to know.
+    public var trustNewWorktrees: Bool
 
     public static let `default` = OrchestrationSettings(
         agentCommand: ["claude"], skipPermissions: true,
-        notifyOnWaiting: true, focusOnWaiting: false, worktreeRoot: "")
+        notifyOnWaiting: true, focusOnWaiting: false, worktreeRoot: "",
+        trustNewWorktrees: true)
 
     /// Read the app's preferences, falling back to the defaults for anything unset. Never
     /// throws and never fails: a coordinator must run whether or not the app has ever been
@@ -50,6 +59,9 @@ public struct OrchestrationSettings: Equatable {
             s.focusOnWaiting = defaults.bool(forKey: Keys.focusOnWaiting)
         }
         if let root = defaults.string(forKey: Keys.worktreeRoot) { s.worktreeRoot = root }
+        if defaults.object(forKey: Keys.trustNewWorktrees) != nil {
+            s.trustNewWorktrees = defaults.bool(forKey: Keys.trustNewWorktrees)
+        }
         return s
     }
 
@@ -62,5 +74,6 @@ public struct OrchestrationSettings: Equatable {
         public static let notifyOnWaiting = "damson.orchestration.notifyOnWaiting"
         public static let focusOnWaiting  = "damson.orchestration.focusOnWaiting"
         public static let worktreeRoot    = "damson.orchestration.worktreeRoot"
+        public static let trustNewWorktrees = "damson.orchestration.trustNewWorktrees"
     }
 }
