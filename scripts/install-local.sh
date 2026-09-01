@@ -62,49 +62,80 @@ codesign --force --deep --options runtime \
 echo "==> verify signature"
 codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | tail -1
 
-# 2b) Refuse to run from inside the app being replaced.
-#     Step 3 kills the running damson and only then removes and re-copies the bundle. Run
-#     from a terminal hosted BY that damson, the kill takes this script's own shell with it,
-#     part-way through — the app is deleted and never replaced, leaving no damson at all.
+# 2b) Notice when this shell is running inside the app being replaced.
 #     Dogfooding means the maintainer's terminal usually IS the app under test, so this is
-#     the normal case, not a corner one.
+#     the normal case, not a corner one. Two things follow, both measured:
+#
+#     - `pkill` CANNOT kill it. pgrep/pkill skip the calling process *and its ancestors*
+#       (BSD behaviour: `ps` lists this shell's parent zsh, `pgrep -x zsh` does not). So the
+#       kill below is a silent no-op here, and without saying so the script would report
+#       success while the user kept running the old build.
+#     - It does not need to. The keeper runs a COPY of itself from the runtime dir precisely
+#       so a cp-style install can swap the bundle underneath a live app (see
+#       SessionHandoff). Damson → Restart Damson then comes up on the new binary, and with
+#       "keep sessions on restart" every pane — including the terminal running this script —
+#       survives the upgrade.
+running_inside_target=false
 ancestor_is_target() {
-    local pid=$$ target_inode
-    target_inode="$(stat -f %i "$DEST/Contents/MacOS/damson" 2>/dev/null || echo -)"
-    [[ "$target_inode" == "-" ]] && return 1
+    local pid=$$ exe
     for _ in {1..24}; do
-        local exe
         exe="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
-        if [[ "$exe" == "$DEST/Contents/MacOS/damson" ]]; then return 0; fi
+        [[ "$exe" == "$DEST/Contents/MacOS/damson" ]] && return 0
         pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
         [[ -z "$pid" || "$pid" == "0" || "$pid" == "1" ]] && break
     done
     return 1
 }
 if ancestor_is_target; then
-    cat >&2 <<MSG
-error: this shell is running inside $DEST, which this script is about to replace.
-
-  Killing it would take this script down mid-install and could leave you with no
-  damson at all. The build is already done and signed at:
-      $APP
-
-  Finish the install from a terminal that is NOT damson — Terminal.app or iTerm:
-      cd "$REPO_ROOT" && ./scripts/install-local.sh
-MSG
-    exit 1
+    running_inside_target=true
+    echo "==> note: this shell runs inside $DEST"
+    echo "    The bundle will be replaced under the live app; the running process keeps going"
+    echo "    on the old one. Pick up the new build with Damson > Restart Damson."
 fi
 
 # 3) Install — kill the running instance and replace it. Remove the quarantine bit
 #    (usually absent for local builds, but if present it triggers a first-run Gatekeeper prompt).
 echo "==> install to $DEST"
-pkill -f "Damson.app/Contents/MacOS/damson" 2>/dev/null || true
-sleep 1
-rm -rf "$DEST"
+# Kill only instances running THIS bundle, found by path rather than by pattern: the old
+# `pkill -f Damson.app/...` also matched any other install (a dev copy, a second location),
+# and could not see an ancestor at all.
+if [[ "$running_inside_target" == "false" ]]; then
+    ps -Ao pid=,comm= | while read -r pid exe; do
+        [[ "$exe" == "$DEST/Contents/MacOS/damson" ]] && kill "$pid" 2>/dev/null || true
+    done
+    sleep 1
+fi
+# Move the old bundle aside rather than deleting it: when the app is running from $DEST —
+# which is the dogfooding case — the live process still reads from its bundle (Sparkle,
+# resources), and pulling those out from under it risks the very panes this is trying to
+# preserve. The aside copy is removed once nothing is running from it.
+ASIDE="$INSTALL_DIR/.Damson.app.replaced-$$"
+if [[ -d "$DEST" ]]; then
+    mv "$DEST" "$ASIDE"
+fi
 cp -R "$APP" "$DEST"
+if [[ -d "$ASIDE" ]]; then
+    if [[ "$running_inside_target" == "true" ]]; then
+        echo "==> old bundle kept at $ASIDE while it is still running; remove it after the restart"
+    else
+        rm -rf "$ASIDE"
+    fi
+fi
+# Sweep any aside copy left by an earlier run whose app has since been restarted.
+for old_aside in "$INSTALL_DIR"/.Damson.app.replaced-*; do
+    [[ -d "$old_aside" && "$old_aside" != "$ASIDE" ]] || continue
+    if ! ps -Ao comm= | grep -qF "$old_aside/Contents/MacOS/damson"; then
+        rm -rf "$old_aside"
+    fi
+done
 xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 
 echo "==> installed: $DEST  ($MARKETING_VERSION / $HASH)"
+if [[ "$running_inside_target" == "true" ]]; then
+    echo "==> the old build is still running. To switch without losing your panes:"
+    echo "    1. Settings > Terminal > turn on \"Keep sessions on restart\""
+    echo "    2. Damson menu > Restart Damson"
+fi
 
 # 3b) Link damson-cli onto PATH. build-app.sh only drops it in Contents/Resources, so
 #     without this `damson-cli` is not a command and nothing outside the app — a script, a
@@ -124,7 +155,7 @@ for tool in damson-cli damson-crew; do
 done
 
 # 4) Launch (can be skipped with NO_LAUNCH).
-if [[ "${NO_LAUNCH:-0}" != "1" ]]; then
+if [[ "${NO_LAUNCH:-0}" != "1" && "$running_inside_target" == "false" ]]; then
     echo "==> launching"
     open -a "$DEST"
 fi
