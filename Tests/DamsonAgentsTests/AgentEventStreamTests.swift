@@ -101,3 +101,43 @@ final class AgentEventStreamTests: XCTestCase {
         XCTAssertEqual(s.ingest([obs("A", "busy")]).map(\.kind), [.appeared])
     }
 }
+
+/// `starting` is damson's own state for a pane it launched an agent into that has not
+/// published a record yet. The transition into a real status must read as one agent
+/// continuing, not as a second one appearing — a coordinator that saw `appeared` twice would
+/// count the run's agents wrong and, if it deduplicated on pane id, might drop the real one.
+final class StartingTransitionTests: XCTestCase {
+
+    private func obs(_ pane: String, _ status: String, pid: Int32 = 100) -> AgentObservation {
+        AgentObservation(paneID: pane, pid: pid, status: status, waitingFor: nil, cwd: "/tmp")
+    }
+
+    func testStartingThenARealStatusIsOneAppearedThenAChange() {
+        var stream = AgentEventStream()
+        let first = stream.ingest([obs("A", "starting")])
+        XCTAssertEqual(first.map(\.kind), [.appeared])
+        XCTAssertEqual(first.first?.status, "starting")
+
+        let second = stream.ingest([obs("A", "busy")])
+        XCTAssertEqual(second.map(\.kind), [.changed], "the check-in was reported as a new agent")
+        XCTAssertEqual(second.first?.previousStatus, "starting")
+    }
+
+    /// A pane that stays on a first-run prompt produces no traffic at all. The stream is
+    /// edge-triggered, and a fan-out of five would otherwise emit five lines every sweep.
+    func testAPaneThatStaysStartingIsSilent() {
+        var stream = AgentEventStream()
+        _ = stream.ingest([obs("A", "starting")])
+        XCTAssertEqual(stream.ingest([obs("A", "starting")]), [])
+        XCTAssertEqual(stream.ingest([obs("A", "starting")]), [])
+    }
+
+    /// An agent that never checks in and whose pane closes still vanishes cleanly.
+    func testAStartingPaneThatGoesAwayVanishes() {
+        var stream = AgentEventStream()
+        _ = stream.ingest([obs("A", "starting")])
+        let gone = stream.ingest([])
+        XCTAssertEqual(gone.map(\.kind), [.vanished])
+        XCTAssertEqual(gone.first?.previousStatus, "starting")
+    }
+}

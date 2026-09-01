@@ -149,3 +149,29 @@ final class AgentBoardTests: XCTestCase {
         XCTAssertEqual(board.waiting.map(\.paneID), ["A", "B", "C"])
     }
 }
+
+/// The coordinator's view of damson's `starting` state.
+final class StartingOnTheBoardTests: XCTestCase {
+    private func line(_ event: String, _ pane: String, status: String) -> AgentEventLine {
+        AgentEventLine(event: event, pane: pane, pid: 1, status: status)
+    }
+
+    /// It must reach the board — "4 running, 1 still starting" is the whole point — but it
+    /// must not escalate. The agent has not asked for anything; alerting per task at launch
+    /// would make a fan-out fire an alert for every task it started.
+    func testStartingIsTrackedButNeverEscalates() {
+        var board = AgentBoard()
+        let change = board.apply(line("appeared", "A", status: "starting"))
+        XCTAssertEqual(board.agents["A"]?.status, "starting")
+        XCTAssertNil(change?.escalation)
+        XCTAssertFalse(board.agents["A"]?.isWaiting ?? true)
+    }
+
+    func testAStartingAgentBecomingBlockedStillEscalates() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "starting"))
+        let change = board.apply(AgentEventLine(event: "changed", pane: "A", pid: 1,
+                                                status: "waiting", waitingFor: "permission prompt"))
+        XCTAssertEqual(change?.escalation?.question, "permission prompt")
+    }
+}

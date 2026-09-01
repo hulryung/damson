@@ -205,7 +205,10 @@ extension PaneNode {
             let paneID = PaneRegistry.shared.existingID(for: session)?.uuidString
             // A pane running the user's shell restores from settings as it always has; one
             // running something else (an agent) needs its argv to come back as itself.
-            let argv = session.config.argv
+            // `launchArgv`, not `config.argv`: a settings hot-reload replaces the whole
+            // config — including the configured shell's argv — so an agent pane would be
+            // saved as a shell the first time the user changed a preference.
+            let argv = session.launchArgv
             let savedArgv = argv == DamsonConfig.fromUserDefaults().argv ? nil : argv
             if let rec = handoff[ObjectIdentifier(session)] {
                 let sbID = SessionRestore.writeScrollback(
@@ -259,6 +262,11 @@ extension PaneNode {
                 return PaneNode.leaf(session)
             }
             if let sessionID, let adopted = adopt(sessionID) {
+                // Carry the argv onto the adopted session too. Nothing is re-run here — the
+                // child never stopped — but without this the session forgets what it is
+                // running, and the NEXT save records the shell instead. One handoff would
+                // then be enough to turn an agent pane into a shell on a later cold restore.
+                if let savedArgv, !savedArgv.isEmpty { config.argv = savedArgv }
                 let host = PTYHost()
                 let pre = preamble.flatMap { Data(base64Encoded: $0) } ?? Data()
                 host.adopt(fd: adopted.fd, pid: adopted.pid,

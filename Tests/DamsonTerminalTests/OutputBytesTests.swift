@@ -49,3 +49,44 @@ final class OutputBytesTests: XCTestCase {
         XCTAssertEqual(session.grid.cell(row: 0, col: 1).char, "k")
     }
 }
+
+/// `launchArgv` records what a session was actually started on, and must not move.
+///
+/// It is separate from `config.argv` because `updateConfig` replaces the whole config on a
+/// settings hot-reload — font, colours, palette — and the replacement carries the configured
+/// shell's argv. Reading argv off the live config meant an agent pane began describing itself
+/// as a shell the moment the user changed any preference, which also lost it across a restart:
+/// the restore blob saves argv, and a shell argv saves as "nothing worth restoring".
+final class LaunchArgvTests: XCTestCase {
+    private final class FakeBackend: SessionIOBackend {
+        var onData: ((Data) -> Void)?
+        var onExit: ((Int32) -> Void)?
+        func spawn(argv: [String], env: [String: String], cwd: String?, cols: Int, rows: Int) throws {}
+        func write(_ data: Data) {}
+        func resize(cols: Int, rows: Int) {}
+        func terminate() {}
+        var childWorkingDirectory: String? { nil }
+        var isRunningForegroundJob: Bool { false }
+    }
+
+    func testLaunchArgvIsWhatTheSessionStartedOn() {
+        var config = DamsonConfig()
+        config.argv = ["/opt/homebrew/bin/claude", "--permission-mode", "default"]
+        let session = DamsonSession(config: config, backend: FakeBackend())
+        XCTAssertEqual(session.launchArgv, ["/opt/homebrew/bin/claude", "--permission-mode", "default"])
+    }
+
+    func testASettingsReloadDoesNotRewriteLaunchArgv() {
+        var config = DamsonConfig()
+        config.argv = ["/opt/homebrew/bin/claude"]
+        let session = DamsonSession(config: config, backend: FakeBackend())
+
+        var reloaded = DamsonConfig()          // what a preferences change hands back
+        reloaded.argv = ["/bin/zsh", "-l"]
+        session.updateConfig(reloaded)
+
+        XCTAssertEqual(session.config.argv, ["/bin/zsh", "-l"], "the live config still updates")
+        XCTAssertEqual(session.launchArgv, ["/opt/homebrew/bin/claude"],
+                       "an agent pane started describing itself as a shell")
+    }
+}

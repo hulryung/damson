@@ -6,6 +6,13 @@ import Foundation
 /// Created and owned by the host (cmux / damson.app) and injected into `DamsonTerminalView`.
 public final class DamsonSession: ObservableObject {
     @Published public private(set) var config: DamsonConfig
+    /// What this session was actually started on, captured once.
+    ///
+    /// Separate from `config.argv` because `updateConfig` replaces the whole config on a
+    /// settings hot-reload — font, colours, palette — and the replacement carries the
+    /// configured shell's argv. An agent pane would silently start describing itself as a
+    /// shell the first time the user changed a preference.
+    public let launchArgv: [String]
 
     @Published public private(set) var title: String = ""
     @Published public private(set) var workingDirectory: String?
@@ -113,6 +120,7 @@ public final class DamsonSession: ObservableObject {
         let rows = max(1, initialRows)
         self.pty = backend
         self.config = config
+        self.launchArgv = config.argv
         self.currentDirectory = config.cwd
         // Width policy for EAW-Ambiguous symbols (process-global user setting).
         Cell.treatAmbiguousAsWide = config.ambiguousWide

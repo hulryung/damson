@@ -44,6 +44,15 @@ closed: an unrecognized status yields **no badge**. That direction is deliberate
 "idle" pill on an agent that is actually blocked is worse than no pill, because the user
 acts on it. A future release that adds a state degrades to quiet, never to wrong.
 
+`starting` is damson's own addition, and the only state it invents: a pane damson launched an
+agent into that has not published a record yet. Claude Code writes its record only once past
+its own first-run prompts, so an agent stopped on a consent screen — waiting for a keypress —
+used to report nothing at all, and a fan-out would say "4 of 5 started" while the fifth sat
+blocked. It applies to `claude` alone: `codex`, `grok` and `cursor-agent` run happily in
+damson but publish nothing, and a pane on one of those would sit in `starting` for life.
+`AgentBadge(status:)` never produces it, so a future release that publishes that word cannot
+inherit damson's meaning for it.
+
 Only `waiting` reaches the tab title. It is the one state that will not resolve without the
 user; if more escalated, the badges would become noise people learn to ignore — and then
 miss the one that mattered.

@@ -22,9 +22,18 @@ public enum AgentBadge: String {
     case idle
     /// The agent is blocked on something the user must answer.
     case waiting
+    /// damson launched an agent here, but it has not published a session record yet — it is
+    /// still starting, or stopped on one of Claude Code's own first-run prompts.
+    ///
+    /// This is damson's word, not Claude Code's, and it is the one case `init?(status:)`
+    /// never produces. Without it a pane blocked before check-in is indistinguishable from
+    /// a shell, and a fan-out reports "4 of 5 started" while the fifth waits for a keypress.
+    case starting
 
-    /// Map a raw `status` string. Returns nil for anything not in the known vocabulary so
-    /// an unrecognized state renders as absent rather than as a guess.
+    /// Map a raw `status` string from a session record. Returns nil for anything not in the
+    /// known vocabulary so an unrecognized state renders as absent rather than as a guess —
+    /// and `starting` is deliberately NOT among the strings accepted here, so a future CLI
+    /// release that publishes that word cannot silently inherit damson's meaning for it.
     public init?(status: String) {
         switch status {
         case "busy": self = .busy
@@ -43,6 +52,7 @@ public enum AgentBadge: String {
         case .shell: return "❯"
         case .idle: return "○"
         case .waiting: return "?"
+        case .starting: return "…"
         }
     }
 
@@ -53,12 +63,15 @@ public enum AgentBadge: String {
         case .shell: return "running a command"
         case .idle: return "idle"
         case .waiting: return "waiting for you"
+        case .starting: return "starting"
         }
     }
 
     /// Only `waiting` earns attention — it is the one state that will not resolve without
     /// the user. Everything else is ambient and must stay quiet, or the badges become
     /// noise the user learns to ignore (and then misses the one that mattered).
+    /// `starting` is ambient like the rest: the agent has not asked for anything yet, and a
+    /// fan-out that alerted per task at launch would be pure noise.
     public var isAttention: Bool { self == .waiting }
 
     public var tint: NSColor {
@@ -67,6 +80,7 @@ public enum AgentBadge: String {
         case .shell: return NSColor.systemTeal
         case .idle: return NSColor.systemGray
         case .waiting: return NSColor.systemOrange
+        case .starting: return NSColor.systemGray
         }
     }
 }
