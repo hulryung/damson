@@ -77,6 +77,51 @@ final class ControlSocketServer {
         return path
     }
 
+    /// Re-create the listening socket if its file has gone. Returns whether it rebound.
+    ///
+    /// macOS periodically sweeps `$TMPDIR`, and it deletes the socket file of a damson that
+    /// has simply been running for a few days. The listening fd stays valid, so nothing in
+    /// the app notices — but the path a client connects to no longer exists, so `damson-cli`
+    /// reports "no running damson instances" while the app is right there. Every scripted
+    /// or orchestrated use stops working, silently, with no error on either side.
+    ///
+    /// Observed: two instances alive, both sockets gone, the runtime dir holding only a
+    /// stale socket from an instance that had already quit.
+    @discardableResult
+    func rebindIfMissing() -> Bool {
+        stateLock.lock()
+        let stoppedNow = stopped
+        let old = listenFd
+        stateLock.unlock()
+        guard !stoppedNow, !socketPath.isEmpty else { return false }
+
+        var st = stat()
+        if stat(socketPath, &st) == 0, (st.st_mode & S_IFMT) == S_IFSOCK { return false }
+
+        let dir = damsonRuntimeDir()
+        try? createRuntimeDir(at: dir)      // the sweep may have taken the directory too
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        unlink(socketPath)
+        if bindOrConnectUnix(fd: fd, path: socketPath, listen: true) != nil {
+            close(fd)
+            return false
+        }
+        chmod(socketPath, 0o600)
+
+        stateLock.lock()
+        listenFd = fd
+        stateLock.unlock()
+        // Wake the accept loop so it stops waiting on the fd nobody can reach any more.
+        // It re-reads `listenFd` and continues on the new one.
+        if old >= 0 {
+            shutdown(old, SHUT_RDWR)
+            close(old)
+        }
+        NSLog("damson: control socket was missing; rebound at \(socketPath)")
+        return true
+    }
+
     func stop() {
         stateLock.lock()
         if stopped { stateLock.unlock(); return }   // idempotent (deinit + explicit stop)
@@ -149,7 +194,16 @@ final class ControlSocketServer {
                 stateLock.unlock()
                 if stoppedNow { return }
                 if errno == EINTR { continue }
-                if errno == EBADF || errno == EINVAL { return }
+                if errno == EBADF || errno == EINVAL {
+                    // A rebind may have swapped the listener underneath us and closed the
+                    // old fd to wake this call. Pick up the new one and carry on; only give
+                    // up when there genuinely is not one.
+                    stateLock.lock()
+                    let current = listenFd
+                    stateLock.unlock()
+                    if current >= 0 && current != fd { continue }
+                    return
+                }
                 // Transient error — pause briefly and retry.
                 Thread.sleep(forTimeInterval: 0.01)
                 continue

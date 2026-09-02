@@ -224,6 +224,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     fileprivate var controllers: [DamsonWindowController] = []
     /// Live multi-session controllers (Compact mode).
     fileprivate var compactControllers: [CompactWindowController] = []
+    private var controlSocketWatchdog: DispatchSourceTimer?
     private var settingsWindow: NSWindow?
     private var aboutWindow: NSWindow?
     /// IPC with damson-cli. Bound after the first window is created.
@@ -315,6 +316,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         bindControlSocket()
+        startControlSocketWatchdog()
         // Sparkle is lazily initialized — it starts automatically on first access.
         _ = DamsonUpdater.shared
         // Label panes with what the Claude Code session inside them is doing. Reads only —
@@ -383,6 +385,17 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - damson-cli IPC
+
+    /// macOS sweeps `$TMPDIR` on its own schedule and takes the control socket with it, so
+    /// a damson left running for a few days becomes unreachable to `damson-cli` without
+    /// anything failing visibly. One `stat` a minute is enough to notice and put it back.
+    private func startControlSocketWatchdog() {
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + 60, repeating: 60, leeway: .seconds(10))
+        t.setEventHandler { [weak self] in self?.controlSocket?.rebindIfMissing() }
+        t.resume()
+        controlSocketWatchdog = t
+    }
 
     private func bindControlSocket() {
         let server = ControlSocketServer()
