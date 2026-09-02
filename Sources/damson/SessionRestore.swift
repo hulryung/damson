@@ -238,6 +238,20 @@ extension PaneNode {
     /// buffered while the app was down, then live reads. A leaf whose child died while held
     /// (or when no keeper answered) falls back to the fresh-spawn path below.
     /// Parent links are wired up as well.
+    /// `path` if it can still be entered, else the closest ancestor that can, else nil.
+    /// Stops at the user's home rather than walking on to `/`, which no one means.
+    static func nearestUsableDirectory(_ path: String) -> String? {
+        var candidate = path
+        let home = NSHomeDirectory()
+        while candidate.count > 1, candidate != home {
+            if PTYHost.cwdProblem(candidate) == nil { return candidate }
+            let parent = (candidate as NSString).deletingLastPathComponent
+            if parent == candidate { break }
+            candidate = parent
+        }
+        return nil
+    }
+
     static func from(restorable: RestorablePane,
                      adopt: (String) -> AdoptedSession? = { _ in nil }) -> PaneNode {
         switch restorable {
@@ -250,8 +264,13 @@ extension PaneNode {
             // whole window. `cwdProblem` rather than `fileExists` so this agrees with what
             // the spawn itself will accept — existence is not the question, since `stat`
             // succeeds on a file and entering a directory needs execute permission.
-            if let cwd = cwd, PTYHost.cwdProblem(cwd) == nil {
-                config.cwd = cwd
+            if let cwd = cwd {
+                // Falling all the way back to the configured default means the home
+                // directory, which is the one place an agent is guaranteed to stop and ask
+                // whether it may work there. Prefer the nearest ancestor that still exists:
+                // a pane whose worktree was removed comes back beside the repository it
+                // branched from rather than at the top of the user's home.
+                config.cwd = nearestUsableDirectory(cwd) ?? config.cwd
             }
             /// Re-attach the pane's saved id, so a driver that was addressing this pane
             /// before the restart still resolves it afterwards.
