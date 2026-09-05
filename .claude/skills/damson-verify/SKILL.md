@@ -26,9 +26,13 @@ writing its session record — so agent badges and `watch-agents` silently produ
 env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID open -n dist/Damson.app
 ```
 
-**PATH inside the .app is minimal.** LaunchServices does not give it your shell's PATH, so
-`spawn -- claude` fails and the pane closes instantly, looking like a spawn bug. Use an
-absolute path (`/opt/homebrew/bin/claude`).
+**A Dock-launched app has a minimal PATH, but a dev instance does not.** LaunchServices gives
+`/Applications/Damson.app` only `/usr/bin:/bin:/usr/sbin:/sbin`; `open -n` from a shell
+passes that shell's full PATH through. So a bare `spawn -- claude` that works in every dev
+instance can fail on the user's real one — it did, for weeks, until a fan-out was tried in a
+Dock-launched window. damson now asks the login shell for PATH once
+(`LoginEnvironment`), so this is fixed for directly exec'd programs; the lesson is to test
+against an instance launched the way users launch it, at least once.
 
 ## Quitting and restarting
 

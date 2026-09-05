@@ -720,6 +720,12 @@ extension DamsonConfig {
     static func fromUserDefaults() -> DamsonConfig {
         let d = UserDefaults.standard
         var config = DamsonConfig()
+        // A Dock-launched app inherits LaunchServices' PATH, which has nothing the user
+        // installed. The interactive shell fixes its own from its rc files; a program exec'd
+        // directly into a pane — `spawn -- claude` — does not, and failed on every task with
+        // "no executable named 'claude'". Give it what the login shell would have had.
+        config.env["PATH"] = LoginEnvironment.mergedPATH(login: LoginEnvironment.loginPATH,
+                                                         inherited: config.env["PATH"])
         let fs = d.double(forKey: "damson.fontSize")
         if fs >= 6 { config.fontSize = CGFloat(fs) }
         if let family = d.string(forKey: "damson.fontFamily"), !family.isEmpty {
