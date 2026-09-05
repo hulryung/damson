@@ -33,13 +33,19 @@ public final class AgentWatcher {
     /// slow render must never happen between two reads.
     private let delivery = DispatchQueue(label: "damson-crew.delivery")
 
+    /// How long an agent may stay in a working state before it is reported as quiet.
+    /// 0 disables it.
+    private let stallAfter: TimeInterval
+
     public init(stream: @escaping Stream,
                 taskFor: @escaping (String) -> String? = { _ in nil },
+                stallAfter: TimeInterval = 0,
                 backoff: @escaping (Int) -> TimeInterval = { min(pow(2.0, Double($0)), 30) },
                 sleeper: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
                 onChange: @escaping (AgentBoard.Change, AgentBoard) -> Void) {
         self.stream = stream
         self.taskFor = taskFor
+        self.stallAfter = stallAfter
         self.backoff = backoff
         self.sleeper = sleeper
         self.onChange = onChange
@@ -88,13 +94,19 @@ public final class AgentWatcher {
     }
 
     /// One line, on the reading thread. Parse and fold it in; hand the result off elsewhere.
+    ///
+    /// A `heartbeat` carries no state, but it is the only thing that arrives while agents are
+    /// quiet — the stream is edge-triggered — so it doubles as the clock that notices one
+    /// that has been working too long.
     private func ingest(_ line: AgentEventLine) {
         lock.lock()
-        let change = board.apply(line, task: taskFor)
+        var changes: [AgentBoard.Change] = []
+        if let change = board.apply(line, task: taskFor) { changes.append(change) }
+        if stallAfter > 0 { changes += board.tick(stallAfter: stallAfter) }
         let current = board
         lock.unlock()
-        guard let change else { return }
-        delivery.async { [onChange] in onChange(change, current) }
+        guard !changes.isEmpty else { return }
+        delivery.async { [onChange] in for c in changes { onChange(c, current) } }
     }
 }
 

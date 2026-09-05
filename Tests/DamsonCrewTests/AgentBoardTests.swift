@@ -60,7 +60,7 @@ final class AgentBoardTests: XCTestCase {
         XCTAssertNil(board.apply(line("changed", "A", status: "waiting", waitingFor: "which auth flow?")))
     }
 
-    func testLeavingWaitingIsReported() {
+    func testLeavingWaitingToWorkAgainIsReported() {
         var board = AgentBoard()
         board.apply(line("appeared", "A", status: "waiting", waitingFor: "q"))
         guard case .released? = board.apply(line("changed", "A", status: "busy")) else {
@@ -68,13 +68,32 @@ final class AgentBoardTests: XCTestCase {
         }
     }
 
-    /// `busy` → `idle` must not escalate. `idle` also means "asked a clarifying question"
-    /// and "spawned but never prompted", so notifying on it would fire constantly and train
-    /// the user to dismiss the one that mattered.
-    func testIdleDoesNotRaiseAttention() {
+    /// An agent that was blocked, got its answer, and then stopped. This is the task the
+    /// user was called away for, so it is the one they most want told about — reporting only
+    /// `released` here let it finish in silence.
+    func testAnAgentThatStopsAfterBeingUnblockedIsReportedFinished() {
         var board = AgentBoard()
         board.apply(line("appeared", "A", status: "busy"))
-        XCTAssertNil(board.apply(line("changed", "A", status: "idle")))
+        board.apply(line("changed", "A", status: "waiting", waitingFor: "may I?"))
+        guard case .finishedTurn? = board.apply(line("changed", "A", status: "idle")) else {
+            return XCTFail("finishing after a question was not reported")
+        }
+    }
+
+    /// `busy` → `idle` must not raise ATTENTION. It is reported — as a finished turn, which
+    /// is what a human wants to know — but it must never be treated as an agent blocked on
+    /// them, because `idle` also covers "asked a clarifying question" and "never prompted".
+    /// Escalating it as blocked would fire constantly and train the user to dismiss the one
+    /// that mattered.
+    func testIdleIsReportedAsFinishedNotAsAttention() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "busy"))
+        let change = board.apply(line("changed", "A", status: "idle"))
+        guard case .finishedTurn? = change else { return XCTFail("expected a finished turn") }
+        XCTAssertEqual(change?.escalation?.kind, .finishedTurn)
+        XCTAssertNotEqual(change?.escalation?.kind, .blocked)
+        XCTAssertEqual(change?.escalation?.deservesFocus, false,
+                       "finishing must never steal the user's focus")
     }
 
     // MARK: - Pane reuse
@@ -173,5 +192,169 @@ final class StartingOnTheBoardTests: XCTestCase {
         let change = board.apply(AgentEventLine(event: "changed", pane: "A", pid: 1,
                                                 status: "waiting", waitingFor: "permission prompt"))
         XCTAssertEqual(change?.escalation?.question, "permission prompt")
+    }
+}
+
+/// "It finished" for a human to read, which is not the same as a completion signal to
+/// schedule on. #16 measured that a session running in a pane never publishes a terminal
+/// state, so nothing here claims a task is done — what is observable is that an agent WAS
+/// working and now is not, and that is worth telling someone.
+///
+/// The distinction that makes it honest: only an agent seen `busy` can finish. An agent that
+/// merely appeared `idle` was never prompted, and announcing that as finished would fire once
+/// per task at launch — exactly the noise that teaches people to ignore notifications.
+final class FinishedTurnTests: XCTestCase {
+    private func line(_ event: String, _ pane: String, status: String,
+                      waitingFor: String? = nil) -> AgentEventLine {
+        AgentEventLine(event: event, pane: pane, pid: 1, status: status, waitingFor: waitingFor)
+    }
+
+    func testAnAgentThatWorkedAndStoppedIsReportedFinished() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "busy"))
+        guard case .finishedTurn(let a)? = board.apply(line("changed", "A", status: "idle")) else {
+            return XCTFail("an agent that finished working was not reported")
+        }
+        XCTAssertEqual(a.paneID, "A")
+    }
+
+    /// The case that keeps it from becoming noise.
+    func testAnAgentThatWasNeverBusyIsNotReportedFinished() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "idle"))
+        XCTAssertNil(board.apply(line("changed", "A", status: "shell")))
+        XCTAssertNil(board.apply(line("changed", "A", status: "idle")))
+    }
+
+    /// `starting` is damson's own state for a pane that has not checked in. Going from that
+    /// to idle is arriving, not finishing.
+    func testStartingToIdleIsNotFinished() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "starting"))
+        XCTAssertNil(board.apply(line("changed", "A", status: "idle")))
+    }
+
+    /// A second turn reports again — the human's attention is needed each time it stops.
+    func testEachTurnIsReported() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "busy"))
+        guard case .finishedTurn? = board.apply(line("changed", "A", status: "idle")) else {
+            return XCTFail("first turn")
+        }
+        board.apply(line("changed", "A", status: "busy"))
+        guard case .finishedTurn? = board.apply(line("changed", "A", status: "idle")) else {
+            return XCTFail("second turn was not reported")
+        }
+    }
+
+    /// Being blocked is not finishing. It takes the attention path, and announcing both
+    /// would tell the user twice about one thing.
+    func testBusyToWaitingIsAttentionNotFinished() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "busy"))
+        guard case .needsAttention? =
+                board.apply(line("changed", "A", status: "waiting", waitingFor: "q")) else {
+            return XCTFail("expected attention")
+        }
+    }
+
+    /// Answering a question and carrying on to a stop still counts as finishing that turn.
+    func testWaitingThenBusyThenIdleFinishes() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "waiting", waitingFor: "q"))
+        board.apply(line("changed", "A", status: "busy"))
+        guard case .finishedTurn? = board.apply(line("changed", "A", status: "idle")) else {
+            return XCTFail("not reported after the question was answered")
+        }
+    }
+
+    /// A new process in an old pane starts over: it has not worked yet.
+    func testANewProcessMustWorkBeforeItCanFinish() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "busy"))
+        board.apply(AgentEventLine(event: "vanished", pane: "A", pid: 1))
+        board.apply(AgentEventLine(event: "appeared", pane: "A", pid: 2, status: "idle"))
+        XCTAssertNil(board.apply(AgentEventLine(event: "changed", pane: "A", pid: 2, status: "idle")))
+    }
+}
+
+/// Noticing an agent that has stopped making progress without saying so.
+///
+/// Measured live: a `claude` retrying an overloaded API showed
+/// `529 Overloaded · Retrying in 9s · attempt 8/10` on screen while its published status
+/// stayed `busy` for minutes. From outside the pane that is indistinguishable from real
+/// work, so a fan-out where several agents hit it looks like a run making progress.
+///
+/// Duration is the one thing that can be known for certain here — no inference about what
+/// the agent is doing, just how long it has been in the same state. The stream is
+/// edge-triggered, so nothing arrives while an agent is stuck; the 20s heartbeat is what
+/// drives this.
+final class StalledAgentTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+    private func line(_ event: String, _ pane: String, status: String) -> AgentEventLine {
+        AgentEventLine(event: event, pane: pane, pid: 1, status: status)
+    }
+
+    func testAnAgentBusyPastTheThresholdIsReportedOnce() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "busy"), now: t0)
+        XCTAssertEqual(board.tick(now: t0.addingTimeInterval(60), stallAfter: 300).count, 0)
+
+        let late = board.tick(now: t0.addingTimeInterval(301), stallAfter: 300)
+        guard case .stalled(let a)? = late.first else { return XCTFail("not reported: \(late)") }
+        XCTAssertEqual(a.paneID, "A")
+        // Once. A notice every heartbeat would be the noise this is trying to surface.
+        XCTAssertEqual(board.tick(now: t0.addingTimeInterval(600), stallAfter: 300).count, 0)
+    }
+
+    /// An agent that never checks in is the other half of the same problem — #18's case,
+    /// where the pane sat on a first-run prompt. `starting` for minutes is worth saying.
+    func testAnAgentStuckStartingIsReported() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "starting"), now: t0)
+        guard case .stalled? = board.tick(now: t0.addingTimeInterval(301), stallAfter: 300).first else {
+            return XCTFail("a pane that never checked in was not reported")
+        }
+    }
+
+    /// Idle and waiting are not stalls. Idle is a finished turn, and waiting already has its
+    /// own escalation — announcing it twice would be telling the user the same thing again.
+    func testRestingStatesAreNeverStalls() {
+        for status in ["idle", "waiting", "shell"] {
+            var board = AgentBoard()
+            board.apply(line("appeared", "A", status: status), now: t0)
+            XCTAssertEqual(board.tick(now: t0.addingTimeInterval(3600), stallAfter: 300).count, 0,
+                           status)
+        }
+    }
+
+    /// Progress resets the clock, and makes the agent eligible to be reported again later.
+    func testAStatusChangeResetsTheClock() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "busy"), now: t0)
+        _ = board.tick(now: t0.addingTimeInterval(301), stallAfter: 300)
+        board.apply(line("changed", "A", status: "idle"), now: t0.addingTimeInterval(310))
+        board.apply(line("changed", "A", status: "busy"), now: t0.addingTimeInterval(320))
+        XCTAssertEqual(board.tick(now: t0.addingTimeInterval(400), stallAfter: 300).count, 0,
+                       "the clock did not restart")
+        guard case .stalled? = board.tick(now: t0.addingTimeInterval(700), stallAfter: 300).first else {
+            return XCTFail("a second stall was not reported")
+        }
+    }
+
+    func testEveryStalledAgentIsReported() {
+        var board = AgentBoard()
+        for p in ["A", "B", "C"] { board.apply(line("appeared", p, status: "busy"), now: t0) }
+        XCTAssertEqual(board.tick(now: t0.addingTimeInterval(301), stallAfter: 300).count, 3)
+    }
+
+    /// A stall is news, not an interruption: the agent has not asked for anything.
+    func testAStallDoesNotStealFocus() {
+        var board = AgentBoard()
+        board.apply(line("appeared", "A", status: "busy"), now: t0)
+        let change = board.tick(now: t0.addingTimeInterval(301), stallAfter: 300).first
+        XCTAssertEqual(change?.escalation?.kind, .stalled)
+        XCTAssertEqual(change?.escalation?.deservesFocus, false)
     }
 }

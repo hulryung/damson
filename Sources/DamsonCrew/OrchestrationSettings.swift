@@ -23,6 +23,17 @@ public struct OrchestrationSettings: Equatable {
     public var notifyOnWaiting: Bool
     /// Also bring that agent's tab forward.
     public var focusOnWaiting: Bool
+    /// Notify when an agent that was working stops. Not a completion signal — see
+    /// `AgentBoard.Change.finishedTurn` — but it is what tells a human a task is worth
+    /// looking at, and without it a fan-out finishes in silence.
+    public var notifyOnFinished: Bool
+    /// Minutes an agent may stay busy before it is reported as gone quiet. 0 disables it.
+    ///
+    /// Exists because a long `busy` is not proof of progress: measured, a `claude` retrying
+    /// an overloaded API publishes plain `busy` for minutes, which from outside the pane is
+    /// indistinguishable from work. Duration is the only fact available, so this reports
+    /// that and nothing more.
+    public var stallMinutes: Int
     /// Where worktrees are made. Empty means beside the repo, as `<repo>-worktrees`.
     public var worktreeRoot: String
     /// Pre-accept Claude Code's workspace-trust prompt for a worktree damson-crew created.
@@ -36,8 +47,8 @@ public struct OrchestrationSettings: Equatable {
 
     public static let `default` = OrchestrationSettings(
         agentCommand: ["claude"], skipPermissions: true,
-        notifyOnWaiting: true, focusOnWaiting: false, worktreeRoot: "",
-        trustNewWorktrees: true)
+        notifyOnWaiting: true, focusOnWaiting: false, notifyOnFinished: true,
+        stallMinutes: 5, worktreeRoot: "", trustNewWorktrees: true)
 
     /// Read the app's preferences, falling back to the defaults for anything unset. Never
     /// throws and never fails: a coordinator must run whether or not the app has ever been
@@ -58,6 +69,12 @@ public struct OrchestrationSettings: Equatable {
         if defaults.object(forKey: Keys.focusOnWaiting) != nil {
             s.focusOnWaiting = defaults.bool(forKey: Keys.focusOnWaiting)
         }
+        if defaults.object(forKey: Keys.notifyOnFinished) != nil {
+            s.notifyOnFinished = defaults.bool(forKey: Keys.notifyOnFinished)
+        }
+        if defaults.object(forKey: Keys.stallMinutes) != nil {
+            s.stallMinutes = max(0, defaults.integer(forKey: Keys.stallMinutes))
+        }
         if let root = defaults.string(forKey: Keys.worktreeRoot) { s.worktreeRoot = root }
         if defaults.object(forKey: Keys.trustNewWorktrees) != nil {
             s.trustNewWorktrees = defaults.bool(forKey: Keys.trustNewWorktrees)
@@ -73,6 +90,8 @@ public struct OrchestrationSettings: Equatable {
         public static let skipPermissions = "damson.orchestration.skipPermissions"
         public static let notifyOnWaiting = "damson.orchestration.notifyOnWaiting"
         public static let focusOnWaiting  = "damson.orchestration.focusOnWaiting"
+        public static let notifyOnFinished = "damson.orchestration.notifyOnFinished"
+        public static let stallMinutes     = "damson.orchestration.stallMinutes"
         public static let worktreeRoot    = "damson.orchestration.worktreeRoot"
         public static let trustNewWorktrees = "damson.orchestration.trustNewWorktrees"
     }

@@ -51,8 +51,13 @@ Options:
   --notify / --no-notify
                    Post a macOS notification when an agent is blocked on you.
   --focus / --no-focus
-                   Also bring that agent's tab forward.
-                   Both default to Settings → Orchestration.
+                   Also bring that agent's tab forward. Only a blocked agent is
+                   ever pulled in front of you.
+  --notify-done / --no-notify-done
+                   Notify when an agent that was working stops. Not a completion
+                   signal — Claude Code publishes none for a session in a pane —
+                   but it is what tells you a task is worth looking at.
+                   All three default to Settings → Agents.
   --yes            Required by `close`, which shuts several tabs and the
                    programs inside them.
   --remove-worktrees  With `close` (and --tasks): also remove the git worktrees
@@ -101,6 +106,8 @@ final class PaneNames {
         case .needsAttention(let a) where a.task == nil: return .needsAttention(resolve(a))
         case .released(let a) where a.task == nil:       return .released(resolve(a))
         case .appeared(let a) where a.task == nil:       return .appeared(resolve(a))
+        case .finishedTurn(let a) where a.task == nil:   return .finishedTurn(resolve(a))
+        case .stalled(let a) where a.task == nil:        return .stalled(resolve(a))
         case .vanished(let pane, nil):                   return .vanished(paneID: pane, task: cached(pane))
         default:                                         return change
         }
@@ -151,6 +158,7 @@ var skipPermissions = settings.skipPermissions
 var trustNewWorktrees = settings.trustNewWorktrees
 var notify = settings.notifyOnWaiting
 var focus = settings.focusOnWaiting
+var notifyDone = settings.notifyOnFinished
 var confirmed = false
 var removeWorktrees = false
 
@@ -177,6 +185,10 @@ while i < args.count {
         focus = true; i += 1
     case "--no-focus":
         focus = false; i += 1
+    case "--notify-done":
+        notifyDone = true; i += 1
+    case "--no-notify-done":
+        notifyDone = false; i += 1
     case "--skip-permissions":
         skipPermissions = true; i += 1
     case "--no-skip-permissions":
@@ -296,6 +308,7 @@ case "watch":
         // Called on the reading thread, so it only ever touches the cache — damson drops a
         // subscriber whose mailbox fills, and a socket round-trip here would risk exactly that.
         taskFor: { names.cached($0) },
+        stallAfter: TimeInterval(settings.stallMinutes * 60),
         onChange: { change, _ in
             let stamp = ISO8601DateFormatter().string(from: Date())
             // Delivery runs off the reading thread, so this is where a miss can afford to go
@@ -303,8 +316,14 @@ case "watch":
             let change = names.naming(change)
             // Only `waiting` is ever escalated — see Escalation for why nothing else is.
             if let alert = change.escalation {
-                if notify { notifier.deliver(alert) }
-                if focus, let why = focuser.reveal(paneID: alert.paneID) {
+                let wanted: Bool
+                switch alert.kind {
+                case .blocked:      wanted = notify
+                case .finishedTurn: wanted = notifyDone
+                case .stalled:      wanted = notifyDone
+                }
+                if wanted { notifier.deliver(alert) }
+                if focus, alert.deservesFocus, let why = focuser.reveal(paneID: alert.paneID) {
                     FileHandle.standardError.write(
                         Data("\(stamp)\tcould not focus \(alert.subject): \(why)\n".utf8))
                 }
@@ -315,6 +334,10 @@ case "watch":
                 print("\(stamp)\tWAITING\t\(who)\t\(a.waitingFor ?? "(no detail)")")
             case .released(let a):
                 print("\(stamp)\tresumed\t\(a.task ?? a.paneID)")
+            case .finishedTurn(let a):
+                print("\(stamp)\tFINISHED\t\(a.task ?? a.paneID)")
+            case .stalled(let a):
+                print("\(stamp)\tQUIET\t\(a.task ?? a.paneID)\tstill \(a.status)")
             case .appeared(let a):
                 print("\(stamp)\tstarted\t\(a.task ?? a.paneID)\t\(a.status)")
             case .vanished(let pane, let task):

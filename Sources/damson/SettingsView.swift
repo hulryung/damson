@@ -51,6 +51,10 @@ struct DamsonSettingsView: View {
     private var notifyOnWaiting: Bool = true
     @AppStorage(OrchestrationSettings.Keys.focusOnWaiting)
     private var focusOnWaiting: Bool = false
+    @AppStorage(OrchestrationSettings.Keys.notifyOnFinished)
+    private var notifyOnFinished: Bool = true
+    @AppStorage(OrchestrationSettings.Keys.stallMinutes)
+    private var stallMinutes: Int = 5
     @AppStorage(OrchestrationSettings.Keys.worktreeRoot)
     private var worktreeRoot: String = ""
     @AppStorage(OrchestrationSettings.Keys.trustNewWorktrees)
@@ -417,11 +421,34 @@ struct DamsonSettingsView: View {
                 }
             }
 
-            Section("When an agent is blocked") {
-                Toggle("Notify me", isOn: $notifyOnWaiting)
+            Section("Notifications") {
+                Toggle("When an agent is blocked on me", isOn: $notifyOnWaiting)
                 Toggle("Bring its tab forward", isOn: $focusOnWaiting)
-                Text("Only a blocked agent is announced. Anything else would become noise, "
-                     + "and then the one that mattered gets dismissed with the rest.")
+                Text("A blocked agent will not move until you answer it, so this is the one "
+                     + "case worth pulling the window in front of you.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Toggle("When an agent finishes working", isOn: $notifyOnFinished)
+                Text("Told when an agent that was working goes idle. Claude Code publishes no "
+                     + "completion signal for a session in a terminal, so this is \"it stopped\" "
+                     + "rather than \"the task is done\" — but without it a run of five finishes "
+                     + "in silence. It never steals focus.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Stepper(value: $stallMinutes, in: 0...120) {
+                    HStack {
+                        Text("When an agent has gone quiet for")
+                        Spacer()
+                        Text(stallMinutes == 0 ? "off" : "\(stallMinutes) min")
+                            .foregroundColor(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+                Text("A long \"busy\" is not proof of progress: an agent retrying an overloaded "
+                     + "API shows exactly the same status as one doing real work. This reports "
+                     + "how long it has been quiet and leaves the judgement to you. 0 turns it off.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

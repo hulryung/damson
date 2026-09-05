@@ -10,23 +10,57 @@ import Foundation
 /// it also covers *asked a clarifying question* and *spawned but never prompted* — so
 /// notifying on it would fire constantly.
 public struct Escalation: Equatable {
+    public enum Kind: Equatable {
+        /// Blocked on the user. Will not move until answered.
+        case blocked
+        /// Quiet for longer than expected, with no explanation available.
+        case stalled
+        /// Was working, now stopped. Worth telling someone; not a completion signal — see
+        /// `AgentBoard.Change.finishedTurn`.
+        case finishedTurn
+    }
+
+    public let kind: Kind
     /// The task's name when the pane is one of ours, else the pane id. Never a bare UUID
     /// when we can do better: an alert nobody can act on is worse than none.
     public let subject: String
     public let question: String
     public let paneID: String
 
-    public var title: String { "\(subject) needs you" }
+    public var title: String {
+        switch kind {
+        case .blocked:      return "\(subject) needs you"
+        case .finishedTurn: return "\(subject) finished"
+        case .stalled:      return "\(subject) has gone quiet"
+        }
+    }
     public var body: String { question }
+
+    /// Only a blocked agent earns being pulled in front of the user. Something that just
+    /// stopped working is news, not an interruption — stealing focus for it would move the
+    /// window out from under whatever they were doing.
+    public var deservesFocus: Bool { kind == .blocked }
 }
 
 public extension AgentBoard.Change {
     /// The alert this change deserves, or nil for changes nobody should be interrupted for.
     var escalation: Escalation? {
-        guard case .needsAttention(let agent) = self else { return nil }
-        return Escalation(subject: agent.task ?? agent.paneID,
-                          question: agent.waitingFor ?? "waiting for you",
-                          paneID: agent.paneID)
+        switch self {
+        case .needsAttention(let agent):
+            return Escalation(kind: .blocked, subject: agent.task ?? agent.paneID,
+                              question: agent.waitingFor ?? "waiting for you",
+                              paneID: agent.paneID)
+        case .finishedTurn(let agent):
+            return Escalation(kind: .finishedTurn, subject: agent.task ?? agent.paneID,
+                              question: "went idle after working", paneID: agent.paneID)
+        case .stalled(let agent):
+            let mins = Int(Date().timeIntervalSince(agent.since) / 60)
+            return Escalation(kind: .stalled, subject: agent.task ?? agent.paneID,
+                              question: "still \(agent.status) after \(max(mins, 1)) min",
+                              paneID: agent.paneID)
+        default:
+            return nil
+        }
     }
 }
 

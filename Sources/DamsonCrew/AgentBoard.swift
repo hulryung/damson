@@ -11,6 +11,18 @@ public struct AgentState: Equatable, Sendable {
     /// The task this pane is running, when the pane's label matches one. Filled in by the
     /// caller, since damson knows nothing about tasks.
     public var task: String?
+    /// Whether this agent has been seen actually working. An agent that only ever appeared
+    /// `idle` was never prompted, so it has nothing to finish.
+    public var hasWorked: Bool = false
+    /// When the current status began. Duration is the only thing that can be known for
+    /// certain about an agent that has gone quiet — see `AgentBoard.tick`.
+    public var since: Date = Date()
+    /// True once a stall has been reported, so it is said once and not every heartbeat.
+    public var stallReported: Bool = false
+
+    /// Statuses that mean the agent is supposed to be getting on with something. `idle` and
+    /// `waiting` are resting states with their own reporting, so they can never stall.
+    public var isWorking: Bool { status == "busy" || status == "starting" }
 
     public var isWaiting: Bool { status == "waiting" }
 }
@@ -40,14 +52,23 @@ public struct AgentBoard: Equatable {
         case needsAttention(AgentState)
         /// It was blocked and no longer is.
         case released(AgentState)
+        /// It has been in the same working state for longer than expected. Says nothing
+        /// about why — measured cause, once: an API returning 529 while `claude` retried,
+        /// which publishes as plain `busy` and is indistinguishable from progress.
+        case stalled(AgentState)
+        /// It was working and has stopped. **Not** a completion signal: #16 measured that a
+        /// session in a pane never publishes a terminal state, so this says "it went idle
+        /// after working", which is what a human wants to be told and what a scheduler must
+        /// not act on.
+        case finishedTurn(AgentState)
         case appeared(AgentState)
         case vanished(paneID: String, task: String?)
     }
 
     /// Apply one line. Returns what changed in a way worth acting on, or nil.
     @discardableResult
-    public mutating func apply(_ line: AgentEventLine, task: (String) -> String? = { _ in nil })
-        -> Change? {
+    public mutating func apply(_ line: AgentEventLine, task: (String) -> String? = { _ in nil },
+                               now: Date = Date()) -> Change? {
         switch line.event {
         case "heartbeat":
             // Liveness only. Reporting it as a change would make an idle machine look busy
@@ -66,9 +87,17 @@ public struct AgentBoard: Equatable {
             let continues = previous != nil && (line.pid == nil || previous?.pid == line.pid)
             var state = continues ? previous! : AgentState(
                 paneID: line.pane, pid: line.pid, status: line.status ?? "",
-                waitingFor: line.waitingFor, cwd: line.cwd, task: task(line.pane))
+                waitingFor: line.waitingFor, cwd: line.cwd, task: task(line.pane),
+                hasWorked: false, since: now)
+            let previousStatus = state.status
             state.pid = line.pid ?? state.pid
             state.status = line.status ?? state.status
+            if state.status == "busy" { state.hasWorked = true }
+            if state.status != previousStatus {
+                // Progress restarts the clock, and makes it eligible to be reported again.
+                state.since = now
+                state.stallReported = false
+            }
             state.waitingFor = line.waitingFor
             state.cwd = line.cwd ?? state.cwd
             if state.task == nil { state.task = task(line.pane) }
@@ -83,6 +112,20 @@ public struct AgentBoard: Equatable {
                 }
                 return .needsAttention(state)
             }
+            // It has stopped: whatever it was doing before, it is idle now and not waiting.
+            //
+            // `hasWorked` is what keeps this honest — an agent that only ever appeared idle
+            // was never prompted and has nothing to finish. And it deliberately covers
+            // `waiting → idle` as well as `busy → idle`: an agent that stopped after asking
+            // the user something is exactly the one they most want to hear about, and
+            // reporting only `released` there left the task they were called for finishing
+            // in silence.
+            if state.status == "idle", previousStatus != "idle", state.hasWorked {
+                state.hasWorked = false          // so the next turn is reported too
+                agents[line.pane] = state
+                return .finishedTurn(state)
+            }
+            // Blocked, and now going again.
             if previous?.isWaiting == true { return .released(state) }
             return continues ? nil : .appeared(state)
 
@@ -90,6 +133,29 @@ public struct AgentBoard: Equatable {
             // An event this build does not know. Ignore it rather than guess — the same
             // direction damson's own badge vocabulary degrades in.
             return nil
+        }
+    }
+
+    /// Ask what has been quiet too long. Driven by the stream's 20s heartbeat, because the
+    /// stream is edge-triggered: while an agent is stuck, no events arrive at all.
+    ///
+    /// This reports a **duration**, never a diagnosis. Nothing damson can see says whether a
+    /// long `busy` is a hard problem or a big one, so it says how long and leaves the
+    /// judgement where it belongs.
+    public mutating func tick(now: Date = Date(), stallAfter: TimeInterval) -> [Change] {
+        guard stallAfter > 0 else { return [] }
+        var out: [Change] = []
+        for (pane, state) in agents
+        where state.isWorking && !state.stallReported
+            && now.timeIntervalSince(state.since) >= stallAfter {
+            var updated = state
+            updated.stallReported = true
+            agents[pane] = updated
+            out.append(.stalled(updated))
+        }
+        return out.sorted {
+            guard case .stalled(let a) = $0, case .stalled(let b) = $1 else { return false }
+            return a.paneID < b.paneID
         }
     }
 
