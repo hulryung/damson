@@ -292,6 +292,9 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tabBar.onTabClosed = { [weak self] idx in self?.closeTab(idx) }
         tabBar.onNewTab = { [weak self] in self?.addNewTab() }
         tabBar.onTabReordered = { [weak self] from, to in self?.reorderTab(from: from, to: to) }
+        tabBar.onTabDraggedOut = { [weak self] idx, point in
+            self?.moveTab(at: idx, toWindowAt: point) ?? false
+        }
         tabBar.onTabRenamed = { [weak self] idx, title in self?.renameTab(idx, to: title) }
         tabBar.onGroupToggled = { [weak self] name in self?.toggleGroupCollapsed(named: name) }
         tabBar.onGroupMoved = { [weak self] name, to in self?.moveGroup(named: name, to: to) }
@@ -717,6 +720,72 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     }
 
     /// Close the tab whose tree matches (by reference). No-op if it's already gone.
+    /// Take a tab out of this window WITHOUT terminating anything in it, and hand back what
+    /// another window needs to adopt it. nil when the index is not a tab here.
+    ///
+    /// Deliberately not `closeTab`: that terminates the tab's sessions, which for a move is
+    /// the one thing that must not happen — the whole point is that the shells and agents
+    /// carry on, in a different window.
+    func detachTab(at index: Int) -> (tree: PaneTreeView, title: String?, group: String?)? {
+        guard index >= 0, index < tabs.count else { return nil }
+        syncGroupLayout()
+        let tree = tabs[index].tree
+        let title = tabs[index].customTitle
+        let group = groupLayout.group(at: index)?.name
+
+        tree.removeFromSuperview()
+        tabs[index].titleSub.cancel()      // the destination makes its own
+        tabs.remove(at: index)
+        groupLayout.remove(at: index)
+
+        if tabs.isEmpty {
+            // Nothing left to show. The window goes, but the tab it gave away is already
+            // safe in another one.
+            window?.performClose(nil)
+            return (tree, title, group)
+        }
+        if index < currentIndex { currentIndex -= 1 }
+        else if currentIndex >= tabs.count { currentIndex = tabs.count - 1 }
+        selectTab(currentIndex)
+        refreshTabBar()
+        return (tree, title, group)
+    }
+
+    /// Adopt a tab detached from another window, keeping its label and its group.
+    func adoptTab(_ moved: (tree: PaneTreeView, title: String?, group: String?)) {
+        _ = adoptExternalTree(moved.tree, customTitle: moved.title)
+        if let group = moved.group,
+           let session = moved.tree.root.leaves().first?.session {
+            joinGroup(containing: session, named: group)
+        }
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// The compact window under a screen point, if any. Front-to-back, so a tab dropped on
+    /// overlapping windows lands in the one the user can actually see.
+    static func compactWindow(atScreen point: NSPoint) -> CompactWindowController? {
+        for win in NSApp.orderedWindows where win.isVisible {
+            guard win.frame.contains(point) else { continue }
+            if let c = win.windowController as? CompactWindowController { return c }
+        }
+        return nil
+    }
+
+    /// Move tab `index` into whichever window is under `point`. Returns whether it moved.
+    ///
+    /// A drop on this same window, or on nothing, is a no-op: the tab stays where it is and
+    /// the bar snaps it back. Tearing off into a NEW window is deliberately not done here —
+    /// it is a different gesture with a different result, and guessing between them from a
+    /// drop point would move a tab somewhere the user did not point at.
+    @discardableResult
+    func moveTab(at index: Int, toWindowAt point: NSPoint) -> Bool {
+        guard let destination = CompactWindowController.compactWindow(atScreen: point),
+              destination !== self,
+              let moved = detachTab(at: index) else { return false }
+        destination.adoptTab(moved)
+        return true
+    }
+
     func closeTab(matching tree: PaneTreeView) {
         if let idx = tabs.firstIndex(where: { $0.tree === tree }) {
             closeTab(idx)

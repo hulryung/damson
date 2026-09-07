@@ -29,6 +29,9 @@ final class CompactTabBarView: NSView {
     var onNewTab: (() -> Void)?
     /// Reorder result after a drag: move the tab from `from` to `to`.
     var onTabReordered: ((Int, Int) -> Void)?
+    /// A tab was released outside the bar. The controller decides whether a window is there
+    /// and moves it; returning false means it stayed, and the tab snaps back into the row.
+    var onTabDraggedOut: ((Int, NSPoint) -> Bool)?
     /// Double-click rename result: set tab `index`'s title to `title` ("" = revert to auto).
     var onTabRenamed: ((Int, String) -> Void)?
 
@@ -99,6 +102,9 @@ final class CompactTabBarView: NSView {
     private var headerScale: CGFloat = 1
     /// Where the dragged tab settles on drop — the slot the gap opened at.
     private var dragDropX: CGFloat?
+    /// True while the grabbed tab is being held outside the bar, so the release moves it to
+    /// another window instead of reordering the row.
+    private var draggedOut = false
     /// Tabs sit flush with the bar's BOTTOM edge (Chrome-style) so the selected tab's
     /// shape can run straight into the content below it.
     private let tabHeight: CGFloat = 30
@@ -194,7 +200,7 @@ final class CompactTabBarView: NSView {
             btn.onRename = { [weak self] title in self?.onTabRenamed?(i, title) }
             btn.isReorderActive = { [weak self] in self?.reorderModeActive ?? false }
             btn.onDragBegan = { [weak self] in self?.beginDrag(i) }
-            btn.onDragMoved = { [weak self] dx in self?.updateDrag(dx) }
+            btn.onDragMoved = { [weak self] dx, p in self?.updateDrag(dx, p) }
             btn.onDragEnded = { [weak self] in self?.finishDrag() }
             if reorderModeActive { btn.setReorderMode(true) }
             btn.isHidden = hiddenTabs.contains(i)
@@ -451,9 +457,17 @@ final class CompactTabBarView: NSView {
         }.count
     }
 
-    private func updateDrag(_ dx: CGFloat) {
+    private func updateDrag(_ dx: CGFloat, _ screenPoint: NSPoint) {
         guard let idx = draggingIndex, idx < tabButtons.count else { return }
         let btn = tabButtons[idx]
+        // Pulled out of the bar? Measured against the bar's own height rather than a fixed
+        // number of points, so it scales with the row. Vertical only: sliding along the row
+        // is the reorder gesture and must stay one.
+        if let win = window {
+            let inBar = convert(win.convertPoint(fromScreen: screenPoint), from: nil)
+            draggedOut = inBar.y < -bounds.height || inBar.y > bounds.height * 2
+            btn.alphaValue = draggedOut ? 0.55 : 1
+        }
         // The grabbed tab follows the cursor 1:1 (no animation on this one).
         btn.frame.origin.x = tabBaseX(idx) + dx
         let target = dropTargetIndex(centerX: btn.frame.midX, dragging: idx)
@@ -533,6 +547,21 @@ final class CompactTabBarView: NSView {
         let btn = tabButtons[idx]
         btn.setGrabbed(false)
         btn.layer?.zPosition = 0
+        btn.alphaValue = 1
+
+        // Released outside the row: hand it to the controller, which moves it if a window is
+        // under the cursor. If nothing is there it stays put and falls through to the snap
+        // back below — a drop into empty space must never lose a tab.
+        if draggedOut {
+            draggedOut = false
+            if onTabDraggedOut?(idx, NSEvent.mouseLocation) == true {
+                dragDropX = nil
+                return                       // the tab now belongs to another window
+            }
+            moveTab(btn, toX: tabBaseX(idx), animated: true)
+            dragDropX = nil
+            return
+        }
         // Neighbors already sit in their final slots; glide the dropped tab into
         // its slot, then commit the model once the settle finishes so the
         // rebuild lands on positions that already match (no snap).
@@ -804,7 +833,9 @@ private final class TabButton: NSView, ImmediateTitlebarClick {
     /// Drag-to-reorder callbacks. `dx` is the cursor's horizontal offset from
     /// the grab point, in window coordinates.
     var onDragBegan: (() -> Void)?
-    var onDragMoved: ((CGFloat) -> Void)?
+    /// `dx` is the horizontal offset from the grab point; the point is where the cursor is
+    /// on screen, which is what tells the bar whether the tab has been pulled out of it.
+    var onDragMoved: ((CGFloat, NSPoint) -> Void)?
     var onDragEnded: (() -> Void)?
 
     private var dragStartX: CGFloat?
@@ -988,7 +1019,7 @@ private final class TabButton: NSView, ImmediateTitlebarClick {
             didDrag = true
             onDragBegan?()
         }
-        if didDrag { onDragMoved?(dx) }
+        if didDrag { onDragMoved?(dx, NSEvent.mouseLocation) }
     }
 
     override func mouseUp(with event: NSEvent) {
