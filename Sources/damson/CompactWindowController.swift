@@ -17,6 +17,7 @@ import DamsonTerminal
 /// double-click-to-zoom on the empty titlebar are unchanged.
 final class CompactWindow: NSWindow {
     private weak var clickTarget: NSView?
+    private weak var middleTarget: NSView?
 
     override func sendEvent(_ event: NSEvent) {
         switch event.type {
@@ -36,6 +37,23 @@ final class CompactWindow: NSWindow {
             if let target = clickTarget {
                 clickTarget = nil
                 target.mouseUp(with: event)
+                return
+            }
+        // Middle button, forwarded for the same reason as the left one: the theme frame owns
+        // clicks in the titlebar region, so without this a middle click on a tab never
+        // reaches it. Tracked separately from `clickTarget` so a middle click during a
+        // left-button drag cannot steal that sequence's target.
+        case .otherMouseDown where event.buttonNumber == 2:
+            if let target = contentView?.hitTest(event.locationInWindow) as? ImmediateTitlebarClick {
+                middleTarget = target
+                target.otherMouseDown(with: event)
+                return
+            }
+            middleTarget = nil
+        case .otherMouseUp where event.buttonNumber == 2:
+            if let target = middleTarget {
+                middleTarget = nil
+                target.otherMouseUp(with: event)
                 return
             }
         default:

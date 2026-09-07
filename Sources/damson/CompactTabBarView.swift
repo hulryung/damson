@@ -1008,6 +1008,25 @@ private final class TabButton: NSView, ImmediateTitlebarClick {
         onClose?()
     }
 
+    // MARK: - Middle-click to close
+
+    /// True between a middle-button press on this tab and its release.
+    private var middleDown = false
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { return super.otherMouseDown(with: event) }
+        middleDown = true
+    }
+
+    /// Closes on RELEASE, and only while the cursor is still over the tab — so a middle
+    /// press that wanders off before letting go is a cancel, the same escape hatch every
+    /// browser gives for a gesture that shuts something.
+    override func otherMouseUp(with event: NSEvent) {
+        guard event.buttonNumber == 2, middleDown else { return super.otherMouseUp(with: event) }
+        middleDown = false
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClose?() }
+    }
+
     // MARK: - Inline rename
 
     private var editField: NSTextField?
