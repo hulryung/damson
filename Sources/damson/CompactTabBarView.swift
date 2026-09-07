@@ -1,4 +1,5 @@
 import AppKit
+import DamsonTabGroups  // TabRow (visible-row stepping)
 import DamsonTerminal  // Motion (shared animation timing)
 
 /// Marker for views that must receive clicks IMMEDIATELY when they sit in the
@@ -67,6 +68,16 @@ final class CompactTabBarView: NSView {
     /// `update()` (e.g. a PTY title refresh) must not snap the pill back — the
     /// controller owns its position until `swipePillEnd()`.
     private var swipePillTracking = false
+
+    /// Scroll distance banked since the last tab step, in points.
+    private var wheelAccum: CGFloat = 0
+    /// Timestamp of the last wheel event, to spot the gap between two notches.
+    private var wheelLastTime: TimeInterval = 0
+    /// Precise-scroll points banked per tab step. macOS smooths one mouse-wheel
+    /// notch into a burst of ~29 precise events totalling ~66 points, so anything
+    /// in (33, 66] turns exactly one notch into exactly one tab; the rest of the
+    /// range is what a trackpad swipe has to cover to move a tab.
+    fileprivate static let wheelPointsPerTab: CGFloat = 40
 
     // Drag-reorder state.
     private var perTab: CGFloat = 100   // current per-tab width (updated in layout)
@@ -823,6 +834,67 @@ final class CompactTabBarView: NSView {
 /// One tab: title + trailing close X. Click selects, the X closes. In reorder
 /// mode (Cmd+Shift) a horizontal drag is reported to the bar; the window is
 /// pinned immovable then, so these drag events actually reach us.
+extension CompactTabBarView {
+    // MARK: - Wheel over the bar → switch tabs
+
+    /// Scroll over the tab bar switches tabs: wheel down (or a two-finger swipe
+    /// left) moves toward the next tab, matching both the pane swipe and ⌘→.
+    ///
+    /// The bar sits in the window's titlebar region, where scroll events never
+    /// reach a content view on their own — `CompactWindow.sendEvent` forwards
+    /// them here.
+    override func scrollWheel(with event: NSEvent) {
+        // Dominant axis: a mouse wheel gives dy, a trackpad swipe across the bar dx.
+        let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
+        let delta = abs(dx) > abs(dy) ? dx : dy
+
+        guard event.hasPreciseScrollingDeltas else {
+            // A wheel whose notches are not smoothed (some third-party drivers):
+            // the delta arrives in line units → one notch, one tab.
+            if abs(delta) > 0.1 { stepTab(towardNext: delta < 0) }
+            return
+        }
+        // Everything else — a trackpad gesture, and an ordinary wheel too, since
+        // macOS smooths its notches into precise deltas — arrives as a dense
+        // stream of small deltas, so bank the distance and step per threshold.
+        // A trackpad marks the start of a gesture; a wheel has no phase at all, so
+        // fall back to the pause between notches. Without a boundary the leftover
+        // of one notch tops up the next, and every other notch moves two tabs.
+        if event.phase.contains(.began) || event.timestamp - wheelLastTime > 0.1 {
+            wheelAccum = 0
+        }
+        wheelLastTime = event.timestamp
+        // Drop the momentum tail, or one flick keeps spinning through tabs long
+        // after the fingers lift.
+        guard event.momentumPhase.isEmpty else { return }
+        wheelAccum += delta
+        guard abs(wheelAccum) >= Self.wheelPointsPerTab else { return }
+        stepTab(towardNext: wheelAccum < 0)
+        wheelAccum = 0   // drop the overshoot: never burst several tabs at once
+    }
+
+    /// Select the next/previous tab in the row the user can actually see.
+    private func stepTab(towardNext next: Bool) {
+        guard let idx = TabRow.neighbor(of: selectedIndex, count: tabButtons.count,
+                                        hidden: hiddenTabs, next: next) else { return }
+        onTabSelected?(idx)
+    }
+}
+
+extension CompactTabBarView {
+    /// The tab bar `view` belongs to, if any. A scroll lands on whatever sits under
+    /// the pointer — a tab, a group header, the "+" button, or the bar's own
+    /// background — and all of them answer with the same bar.
+    static func enclosing(_ view: NSView?) -> CompactTabBarView? {
+        var v = view
+        while let current = v {
+            if let bar = current as? CompactTabBarView { return bar }
+            v = current.superview
+        }
+        return nil
+    }
+}
+
 private final class TabButton: NSView, ImmediateTitlebarClick {
     var onClick: (() -> Void)?
     var onClose: (() -> Void)?

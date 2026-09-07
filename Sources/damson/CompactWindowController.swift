@@ -56,6 +56,15 @@ final class CompactWindow: NSWindow {
                 target.otherMouseUp(with: event)
                 return
             }
+        // Wheel over the tab bar switches tabs. The titlebar region routes scroll
+        // events to the theme frame, which drops them, so hand them to the bar
+        // ourselves. A wheel anywhere else (a terminal pane) falls through
+        // untouched, and so does one over a hidden bar — hitTest finds nothing.
+        case .scrollWheel:
+            if let bar = CompactTabBarView.enclosing(contentView?.hitTest(event.locationInWindow)) {
+                bar.scrollWheel(with: event)
+                return
+            }
         default:
             break
         }
