@@ -90,6 +90,14 @@ final class RunManagerTests: XCTestCase {
 
     // MARK: - Teardown
 
+    func testCleanupReportsRepositoryLookupFailure() {
+        let result = RunManager(client: FakeDamson()).removeWorktrees(of: [
+            CrewTask(name: "audit", repo: "/nonexistent-damson-audit-\(UUID())", branch: "audit")
+        ])
+        XCTAssertEqual(result.count, 1)
+        XCTAssertNotNil(result.first?.kept)
+    }
+
     func testCloseSendsTheGroupClose() {
         let fake = FakeDamson()
         XCTAssertNoThrow(try RunManager(client: fake).close(group: "run-7").get())

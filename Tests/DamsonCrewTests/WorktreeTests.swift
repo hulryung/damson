@@ -165,3 +165,26 @@ final class WorktreeParseTests: XCTestCase {
                        "/Users/x/dev/proj-worktrees")
     }
 }
+
+final class SystemGitTests: XCTestCase {
+    func testDrainsLargeStderrWhileStdoutRemainsOpen() throws {
+        // The child alarm bounds a regression to five seconds instead of hanging the suite.
+        let runner = SystemGit(executableURL: URL(fileURLWithPath: "/usr/bin/perl"),
+                               argumentsPrefix: ["-e", "alarm 5; print STDERR q(x) x 262144; print STDOUT qq(done\\n)"])
+        let result = try runner.run([]).get()
+        XCTAssertEqual(result, "done\n")
+    }
+
+    func testListExpandsTildeBeforeInvokingGit() throws {
+        final class Recorder: GitRunner {
+            var arguments: [String] = []
+            func run(_ args: [String]) -> Result<String, CrewError> {
+                arguments = args
+                return .success("")
+            }
+        }
+        let git = Recorder()
+        _ = try WorktreeManager(git: git).list(repo: "~/audit-repo").get()
+        XCTAssertEqual(git.arguments[1], NSHomeDirectory() + "/audit-repo")
+    }
+}

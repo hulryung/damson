@@ -87,8 +87,14 @@ public struct RunManager {
     public func removeWorktrees(of tasks: [CrewTask]) -> [WorktreeOutcome] {
         tasks.compactMap { task -> WorktreeOutcome? in
             guard let repo = task.repo, let branch = task.worktreeBranch else { return nil }
-            guard case .success(let trees) = worktrees.list(repo: repo),
-                  let tree = trees.first(where: { $0.branch == branch }) else { return nil }
+            let trees: [Worktree]
+            switch worktrees.list(repo: repo) {
+            case .failure(let error):
+                return WorktreeOutcome(task: task.name, path: repo,
+                                       kept: "could not list worktrees: \(error.message)")
+            case .success(let listed): trees = listed
+            }
+            guard let tree = trees.first(where: { $0.branch == branch }) else { return nil }
             switch worktrees.remove(repo: repo, path: tree.path) {
             case .success:        return WorktreeOutcome(task: task.name, path: tree.path, kept: nil)
             case .failure(let e): return WorktreeOutcome(task: task.name, path: tree.path, kept: e.message)

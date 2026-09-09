@@ -18,8 +18,7 @@ public enum AgentFlags {
     /// not at all, and passing a flag a CLI does not know turns a working spawn into a pane
     /// that exits instantly on an unknown argument.
     ///
-    /// The flag goes in **before the last argument**, because the prompt is a positional and
-    /// has to stay last — that is the one shape every agent CLI accepts.
+    /// Insert directly after the executable so option/value pairs and `--` stay intact.
     public static func apply(skipPermissions: Bool, to argv: [String]) -> [String] {
         guard skipPermissions, let program = argv.first, !program.isEmpty,
               (program as NSString).lastPathComponent == "claude" else { return argv }
@@ -27,13 +26,8 @@ public enum AgentFlags {
             permissionArguments.contains { arg == $0 || arg.hasPrefix($0 + "=") }
         }
         guard !alreadyDecided else { return argv }
-        // With a prompt, insert before it; without one, append.
         var out = argv
-        if out.count > 1 {
-            out.insert(skipPermissionsFlag, at: out.count - 1)
-        } else {
-            out.append(skipPermissionsFlag)
-        }
+        out.insert(skipPermissionsFlag, at: 1)
         return out
     }
 }

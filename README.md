@@ -90,6 +90,9 @@ apart at a glance. Give a task a `repo` instead of a `cwd` and a git worktree is
 ]
 ```
 
+Task names must be unique within a list. Different groups can reuse the same task names;
+retrying a task within its group reattaches to the existing tab.
+
 **It is not tied to Claude.** Worktree support is per-tool and inconsistent — `claude -w`,
 `grok --worktree=<name>`, nothing at all in `codex` or `cursor-agent` — so damson-crew makes
 the worktree itself and starts the agent in it. The prompt is appended as the last argument,
@@ -99,6 +102,8 @@ flag takes `{prompt}` in its `command`.
 `close --remove-worktrees` tidies them up afterwards, and **never forces**: git refuses to
 remove a worktree holding uncommitted or untracked files, and that refusal is reported rather
 than worked around. Teardown cannot destroy an agent's unsaved work.
+When cleanup cannot complete, `close` reports the reason and exits nonzero. Missing or
+invalid task files are rejected before any tabs are closed.
 
 Agents run with `--dangerously-skip-permissions` by default, so a task runs through instead
 of stopping to ask — an agent waiting on an approval is the most common way a run stalls.

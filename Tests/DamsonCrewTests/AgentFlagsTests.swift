@@ -56,6 +56,15 @@ final class AgentFlagsTests: XCTestCase {
         }
     }
 
+    func testOptionValuesAndSeparatorsStayIntact() {
+        for argv in [["claude", "--model", "sonnet"],
+                     ["claude", "--", "review this"],
+                     ["claude", "-p", "review this"]] {
+            XCTAssertEqual(AgentFlags.apply(skipPermissions: true, to: argv),
+                           [argv[0], "--dangerously-skip-permissions"] + argv.dropFirst())
+        }
+    }
+
     func testAnEmptyArgvIsUntouched() {
         XCTAssertEqual(AgentFlags.apply(skipPermissions: true, to: []), [])
     }

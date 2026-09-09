@@ -90,7 +90,7 @@ public struct Coordinator {
     /// third could not start should leave four agents working and one thing to fix, not
     /// nothing at all.
     ///
-    /// Every spawn carries the task name as its idempotency key. That is not belt-and-braces:
+    /// Every spawn carries its group and task name as its idempotency key. That is not belt-and-braces:
     /// damson's control handler reports a timeout at 2s **while the queued work still runs to
     /// completion**, so a spawn that overruns a tab-creation animation answers "failed" for a
     /// tab that did open. Without the key, re-running the list would mint a second agent for
@@ -112,7 +112,8 @@ public struct Coordinator {
                                         to: task.argv(defaultCommand: defaultCommand))
             let spec = SpawnSpec(cwd: cwd,
                                  argv: argv,
-                                 key: task.name,
+                                 key: group.map { "crew:group:\($0.utf8.count):\($0):\(task.name)" }
+                                     ?? "crew:ungrouped:\(task.name)",
                                  title: task.name,
                                  group: group)
             switch client.send(.spawnPane(spec)) {

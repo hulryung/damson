@@ -10,22 +10,44 @@ public protocol GitRunner {
 
 /// Runs the real thing.
 public struct SystemGit: GitRunner {
-    public init() {}
+    private let executableURL: URL
+    private let argumentsPrefix: [String]
+
+    public init() {
+        executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        argumentsPrefix = ["git"]
+    }
+
+    init(executableURL: URL, argumentsPrefix: [String]) {
+        self.executableURL = executableURL
+        self.argumentsPrefix = argumentsPrefix
+    }
+
+    private final class PipeReader: @unchecked Sendable {
+        let handle: FileHandle
+        private(set) var data = Data()
+        init(_ handle: FileHandle) { self.handle = handle }
+        func read() { data = handle.readDataToEndOfFile() }
+    }
 
     public func run(_ args: [String]) -> Result<String, CrewError> {
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["git"] + args
+        proc.executableURL = executableURL
+        proc.arguments = argumentsPrefix + args
         let out = Pipe(), err = Pipe()
         proc.standardOutput = out
         proc.standardError = err
         do { try proc.run() } catch {
             return .failure(CrewError("could not run git: \(error)"))
         }
-        // Read before waiting: a pipe that fills while we wait deadlocks the child.
+        // Each pipe must drain independently: git can fill stderr while keeping stdout open.
+        let stderrReader = PipeReader(err.fileHandleForReading)
+        let readers = DispatchGroup()
+        DispatchQueue.global(qos: .utility).async(group: readers) { stderrReader.read() }
         let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         proc.waitUntilExit()
+        readers.wait() // The reader's data is only accessed after its writer has completed.
+        let stderr = String(decoding: stderrReader.data, as: UTF8.self)
         guard proc.terminationStatus == 0 else {
             let message = (stderr.isEmpty ? stdout : stderr)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -87,7 +109,7 @@ public struct WorktreeManager {
     }
 
     public func list(repo: String) -> Result<[Worktree], CrewError> {
-        git.run(["-C", repo, "worktree", "list", "--porcelain"]).map(Self.parseList)
+        git.run(["-C", (repo as NSString).expandingTildeInPath, "worktree", "list", "--porcelain"]).map(Self.parseList)
     }
 
     static func parseList(_ text: String) -> [Worktree] {
