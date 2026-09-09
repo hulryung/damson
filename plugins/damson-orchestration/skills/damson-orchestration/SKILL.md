@@ -42,6 +42,11 @@ playable controls and game-state transitions in a real browser, as well as logic
 Choose reasonable defaults for details the user left open; ask only for missing decisions
 that prevent useful progress.
 
+Keep the plan compact: reference a shared contract and named test files instead of repeating
+large inline validation programs in every task's argv. Include only the instructions each
+worker needs. Finish planning once the graph validates; leave implementation and execution
+to their assigned stages when the user asked only for a plan.
+
 Write a plan and a shared interface contract before parallel implementation. Give each
 worker clear file ownership, inputs, expected outputs, and tests. Use separate directories
 or worktrees for conflicting edits. `resources` serializes tasks that share mutable state;

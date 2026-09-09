@@ -136,6 +136,47 @@ class WorkflowCLI(unittest.TestCase):
         self.assertEqual(len(logs), 2)
         self.assertTrue(all('exit 7' in p.read_text() for p in logs))
 
+    def test_killed_wrapper_reports_surviving_command_without_retry(self):
+        plan = self.plan([self.task('a', 'echo started > started; sleep 3', maxAttempts=2)])
+        coordinator = subprocess.Popen(self.command(plan), env=self.environment,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 10
+            while not (self.root / 'started').exists() and time.monotonic() < deadline:
+                self.assertIsNone(coordinator.poll())
+                time.sleep(.02)
+            self.assertTrue((self.root / 'started').exists())
+            journal = json.loads((self.root / 'state/state.json').read_text())
+            attempt = journal['tasks']['a']['attempt']
+            execution_file = self.root / 'state/attempts' / attempt / 'execution.json'
+            while not execution_file.exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            execution = json.loads(execution_file.read_text())
+            wrapper = next(iter(self.processes.values()))
+            wrapper.kill()
+            wrapper.wait(timeout=5)
+            stdout, stderr = coordinator.communicate(timeout=10)
+            self.assertEqual(coordinator.returncode, 1, stdout + stderr)
+            self.assertIn('command is still running', stdout)
+            final = json.loads((self.root / 'state/state.json').read_text())
+            self.assertEqual(final['tasks']['a']['attempts'], 1)
+            self.assertEqual(len(self.processes), 1)
+            # The fixture's surviving command is bounded to three seconds. Observe its
+            # exit rather than sending an unsafe signal to a PID that could be reused.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                process = subprocess.run(['/bin/ps', '-o', 'stat=', '-p', str(execution['pid'])],
+                                         capture_output=True, text=True)
+                if process.returncode != 0 or 'Z' in process.stdout:
+                    break
+                time.sleep(.05)
+            else:
+                self.fail('bounded child did not exit')
+        finally:
+            if coordinator.poll() is None:
+                coordinator.terminate()
+            coordinator.communicate(timeout=5)
+
     def test_resume_keeps_same_live_attempt(self):
         plan = self.plan([self.task('a', 'echo once >> count; sleep 2; touch done', outputs=['done'])])
         first = subprocess.Popen(self.command(plan), env=self.environment,

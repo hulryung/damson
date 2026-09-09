@@ -28,7 +28,7 @@ Keep them out of version control when they contain private project context.
       "prompt": "Implement engine.mjs following CONTRACT.md. Own only engine.mjs.",
       "verify": [["node", "--check", "engine.mjs"]],
       "outputs": ["engine.mjs"],
-      "timeoutSeconds": 600,
+      "timeoutSeconds": 1200,
       "maxAttempts": 2
     },
     {
@@ -37,7 +37,7 @@ Keep them out of version control when they contain private project context.
       "prompt": "Implement index.html, style.css, app.mjs following CONTRACT.md. Own only those files.",
       "verify": [["node", "--check", "app.mjs"]],
       "outputs": ["index.html", "style.css", "app.mjs"],
-      "timeoutSeconds": 600,
+      "timeoutSeconds": 1200,
       "maxAttempts": 2
     },
     {
@@ -47,7 +47,7 @@ Keep them out of version control when they contain private project context.
       "prompt": "Integrate the game, add substantive engine.test.mjs tests, run them and fix failures.",
       "verify": [["node", "--test", "engine.test.mjs"]],
       "outputs": ["engine.test.mjs"],
-      "timeoutSeconds": 600,
+      "timeoutSeconds": 1200,
       "maxAttempts": 2
     }
   ]
