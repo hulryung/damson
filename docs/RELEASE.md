@@ -72,6 +72,31 @@ SKIP_NOTARIZE=1 ./scripts/sign-and-notarize.sh
 ./scripts/build-dmg.sh
 ```
 
+### The installer window
+
+`build-dmg.sh` dresses the .dmg from three committed files, so the window looks the
+same whether a release is built here or on a CI runner with no GUI session:
+
+| file | what it is | regenerate with |
+| --- | --- | --- |
+| `Resources/dmg/background.tiff` | the artwork, 1x + 2x | `swift scripts/gen-dmg-background.swift` |
+| `Resources/dmg/DS_Store` | the Finder layout — window size, icon positions, no toolbar | `./scripts/make-dmg-layout.sh` |
+| `Resources/Damson.icns` | the mounted volume's icon | — |
+
+Only `make-dmg-layout.sh` needs Finder, and only when the geometry changes; keep its
+constants in step with `gen-dmg-background.swift`. Editing the artwork alone needs no
+re-record — the layout finds the background by path.
+
+The volume is named `Damson`, without the version, because that path is what the
+recorded layout resolves against. The .dmg file keeps the version in its name.
+
+Two constraints the artwork cannot break. Finder draws the icon labels in a colour
+this file cannot control — measured black in both light and dark mode on macOS 26,
+and white is what dark mode is documented to use — so the field the icons stand on
+stays a mid-tone that keeps black and white labels both above a 4:1 contrast ratio.
+And gradients are drawn as flat rows rather than with `NSGradient`, whose dithering
+is invisible on screen but makes the artwork five times larger in git.
+
 ## Verification
 
 To confirm the distribution actually passes Gatekeeper:
