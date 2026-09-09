@@ -97,6 +97,15 @@ class WorkflowCLI(unittest.TestCase):
         self.assertEqual(self.requests, [])
         self.assertFalse((self.root / 'state').exists())
 
+    def test_validate_is_read_only_and_needs_no_state(self):
+        plan = self.plan([self.task('a', 'true')])
+        result = subprocess.run([str(BINARY), 'workflow', 'validate', '--plan', str(plan)],
+                                env=self.environment, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('1 tasks', result.stdout)
+        self.assertEqual(self.requests, [])
+        self.assertFalse((self.root / 'state').exists())
+
     def test_real_workers_dependencies_and_status(self):
         result = self.run_plan([
             self.task('a', 'echo one > first', outputs=['first']),

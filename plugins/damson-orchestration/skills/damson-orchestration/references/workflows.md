@@ -1,11 +1,13 @@
 # Managed workflow plans
 
 ```sh
+damson-crew workflow validate --plan workflow.json
 damson-crew workflow run --plan workflow.json --state .crew/run-1
 damson-crew workflow status --state .crew/run-1
 ```
 
-`run` waits and exits 0 only if every task succeeds; 1 means tasks failed/blocked, 2 means
+`validate` checks the plan without contacting the app or creating state. `run` also validates
+before any launch, waits, and exits 0 only if every task succeeds; 1 means tasks failed/blocked, 2 means
 invalid input or an operational error. Ctrl-C stops the coordinator, leaving workers alive.
 Repeat the exact plan/state to resume; completed attempts are not replayed. A changed plan
 is rejected for an existing state directory. `status` reads the journal without a live app.

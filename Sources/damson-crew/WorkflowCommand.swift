@@ -8,6 +8,7 @@ enum WorkflowCommand {
     Managed workflows (finite commands with explicit completion):
       damson-crew workflow run --plan FILE --state DIR [--pid PID]
       damson-crew workflow status --state DIR
+      damson-crew workflow validate --plan FILE
 
     run validates the graph, then opens ready tasks in Damson panes. It waits for
     command exit, validation commands, and declared output files before advancing.
@@ -32,7 +33,7 @@ enum WorkflowCommand {
 
     private static func workflow(_ args: [String]) throws -> Int32 {
         guard let action = args.first, !["--help", "-h"].contains(action) else { print(help); return 0 }
-        guard ["run", "status"].contains(action) else { throw CrewError(help) }
+        guard ["run", "status", "validate"].contains(action) else { throw CrewError(help) }
         var values: [String: String] = [:]
         var i = 1
         while i < args.count {
@@ -41,6 +42,14 @@ enum WorkflowCommand {
                   values[key] == nil else { throw CrewError("invalid or duplicate workflow option: \(key)") }
             values[key] = args[i + 1]
             i += 2
+        }
+        if action == "validate" {
+            guard let plan = values["--plan"], values["--state"] == nil, values["--pid"] == nil else {
+                throw CrewError("workflow validate requires only --plan FILE")
+            }
+            let flow = try Workflow.load(URL(fileURLWithPath: (plan as NSString).expandingTildeInPath))
+            print("valid: \(flow.name), \(flow.tasks.count) tasks, maxParallel=\(flow.maxParallel)")
+            return 0
         }
         guard let path = values["--state"] else { throw CrewError("workflow requires --state DIR") }
         let directory = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL

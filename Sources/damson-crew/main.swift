@@ -13,6 +13,7 @@ damson-crew — open a tab per task in a running damson.
 Usage:
   damson-crew workflow run --plan FILE --state DIR [--pid PID]
   damson-crew workflow status --state DIR
+  damson-crew workflow validate --plan FILE
   damson-crew run   --tasks FILE [--group NAME] [--pid PID] [--command CMD]
   damson-crew watch  [--tasks FILE] [--pid PID] [--notify] [--focus]
   damson-crew status --tasks FILE [--group NAME] [--pid PID]
