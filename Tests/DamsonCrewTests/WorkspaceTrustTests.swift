@@ -146,6 +146,12 @@ final class TrustOnlyNewWorktreesTests: XCTestCase {
         var commands: [[String]] = []
         func run(_ args: [String]) -> Result<String, CrewError> {
             commands.append(args)
+            if args.contains("--git-common-dir") || args.contains("--absolute-git-dir") {
+                let path = args[1] + "/.git"
+                do { try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true) }
+                catch { return .failure(CrewError(error.localizedDescription)) }
+                return .success(path + "\n")
+            }
             if args.contains("list") { return .success(worktreeList) }
             return .success("")
         }
@@ -158,7 +164,7 @@ final class TrustOnlyNewWorktreesTests: XCTestCase {
 
     /// `ensureWorktree` checks the repo really exists before running git, so the fake needs
     /// a real directory to stand on.
-    private func run(existingBranch: Bool, trustEnabled: Bool) throws -> [String] {
+    private func run(existingBranch: Bool, trustEnabled: Bool, command: [String]? = nil) throws -> [String] {
         let repo = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("damson-trustco-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
@@ -176,16 +182,21 @@ final class TrustOnlyNewWorktreesTests: XCTestCase {
             client: FakeDamson(), skipPermissions: false, trustNewWorktrees: trustEnabled,
             worktrees: WorktreeManager(git: git, rootFor: { $0 + "-worktrees" }),
             acceptTrust: { trusted.append($0); return .success(true) })
-        _ = coordinator.fanOut([CrewTask(name: "t", repo: repo.path, branch: "feat")], group: nil)
+        _ = coordinator.fanOut([CrewTask(name: "t", command: command, repo: repo.path, branch: "feat")], group: nil)
         try? FileManager.default.removeItem(atPath: root)
         return trusted
+    }
+
+    func testOtherAgentsDoNotChangeClaudeWorkspaceTrust() throws {
+        XCTAssertEqual(try run(existingBranch: false, trustEnabled: true, command: ["codex"]), [])
     }
 
     func testANewWorktreeIsTrusted() throws {
         let trusted = try run(existingBranch: false, trustEnabled: true)
         XCTAssertEqual(trusted.count, 1)
-        XCTAssertTrue(trusted[0].hasSuffix("-worktrees/feat"), trusted[0])
-        XCTAssertTrue(trusted[0].hasPrefix("/"), "an absolute path is required")
+        let first = try XCTUnwrap(trusted.first)
+        XCTAssertTrue(first.hasSuffix("-worktrees/feat"), first)
+        XCTAssertTrue(first.hasPrefix("/"), "an absolute path is required")
     }
 
     /// A reused worktree was either trusted already or declined once. Deciding again would

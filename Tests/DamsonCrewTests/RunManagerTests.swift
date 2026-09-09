@@ -10,12 +10,14 @@ final class RunManagerTests: XCTestCase {
     private final class FakeDamson: DamsonClient {
         var sent: [ControlCommandKind] = []
         var panes: [PaneInfo] = []
+        var groups: [GroupInfo] = []
         var listResult: Result<ControlResponse, CrewError>?
         var closeResult: Result<ControlResponse, CrewError> = .success(.ok())
 
         func send(_ kind: ControlCommandKind, target: PaneTarget) -> Result<ControlResponse, CrewError> {
             sent.append(kind)
             if case .listAgents = kind { return listResult ?? .success(.panes(panes)) }
+            if case .listGroups = kind { return .success(.groups(groups)) }
             if case .closeGroup = kind { return closeResult }
             return .success(.ok())
         }
@@ -103,6 +105,12 @@ final class RunManagerTests: XCTestCase {
         ])
         XCTAssertEqual(result.count, 1)
         XCTAssertNotNil(result.first?.kept)
+    }
+
+    func testCleanupRetryAcceptsAnAlreadyClosedGroup() {
+        let fake = FakeDamson()
+        XCTAssertNoThrow(try RunManager(client: fake).close(group: "run", allowMissing: true).get())
+        XCTAssertEqual(fake.sent, [.listGroups])
     }
 
     func testCloseSendsTheGroupClose() {

@@ -102,7 +102,15 @@ flag takes `{prompt}` in its `command`.
 `close --remove-worktrees` tidies them up afterwards, and **never forces**: git refuses to
 remove a worktree holding uncommitted or untracked files, and that refusal is reported rather
 than worked around. Teardown cannot destroy an agent's unsaved work.
-When cleanup cannot complete, `close` reports the reason and exits nonzero. Missing or
+Crew records ownership in git's worktree metadata. Reused user-created worktrees are
+preserved; shared worktrees remain until the last owning group releases them. Cleanup also
+checks for panes using the worktree in other running Damson instances. Worktrees created by
+older versions without ownership records are preserved rather than adopted automatically.
+Use `--worktree-root DIR` to override the location for a run.
+
+When cleanup cannot complete, `close` reports the reason and exits nonzero. Once the cause
+is resolved, repeat `close --remove-worktrees --tasks FILE --group NAME --yes`; cleanup can
+continue even if the group's tabs were already closed. Missing or
 invalid task files are rejected before any tabs are closed.
 
 Agents run with `--dangerously-skip-permissions` by default, so a task runs through instead

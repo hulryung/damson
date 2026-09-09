@@ -76,14 +76,17 @@ public protocol Notifier {
 public struct SystemNotifier: Notifier {
     public init() {}
 
-    public func deliver(_ escalation: Escalation) {
-        let script = """
+    func script(for escalation: Escalation) -> String {
+        """
         display notification \(quote(escalation.body)) \
         with title \(quote(escalation.title)) sound name "Submarine"
         """
+    }
+
+    public func deliver(_ escalation: Escalation) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
+        proc.arguments = ["-e", script(for: escalation)]
         // Best effort. A notification that could not be posted must never take down the
         // watcher — losing the alert is bad, losing every future alert is worse.
         try? proc.run()

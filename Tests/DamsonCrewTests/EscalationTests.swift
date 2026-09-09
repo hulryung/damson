@@ -95,30 +95,23 @@ final class EscalationTests: XCTestCase {
 /// appears — the failure mode that looks exactly like "nothing was waiting".
 final class NotifierQuotingTests: XCTestCase {
     func testQuotesAndBackslashesSurviveIntoTheScript() throws {
-        let notifier = SystemNotifier()
-        let mirror = Mirror(reflecting: notifier)
-        _ = mirror   // the quoting helper is private; exercise it through a real delivery
-
-        // Build the same script the notifier builds, via a local copy of the rule, and
-        // assert osascript accepts it. That is the property that matters: it parses.
-        let nasty = #"Overwrite "foo\bar.swift"? (y/n)"#
-        let escaped = "\"" + nasty
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: " ") + "\""
-
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("damson-notification-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("notification.scpt")
+        let alert = Escalation(kind: .blocked, subject: #"task "quoted""#,
+                               question: "Overwrite \"foo\\bar.swift\"?\nChoose an option.", paneID: "A")
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        // `return <literal>` — parses and echoes it back without posting a notification.
-        proc.arguments = ["-e", "return \(escaped)"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osacompile")
+        // Compile the real production script without posting a notification during tests.
+        proc.arguments = ["-o", output.path, "-e", SystemNotifier().script(for: alert)]
+        let errors = Pipe()
+        proc.standardError = errors
         try proc.run()
-        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let details = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         proc.waitUntilExit()
-
-        XCTAssertEqual(proc.terminationStatus, 0, "osascript rejected the escaped question")
-        XCTAssertEqual(out.trimmingCharacters(in: .whitespacesAndNewlines), nasty)
+        XCTAssertEqual(proc.terminationStatus, 0, details)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
     }
 }

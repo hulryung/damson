@@ -1,3 +1,4 @@
+import DamsonControl
 import XCTest
 @testable import DamsonCrew
 
@@ -105,6 +106,84 @@ final class WorktreeIntegrationTests: XCTestCase {
             return XCTFail("a non-repo was accepted")
         }
         XCTAssertTrue(e.message.contains("not a git repository"), e.message)
+    }
+
+    func testPreExistingWorktreeIsNeverAdoptedForCleanup() throws {
+        let path = scratch.appendingPathComponent("user-tree").path
+        _ = try SystemGit().run(["-C", repo.path, "worktree", "add", "-b", "user", path]).get()
+        let made = try manager().ensureWorktree(repo: repo.path, branch: "user", base: nil, group: "run").get()
+        XCTAssertFalse(made.created)
+        XCTAssertThrowsError(try manager().removeOwned(repo: repo.path, path: made.path,
+                                                       branch: "user", group: "run", inUse: { _ in false }).get())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+    }
+
+    func testSharedWorktreeIsRemovedOnlyAfterLastOwnerCloses() throws {
+        let m = manager()
+        let tree = try m.ensureWorktree(repo: repo.path, branch: "shared", base: nil, group: "one").get()
+        _ = try m.ensureWorktree(repo: repo.path, branch: "shared", base: nil, group: "two").get()
+        XCTAssertThrowsError(try m.removeOwned(repo: repo.path, path: tree.path, branch: "shared",
+                                               group: "one", inUse: { _ in false }).get())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tree.path))
+        try m.removeOwned(repo: repo.path, path: tree.path, branch: "shared",
+                          group: "two", inUse: { _ in false }).get()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tree.path))
+    }
+
+    func testForeignGroupAndLivePaneCannotRemoveOwnedTree() throws {
+        let m = manager()
+        let tree = try m.ensureWorktree(repo: repo.path, branch: "owned", base: nil, group: "owner").get()
+        XCTAssertThrowsError(try m.removeOwned(repo: repo.path, path: tree.path, branch: "owned",
+                                               group: "other", inUse: { _ in false }).get())
+        XCTAssertThrowsError(try m.removeOwned(repo: repo.path, path: tree.path, branch: "owned",
+                                               group: "owner", inUse: { _ in true }).get())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tree.path))
+        try m.removeOwned(repo: repo.path, path: tree.path, branch: "owned",
+                          group: "owner", inUse: { _ in false }).get()
+    }
+
+    func testDirtyCleanupRetainsOwnershipForRetry() throws {
+        let m = manager()
+        let tree = try m.ensureWorktree(repo: repo.path, branch: "retry", base: nil, group: "run").get()
+        let note = URL(fileURLWithPath: tree.path).appendingPathComponent("work.txt")
+        try Data("save me".utf8).write(to: note)
+        XCTAssertThrowsError(try m.removeOwned(repo: repo.path, path: tree.path, branch: "retry",
+                                               group: "run", inUse: { _ in false }).get())
+        XCTAssertEqual(try String(contentsOf: note), "save me")
+        try FileManager.default.removeItem(at: note)
+        try m.removeOwned(repo: repo.path, path: tree.path, branch: "retry",
+                          group: "run", inUse: { _ in false }).get()
+    }
+
+    func testRecreatedWorktreeDoesNotInheritOldOwnership() throws {
+        let m = manager()
+        let tree = try m.ensureWorktree(repo: repo.path, branch: "replace", base: nil, group: "run").get()
+        try m.remove(repo: repo.path, path: tree.path).get()
+        _ = try SystemGit().run(["-C", repo.path, "worktree", "add", tree.path, "replace"]).get()
+        XCTAssertThrowsError(try m.removeOwned(repo: repo.path, path: tree.path, branch: "replace",
+                                               group: "run", inUse: { _ in false }).get())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tree.path))
+    }
+
+    func testCleanupChecksOtherAppInstancesAndFailsClosedOnLookupFailure() throws {
+        final class Client: DamsonClient {
+            var result: Result<ControlResponse, CrewError> = .success(.panes([]))
+            func send(_ kind: ControlCommandKind, target: PaneTarget) -> Result<ControlResponse, CrewError> {
+                result
+            }
+        }
+        let tree = try manager().ensureWorktree(repo: repo.path, branch: "other-app", base: nil, group: "run").get()
+        let peer = Client()
+        peer.result = .success(.panes([PaneInfo(index: 0, cols: 80, rows: 24, active: false,
+                                               id: "other-instance", cwd: tree.path)]))
+        let run = RunManager(client: Client(), usageClients: { [peer] })
+        let tasks = [CrewTask(name: "t", repo: repo.path, branch: "other-app")]
+        XCTAssertTrue(run.removeWorktrees(of: tasks, group: "run")[0].kept?.contains("open pane") == true)
+        peer.result = .failure(CrewError("peer disconnected"))
+        XCTAssertNotNil(run.removeWorktrees(of: tasks, group: "run")[0].kept)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tree.path))
+        peer.result = .success(.panes([]))
+        XCTAssertNil(run.removeWorktrees(of: tasks, group: "run")[0].kept)
     }
 
     // MARK: - Removal

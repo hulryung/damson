@@ -34,6 +34,7 @@ Options:
   --group NAME     Put every tab in this group, so the run can be folded or
                    closed as a unit (damson-cli group close NAME).
   --pid PID        Target a specific damson instance (default: most recent).
+  --worktree-root DIR  Override the worktree root for this invocation.
   --command CMD    Agent to run. Default: from Settings → Orchestration.
   --skip-permissions / --no-skip-permissions
                    Pass --dangerously-skip-permissions to claude, so it does not
@@ -139,6 +140,7 @@ var pid: Int?
 // Defaults come from damson's Orchestration settings; every one can be overridden per run.
 let settings = OrchestrationSettings.load()
 var command: [String] = settings.agentCommand
+var worktreeRoot = settings.worktreeRoot
 var skipPermissions = settings.skipPermissions
 var trustNewWorktrees = settings.trustNewWorktrees
 var notify = settings.notifyOnWaiting
@@ -159,6 +161,9 @@ while i < args.count {
     case "--pid":
         i += 1; guard i < args.count, let v = Int(args[i]) else { die("--pid requires a number") }
         pid = v; i += 1
+    case "--worktree-root":
+        i += 1; guard i < args.count else { die("--worktree-root requires a directory") }
+        worktreeRoot = args[i]; i += 1
     case "--command":
         i += 1; guard i < args.count else { die("--command requires a command") }
         command = [args[i]]; i += 1
@@ -229,10 +234,10 @@ if case .failure(let error) = resolveSocket() { die(error.message) }
 let client = ResolvingDamsonClient(resolve: resolveSocket)
 // An explicit worktree root keeps every run's trees in one place; empty means beside the
 // repo, which is the default because it keeps them obviously related to what they branch from.
-let worktrees: WorktreeManager = settings.worktreeRoot.isEmpty
+let worktrees: WorktreeManager = worktreeRoot.isEmpty
     ? WorktreeManager()
     : WorktreeManager(rootFor: { repo in
-        let root = (settings.worktreeRoot as NSString).expandingTildeInPath
+        let root = (worktreeRoot as NSString).expandingTildeInPath
         return URL(fileURLWithPath: root)
             .appendingPathComponent(URL(fileURLWithPath: repo).lastPathComponent).path
       })
@@ -354,15 +359,20 @@ case "status":
 
 case "close":
     guard let group else { die("close requires --group") }
-    let manager = RunManager(client: client, worktrees: worktrees)
-    switch manager.close(group: group) {
+    let manager = RunManager(client: client, worktrees: worktrees, usageClients: {
+        // Another app instance can use the same checkout, even with the same group name.
+        listDamsonInstances().map { instance in
+            ResolvingDamsonClient(resolve: { .success(instance.socketPath) })
+        }
+    })
+    switch manager.close(group: group, allowMissing: removeWorktrees) {
     case .failure(let e): die("damson-crew: \(e.message)", code: 1)
     case .success:        print("closed \(group)")
     }
     if removeWorktrees {
         guard let list = taskList else { die("--remove-worktrees needs --tasks to know which ones") }
         var kept = 0
-        for outcome in manager.removeWorktrees(of: list.tasks) {
+        for outcome in manager.removeWorktrees(of: list.tasks, group: group) {
             if let why = outcome.kept {
                 kept += 1
                 FileHandle.standardError.write(Data("kept \(outcome.path): \(why)\n".utf8))

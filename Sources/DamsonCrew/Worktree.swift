@@ -154,7 +154,30 @@ public struct WorktreeManager {
         ensureWorktree(repo: repo, branch: branch, base: base).map(\.path)
     }
 
-    public func ensureWorktree(repo: String, branch: String, base: String?) -> Result<Ensured, CrewError> {
+    public func ensureWorktree(repo: String, branch: String, base: String?,
+                               group: String? = nil) -> Result<Ensured, CrewError> {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: (repo as NSString).expandingTildeInPath,
+                                             isDirectory: &isDirectory), isDirectory.boolValue else {
+            return .failure(CrewError("no such repository: \(repo)"))
+        }
+        let ownership = WorktreeOwnership(git: git)
+        return ownership.locked(repo: repo) {
+            let made = try ensureUnlocked(repo: repo, branch: branch, base: base).get()
+            try ownership.register(path: made.path, branch: branch, group: group, created: made.created)
+            return made
+        }
+    }
+
+    public func removeOwned(repo: String, path: String, branch: String, group: String?,
+                            inUse: (String) throws -> Bool) -> Result<Void, CrewError> {
+        let ownership = WorktreeOwnership(git: git)
+        return ownership.locked(repo: repo) {
+            try ownership.remove(repo: repo, path: path, branch: branch, group: group, inUse: inUse)
+        }
+    }
+
+    private func ensureUnlocked(repo: String, branch: String, base: String?) -> Result<Ensured, CrewError> {
         let expanded = (repo as NSString).expandingTildeInPath
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue else {

@@ -33,6 +33,8 @@ class CrewCLITests(unittest.TestCase):
         self.server.settimeout(0.1)
         self.requests = []
         self.connections = 0
+        self.group_exists = True
+        self.live_panes = []
         self.stopped = threading.Event()
         self.worker = threading.Thread(target=self.serve)
         self.worker.start()
@@ -60,8 +62,21 @@ class CrewCLITests(unittest.TestCase):
                         break  # Discovery connects and disconnects without a command.
                     data += chunk
                 if data:
-                    self.requests.append(json.loads(data))
-                    connection.sendall(b'{"ok":true}\n')
+                    request = json.loads(data)
+                    self.requests.append(request)
+                    response = {"ok": True}
+                    if request['cmd'] == 'group-list':
+                        response['groups'] = ([{'name': 'audit', 'tabs': 1, 'collapsed': False}]
+                                              if self.group_exists else [])
+                    elif request['cmd'] == 'group-close':
+                        self.group_exists = False
+                    elif request['cmd'] == 'list-agents':
+                        response['panes'] = self.live_panes
+                    elif request['cmd'] == 'spawn-pane':
+                        self.group_exists = True
+                        response['pane'] = {'index': 0, 'cols': 80, 'rows': 24,
+                                            'active': False, 'id': 'fixture-pane'}
+                    connection.sendall(json.dumps(response).encode() + b'\n')
 
     def crew(self, *options):
         return subprocess.run(
@@ -98,7 +113,7 @@ class CrewCLITests(unittest.TestCase):
         ])))
         self.assertEqual(result.returncode, 1)
         self.assertIn("could not list worktrees", result.stderr)
-        self.assertEqual([r["cmd"] for r in self.requests], ["group-close"])
+        self.assertEqual([r["cmd"] for r in self.requests], ["group-list", "group-close"])
 
     def test_stdin_tasks_are_consumed_before_close(self):
         result = subprocess.run(
@@ -107,9 +122,9 @@ class CrewCLITests(unittest.TestCase):
             capture_output=True, text=True, timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([r["cmd"] for r in self.requests], ["group-close"])
+        self.assertEqual([r["cmd"] for r in self.requests], ["group-list", "group-close"])
 
-    def repository_fixture(self):
+    def repository_fixture(self, managed=True):
         repo, tree = self.root / "repo", self.root / "tree"
         subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
 
@@ -118,7 +133,16 @@ class CrewCLITests(unittest.TestCase):
 
         git("-c", "user.name=Audit", "-c", "user.email=audit@example.com",
             "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture")
-        git("worktree", "add", "-b", "audit", str(tree))
+        if managed:
+            path = self.tasks(json.dumps([{'name': 'audit', 'repo': str(repo), 'command': ['/bin/cat']}]))
+            result = subprocess.run(
+                [str(BINARY), 'run', '--tasks', path, '--group', 'audit',
+                 '--worktree-root', str(self.root / 'trees'), '--no-trust-new-worktrees'],
+                env=self.environment, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            tree = self.root / 'trees' / 'repo' / 'audit'
+        else:
+            git("worktree", "add", "-b", "audit", str(tree))
         return repo, tree
 
     def test_tilde_repository_cleanup_removes_a_clean_worktree(self):
@@ -141,6 +165,56 @@ class CrewCLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("kept", result.stderr)
         self.assertEqual(notes.read_text(), "keep this work")
+        # The group has already closed, but the ownership record must permit cleanup retry.
+        notes.unlink()
+        retry = self.crew('--tasks', str(self.root / 'tasks.json'))
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertFalse(tree.exists())
+
+    def test_user_worktree_is_preserved(self):
+        repo, tree = self.repository_fixture(managed=False)
+        result = self.crew('--tasks', self.tasks(json.dumps([
+            {'name': 'audit', 'repo': str(repo), 'branch': 'audit'}])))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('not created by damson-crew', result.stderr)
+        self.assertTrue(tree.exists())
+
+    def test_remaining_pane_in_worktree_subdirectory_prevents_removal(self):
+        repo, tree = self.repository_fixture()
+        nested = tree / 'nested'
+        nested.mkdir()
+        self.live_panes = [{'index': 0, 'cols': 80, 'rows': 24, 'active': False,
+                            'id': 'other-pane', 'cwd': str(nested)}]
+        result = self.crew('--tasks', str(self.root / 'tasks.json'))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('still used by an open pane', result.stderr)
+        self.assertTrue(tree.exists())
+
+    def test_concurrent_runs_keep_all_shared_owners(self):
+        repo, tree = self.repository_fixture()
+        processes = []
+        paths = {}
+        for group in ['one', 'two']:
+            path = self.root / f'{group}.json'
+            path.write_text(json.dumps([{'name': group, 'repo': str(repo),
+                                        'branch': 'audit', 'command': ['/bin/cat']}]))
+            paths[group] = path
+            processes.append(subprocess.Popen(
+                [str(BINARY), 'run', '--tasks', str(path), '--group', group,
+                 '--no-trust-new-worktrees'], env=self.environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+        for process in processes:
+            _, error = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 0, error)
+        first = self.crew('--tasks', str(self.root / 'tasks.json'))
+        self.assertEqual(first.returncode, 1)
+        self.assertTrue(tree.exists())
+        for group, expected in [('one', 1), ('two', 0)]:
+            result = subprocess.run([str(BINARY), 'close', '--group', group, '--yes',
+                                    '--remove-worktrees', '--tasks', str(paths[group])],
+                                   env=self.environment, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, expected, result.stderr)
+        self.assertFalse(tree.exists())
 
 
 if __name__ == "__main__":
