@@ -88,6 +88,13 @@ final class RunManagerTests: XCTestCase {
         XCTAssertEqual(RunManager(client: fake).tasksNeedingTabs(tasks, group: "run-7").count, 3)
     }
 
+    func testUngroupedRunIgnoresNamedGroups() throws {
+        let fake = FakeDamson()
+        fake.panes = [pane("OTHER", title: "review-api", group: "another-run")]
+        let status = try RunManager(client: fake).status(of: [tasks[0]], group: nil).get()
+        XCTAssertEqual(status.missing, ["review-api"])
+    }
+
     // MARK: - Teardown
 
     func testCleanupReportsRepositoryLookupFailure() {

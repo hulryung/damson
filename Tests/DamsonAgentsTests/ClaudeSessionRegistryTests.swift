@@ -125,6 +125,20 @@ final class ClaudeSessionRegistryTests: XCTestCase {
                        "an in-place rewrite must be observed — this is why we poll")
     }
 
+    func testSameSizeRewriteWithinOneSecondIsObserved() throws {
+        let path = try write(status: "busy")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_700_000_000.1)], ofItemAtPath: path)
+        let registry = makeRegistry()
+        registry.refresh()
+        XCTAssertEqual(registry.session(forForegroundPID: getpid())?.status, "busy")
+        try write(status: "idle")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_700_000_000.8)], ofItemAtPath: path)
+        registry.refresh()
+        XCTAssertEqual(registry.session(forForegroundPID: getpid())?.status, "idle")
+    }
+
     func testDisappearingRecordClearsTheRow() throws {
         try write()
         let r = makeRegistry()

@@ -50,7 +50,7 @@ public final class ClaudeSessionRegistry {
 
     private let sessionsDir: URL
     /// mtime+size per file path, so an unchanged record is skipped without re-parsing.
-    private var fileStamps: [String: (mtime: Int, size: Int)] = [:]
+    private var fileStamps: [String: (mtime: TimeInterval, size: Int)] = [:]
     private var cache: [pid_t: ClaudeSessionRow] = [:]
     private var didWarnUnreadable = false
 
@@ -70,7 +70,7 @@ public final class ClaudeSessionRegistry {
         }
 
         var seen = Set<pid_t>()
-        var stamps: [String: (mtime: Int, size: Int)] = [:]
+        var stamps: [String: (mtime: TimeInterval, size: Int)] = [:]
 
         for name in names {
             // Exactly the shape Claude Code itself matches: `<digits>.json`. Anything else
@@ -83,7 +83,9 @@ public final class ClaudeSessionRegistry {
             let path = sessionsDir.appendingPathComponent(name).path
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
                   let size = (attrs[.size] as? NSNumber)?.intValue else { continue }
-            let mtime = Int((attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
+            // Equal-length statuses (busy/idle) can be rewritten within a single second.
+            // Truncating the timestamp would keep the older state cached indefinitely.
+            let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
             stamps[path] = (mtime, size)
 
             // A record whose process is gone is stale: Claude Code cleans these up, but not

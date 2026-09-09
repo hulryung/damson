@@ -57,6 +57,17 @@ final class WorktreeIntegrationTests: XCTestCase {
         XCTAssertEqual(listed.filter { $0.branch == "agent/review" }.count, 1)
     }
 
+    func testReuseAndRemovalPreserveQuotedAndUnicodePaths() throws {
+        let root = scratch.appendingPathComponent("한글-\"quoted\"-\\path\nnext")
+        let manager = WorktreeManager(rootFor: { _ in root.path })
+        let first = try manager.ensure(repo: repo.path, branch: "audit-path", base: nil).get()
+        let again = try manager.ensure(repo: repo.path, branch: "audit-path", base: nil).get()
+        XCTAssertEqual(again, first)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: again))
+        try manager.remove(repo: repo.path, path: again).get()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first))
+    }
+
     /// A branch someone already made by hand is checked out rather than rejected.
     func testEnsureChecksOutAnExistingBranch() throws {
         _ = try SystemGit().run(["-C", repo.path, "branch", "existing"]).get()

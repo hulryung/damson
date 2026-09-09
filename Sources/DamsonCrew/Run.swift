@@ -44,9 +44,8 @@ public struct RunManager {
             guard resp.ok, let panes = resp.panes else {
                 return .failure(CrewError(resp.err ?? "damson did not list its panes"))
             }
-            // Only panes in this run's group count when a group was named, so two runs that
-            // happen to use the same task name cannot be mistaken for each other.
-            let relevant = panes.filter { group == nil || $0.group == group }
+            // nil means an ungrouped run, not every group. Match the same scope as spawn keys.
+            let relevant = panes.filter { $0.group == group }
             var byLabel: [String: PaneInfo] = [:]
             for pane in relevant { if let t = pane.title { byLabel[t] = pane } }
             let rows = tasks.map { task in

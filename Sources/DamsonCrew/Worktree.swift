@@ -109,7 +109,8 @@ public struct WorktreeManager {
     }
 
     public func list(repo: String) -> Result<[Worktree], CrewError> {
-        git.run(["-C", (repo as NSString).expandingTildeInPath, "worktree", "list", "--porcelain"]).map(Self.parseList)
+        git.run(["-C", (repo as NSString).expandingTildeInPath,
+                 "worktree", "list", "--porcelain", "-z"]).map(Self.parseList)
     }
 
     static func parseList(_ text: String) -> [Worktree] {
@@ -120,7 +121,10 @@ public struct WorktreeManager {
             if let path { out.append(Worktree(path: path, branch: branch)) }
             path = nil; branch = nil
         }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        // -z leaves paths verbatim, even when a directory contains newlines. Keep accepting
+        // legacy newline fixtures; live git output always uses NUL-delimited fields.
+        let separator: Character = text.contains("\0") ? "\0" : "\n"
+        for line in text.split(separator: separator, omittingEmptySubsequences: false) {
             if line.hasPrefix("worktree ") {
                 flush()
                 path = String(line.dropFirst("worktree ".count))
@@ -193,7 +197,7 @@ public struct WorktreeManager {
             args += ["-b", branch, path]
             if let base, !base.isEmpty { args.append(base) }
         }
-        return git.run(args).map { _ in Ensured(path: path, created: true) }
+        return git.run(args).map { _ in Ensured(path: Self.realpath(path), created: true) }
     }
 
     /// Remove a worktree. **Never forces.**
