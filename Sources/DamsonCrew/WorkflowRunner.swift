@@ -100,7 +100,14 @@ public final class WorkflowRunner {
         }
         let started = FileManager.default.fileExists(atPath: directory.appendingPathComponent("started.json").path)
         if started || Date().timeIntervalSince(dispatched) > 30 {
-            let message = started ? "worker exited without a result" : "worker did not start within 30 seconds"
+            var message = started ? "worker exited without a result" : "worker did not start within 30 seconds"
+            let executionURL = directory.appendingPathComponent("execution.json")
+            if started, FileManager.default.fileExists(atPath: executionURL.path) {
+                let identity = try store.read(WorkflowProcessIdentity.self, from: executionURL)
+                if identity.isAlive {
+                    message += "; command is still running (pid \(identity.pid)); inspect before retrying"
+                }
+            }
             try store.save(WorkflowResult(token: token, succeeded: false, message: message, retryable: !started), to: resultURL)
             finish(task, succeeded: false, message: message, retryable: !started)
             return false

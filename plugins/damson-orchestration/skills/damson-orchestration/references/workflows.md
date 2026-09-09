@@ -12,7 +12,9 @@ invalid input or an operational error. Ctrl-C stops the coordinator, leaving wor
 Repeat the exact plan/state to resume; completed attempts are not replayed. A changed plan
 is rejected for an existing state directory. `status` reads the journal without a live app.
 State directories contain the resolved plan (including prompts), task status, and per-attempt
-logs/results. Keep them out of version control when they contain private project context.
+logs/results. `execution.json` identifies the command process by PID and kernel start time;
+when a wrapper disappears, a surviving command is reported and is never duplicated by a retry.
+Keep them out of version control when they contain private project context.
 
 ```json
 {

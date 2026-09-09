@@ -69,6 +69,16 @@ public enum WorkflowWorker {
         defer { try? reader.close() }
         try reader.seek(toOffset: log.offset())
         try process.run()
+        if let identity = WorkflowProcessIdentity.capture(process.processIdentifier) {
+            let store = WorkflowStore(root: logURL.deletingLastPathComponent())
+            do {
+                try store.save(identity, to: store.root.appendingPathComponent("execution.json"))
+            } catch {
+                terminate(process)
+                process.waitUntilExit()
+                throw error
+            }
+        }
         var timedOut = false
         while process.isRunning {
             relay(reader)

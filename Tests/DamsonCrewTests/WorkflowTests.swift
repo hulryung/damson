@@ -246,4 +246,22 @@ final class WorkflowTests: XCTestCase {
         XCTAssertTrue(status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || status.contains("Z"), status)
     }
 
+    func testLostWorkerReportsLiveCommandUsingKernelIdentity() throws {
+        let run = try runner(flow([task("a", extra: ["maxAttempts": 2])]))
+        try run.tick()
+        let token = try XCTUnwrap(run.state.tasks["a"]?.attempt)
+        let store = WorkflowStore(root: root.appendingPathComponent("state"))
+        let directory = store.attemptURL(token)
+        try store.save(["pid": 123], to: directory.appendingPathComponent("started.json"))
+        let identity = try XCTUnwrap(WorkflowProcessIdentity.capture(ProcessInfo.processInfo.processIdentifier))
+        try store.save(identity, to: directory.appendingPathComponent("execution.json"))
+        try run.tick()
+        XCTAssertEqual(run.state.tasks["a"]?.status, .failed)
+        XCTAssertEqual(run.state.tasks["a"]?.attempts, 1)
+        XCTAssertTrue(run.state.tasks["a"]?.message?.contains("command is still running") == true)
+        var reused = identity
+        reused.startMicroseconds += 1
+        XCTAssertFalse(reused.isAlive, "a different process with the same PID must not match")
+    }
+
 }
