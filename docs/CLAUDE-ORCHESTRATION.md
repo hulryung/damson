@@ -3,12 +3,16 @@
 damson can open, address and observe panes running Anthropic's `claude` CLI. This is what
 that means, why it stops where it stops, and which of the obvious next moves are traps.
 
-The scope is deliberately narrow: **damson observes and addresses agents; it does not
-schedule them.** No task board, no concurrency cap, no worktree lifecycle. Those belong to a
-cockpit — [damson-ide](https://github.com/hulryung/damson-ide), which was split out of this
-repo in `e4d14f9` — and `claude -w` already owns worktrees. The test for whether this
-boundary still holds: **deleting `Sources/DamsonAgents` must leave damson compiling, with
-`spawn-pane` and pane ids still useful for any argv.**
+The terminal app observes and addresses agents; it does not schedule them. `damson-crew`
+is a separate coordinator binary built on the public control protocol. Its interactive
+`run`/`watch` mode provides fan-out and attention routing. Its opt-in `workflow` mode now
+runs finite commands inside ordinary terminal panes, stores explicit exit/validation
+results, and schedules dependencies. Neither mode derives completion from `idle`.
+
+The historical measurements below explain why interactive session badges cannot drive a
+queue. They do not prevent a finite worker wrapper from publishing its own result.
+See [the managed workflow contract](../plugins/damson-orchestration/skills/damson-orchestration/references/workflows.md)
+for the new execution mode. The terminal substrate remains independent of that coordinator.
 
 ---
 
@@ -345,11 +349,12 @@ unreachable from here by construction. And the sessions that *are* in panes neve
 terminal state in the first place: it is not that `idle` is ambiguous, it is that no field
 ever says finished.
 
-So the fork is real and it is a product decision, not an engineering one: **a visible tab a
-human can take over, or a completion signal.** Claude Code does not offer both for the same
-session. A coordinator that wants completion can dispatch `claude --bg` and poll `claude
-agents --json --all` for `state` — but that work is not in a terminal, which is the entire
-reason for running it in damson.
+For an interactive Claude TUI, this remains a product choice: a session a human can take
+over does not expose task completion through its badge. Managed workflows choose finite
+print-mode commands in real PTYs instead. A wrapper owns process execution and publishes
+an atomic result after command exit, validators, and artifact checks. Those panes show
+command output but are not interactive Claude conversations; their logs remain on disk.
+This adds completion without modifying `PaneNode.Kind` or relying on private Claude IPC.
 
 Two smaller findings from the same look, recorded so they are not rediscovered as if new:
 
@@ -363,9 +368,8 @@ Two smaller findings from the same look, recorded so they are not rediscovered a
 **A scheduler that dequeues on `status: "idle"`.** `idle` conflates *task finished*, *asked a
 clarifying question and is waiting on you*, and *spawned but never prompted* — live
 mid-conversation sessions read as `idle`. A FIFO with a concurrency cap would start task 4
-while agent 1 is blocked on "which auth flow did you mean?". A real queue needs headless
-`-p --output-format stream-json`'s `result` message, which is a different architecture with
-different costs (see below).
+while agent 1 is blocked on "which auth flow did you mean?". A managed queue needs a separate completion protocol. The workflow worker uses finite
+process exit plus required validations and outputs; interactive session status is irrelevant.
 
 **Screen-scraping the TUI.** damson used to carry an orchestrator that matched spinner
 glyphs, gerunds and input-box borders; its own header called that "a maintained fingerprint

@@ -1,8 +1,8 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "damson-orchestration",
-  "version": "0.2.0",
-  "description": "Run several coding agents as labelled tabs inside a running damson terminal, make each one a git worktree, watch for the one that is blocked, and tear the run down. Works with claude, codex, grok and cursor-agent.",
+  "version": "0.3.0",
+  "description": "Coordinate visible coding agents in Damson: plan dependent tasks, run parallel implementations, verify outputs, resume durable workflows, or monitor interactive sessions.",
   "author": {
     "name": "Daekeun Kang",
     "email": "dkkang@huconn.com"

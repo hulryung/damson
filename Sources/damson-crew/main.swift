@@ -4,20 +4,23 @@ import Foundation
 
 // damson-crew — opens a tab per task in a running damson and tells you when one needs you.
 //
-// Fan-out and attention routing, NOT a queue. damson has no trustworthy "this task is
-// finished" signal: `status: "idle"` also means "asked you a question" and "never prompted".
-// See docs/CLAUDE-ORCHESTRATION.md §5.
+// Interactive fan-out uses badges only for attention routing. Managed workflows are
+// dispatched separately and use explicit finite-worker results, never an idle badge.
 
 let usage = """
 damson-crew — open a tab per task in a running damson.
 
 Usage:
+  damson-crew workflow run --plan FILE --state DIR [--pid PID]
+  damson-crew workflow status --state DIR
   damson-crew run   --tasks FILE [--group NAME] [--pid PID] [--command CMD]
   damson-crew watch  [--tasks FILE] [--pid PID] [--notify] [--focus]
   damson-crew status --tasks FILE [--group NAME] [--pid PID]
   damson-crew close  --group NAME [--pid PID] [--yes] [--remove-worktrees]
 
-Options:
+Use `damson-crew workflow --help` for managed dependencies, validation, and resume.
+
+Interactive options:
   --tasks FILE     JSON array of tasks. "-" reads stdin. Each entry needs a
                    name, a prompt, and somewhere to run — either a `cwd`, or a
                    `repo` (plus optional `branch` and `base`), in which case a
@@ -128,6 +131,10 @@ final class PaneNames {
         for (task, pane) in found { map[pane] = task }
         lock.unlock()
     }
+}
+
+if let workflowExit = WorkflowCommand.execute(Array(CommandLine.arguments.dropFirst())) {
+    exit(workflowExit)
 }
 
 var args = CommandLine.arguments.dropFirst().map { $0 }

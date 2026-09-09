@@ -1,117 +1,83 @@
 ---
 name: damson-orchestration
 description: >-
-  Run several coding agents as labelled tabs inside a running damson terminal, watch them,
-  and tear the run down. Use when the user says "run these tasks in damson", "fan out
-  agents", "a tab per task", "open agents in damson", "watch the agents", "which agent is
-  blocked", "damson-cli", "damson-crew", "group the tabs", or asks to orchestrate/parallelise
-  work across terminals on this machine. Prefer this over spawning bare PTYs, tmux, or
-  background `claude -p` when the user wants to SEE the agents and take one over.
+  Coordinate coding agents in Damson terminal tabs, including building an app or game
+  through task decomposition, parallel implementation, integration, and verification.
+  Use when the user asks to orchestrate or parallelize work in Damson, run agents in
+  labelled tabs, or monitor a Damson crew. Also supports interactive agent sessions.
 ---
 
-# Orchestrating agents in damson
+# Orchestrating work in Damson
 
-damson can open, address and observe panes running `claude`. The reasoning, the wire format
-and everything that was measured and rejected live in `docs/CLAUDE-ORCHESTRATION.md` in the
-damson repo — read it before proposing anything structural.
+Use Damson's public CLI to keep delegated work visible in real terminal panes. You are the
+coordinator: translate the user's requested outcome into tasks, supervise execution, and
+verify the integrated deliverable. A collection of opened tabs is not evidence that a
+product was built.
 
-**The one thing to internalise: this is fan-out and attention routing, not a queue.**
-Measured against Claude Code 2.1.251, a terminal state (`done`/`failed`) exists only for
-`kind: background` sessions, which carry no pid and therefore no pane. The `kind: interactive`
-sessions that live in panes never carry one at all. So a visible tab a human can take over
-and a completion signal are **alternatives, not a pair**. Never build a scheduler that
-advances on `status: "idle"` — it also means "asked you a question" and "never prompted".
+## Resolve the installed tools
 
-## Resolve the binaries first
+Find `damson-cli` and `damson-crew` on PATH, then in
+`/Applications/Damson.app/Contents/Resources/`, then `.build/debug/` in a Damson checkout.
+Read the selected binaries' `--help`; use `damson-crew workflow --help` for managed work.
+Confirm `damson-cli --list-instances` finds a running app. Use `--pid` if the user selected
+an instance; otherwise the newest instance is used. Do not silently replace Damson with
+bare PTYs or background jobs when tools or the app are unavailable.
 
-`damson-cli` is **not necessarily on PATH**: it ships inside the app bundle, and only
-`scripts/install-local.sh` links it. In this order:
+## Choose the execution mode
 
-1. `damson-cli` if it runs.
-2. `/Applications/Damson.app/Contents/Resources/damson-cli`.
-3. In a damson checkout, `.build/debug/damson-cli` (build it with `swift build`).
+**A deliverable to complete**, such as “build a game with multiple agents”: use managed
+`workflow run`. Finite commands run in panes and publish durable exit/validation results.
+Dependencies, bounded retries, concurrency, and coordinator resume belong to this mode.
+Read [references/workflows.md](references/workflows.md) for the plan schema and commands.
 
-`damson-crew` is only in a checkout (`.build/debug/damson-crew`) unless the user installed it.
-If neither exists and the user wants orchestration, say so rather than falling back to
-something else — a bare PTY is not the thing they asked for.
+**Interactive agents the user wants to take over**: use the existing `run`/`watch` mode.
+It opens sessions and routes attention to an agent waiting for input. It does not schedule
+dependent work: `idle` can mean finished, never prompted, or a question awaiting an answer.
+Read [references/interactive.md](references/interactive.md) for its command shape and limits.
 
-Confirm an instance exists before anything else: `damson-cli --list-instances`. Address a
-specific one with `--pid`; the default is the most recent.
+## Completing a managed request
 
-## Don't guess flags
+Establish a concrete final check appropriate to the user's request. For a game, this means
+playable controls and game-state transitions in a real browser, as well as logic tests.
+Choose reasonable defaults for details the user left open; ask only for missing decisions
+that prevent useful progress.
 
-`damson-cli --help` and `damson-crew --help` are the authoritative surface and are printed by
-the binary that will run your commands. Read them instead of recalling flags — this file
-deliberately does not list them, so it cannot drift.
+Write a plan and a shared interface contract before parallel implementation. Give each
+worker clear file ownership, inputs, expected outputs, and tests. Use separate directories
+or worktrees for conflicting edits. `resources` serializes tasks that share mutable state;
+parallel agents in one directory must own disjoint files. Include integration and final
+verification tasks with dependencies on their inputs. Worktree creation/merging can be
+explicit finite tasks, using the existing worktree support when appropriate; do not merge
+unreviewed outputs into the user's active branch.
 
-The shape worth knowing:
+For Claude workers, use finite `--print` execution. A `prompt` task without an explicit
+command defaults to that mode; every prompt task requires `verify` commands. Choose
+substantive checks that can fail for a broken deliverable, not only file existence or the
+agent saying it succeeded. Include the final integration checks in the graph.
 
-- **`spawn` opens a NEW TAB** unless you pass `--split-h`/`--split-v`.
-- **Always pass `--key`.** damson's control handler reports a timeout at 2s *while the queued
-  work still completes*, so a slow spawn answers "failed" for a tab that did open. Without a
-  key, a retry mints a second agent.
-- **`--title` and `--group`** make the tabs tellable apart and closable as a unit. A group's
-  tabs are kept contiguous, so a late joiner is relocated next to the others.
-- **`watch-agents` is a stream, not a poll.** Snapshot first, then edge-triggered changes,
-  with a `heartbeat` line every 20s. Silence means nothing changed.
-- **`--pane <id>`** addresses any pane in any window. A stale id is a typed error, never a
-  fallback to the active pane.
+Run `workflow run` and stay with its process until completion or a concrete blocker.
+The coordinator can stop and resume with the same plan and state directory; workers
+continue during its absence. Never start a second state directory merely because an
+observation timed out. Inspect `workflow status`, attempt logs, and the original process.
 
-## Rules that are not optional
+On failure, inspect the task's retained command/validation log. Automatic retries are
+bounded by `maxAttempts` and prompt workers receive the previous attempt's log path.
+An interrupted worker is not automatically retried because its children might still be
+running. Resolve those processes before retrying. If the plan itself needs correction,
+preserve the existing state and work, account for any live workers, and write a new plan
+and state directory with only the remaining work. Do not repeat successful side effects.
 
-- **Prompts go in argv, never typed into a pane.** `send-text` into a live TUI has *no
-  delivery acknowledgment*; a prompt that races the TUI's input box is lost and nothing can
-  tell. `damson-crew` puts the prompt in argv for this reason.
-- **`--key` does not survive a damson restart** — the table is in memory. Before re-running a
-  task list, ask what is already on screen (`damson-crew status`, or `agents`) and open only
-  what is missing. Skipping this duplicated a three-task run into six tabs.
-- **Escalate only `waiting`.** It is the one state that will not resolve without the user.
-  Alerting on anything else trains them to dismiss the one that mattered.
-- **`group close` is destructive** — several tabs and the programs in them. Confirm with the
-  user first; `damson-crew close` requires `--yes` for this reason.
+Finally inspect the actual artifact and exercise the user's main flow. Passing agent-written
+tests is supporting evidence, not a substitute for this check. Fix observed defects within
+the requested scope and repeat affected checks. Report the runnable artifact, how to run it,
+and exactly what was verified. Do not claim completion from status labels alone.
 
-## The usual shape
+## Control invariants
 
-```sh
-damson-crew run    --tasks tasks.json --group run-7   # a labelled tab per task
-damson-crew status --tasks tasks.json --group run-7   # exits non-zero if one is blocked
-damson-crew watch  --tasks tasks.json --notify --focus
-damson-crew close  --group run-7 --yes
-```
-
-A task is `{"name", "prompt"}` plus where to run: either `"cwd"`, or `"repo"` with optional
-`"branch"` and `"base"`, in which case damson-crew makes a git worktree and uses it. `name`
-is both the tab label and the spawn key, so it must be unique — a duplicate silently
-collapses two tasks into one pane.
-
-## Any agent, not just claude
-
-`"command"` overrides the agent. The prompt is appended as the **last argument**, which
-`claude`, `codex`, `grok` and `cursor-agent` all take; put `{prompt}` in the command for a
-tool that wants it behind a flag.
-
-Make the worktree here rather than reaching for the agent's own flag. Support is per-tool and
-inconsistent — `claude -w`, `grok --worktree=<name>`, nothing in `codex` or `cursor-agent` —
-so a task list that used them would only work for some of its tasks.
-
-**Permission prompts are bypassed by default.** `damson-crew` passes
-`--dangerously-skip-permissions` to `claude`, because an agent stopped on an approval is the
-most common way a fan-out stalls — the tabs look alive while every one of them waits for a
-keypress. It means agents edit files and run commands without asking. `--no-skip-permissions`
-turns it off for a run; Settings → Agents changes the default. It applies to `claude` only:
-other agents spell this differently or not at all, and passing a flag a CLI does not know
-turns a working spawn into a pane that exits instantly.
-
-A caller who already wrote `--permission-mode` is never overridden.
-
-**Defaults come from Settings → Agents** — the agent command, the bypass, whether a blocked
-agent notifies, and where worktrees go. Every one can be overridden per run with a flag.
-
-**`close --remove-worktrees` never forces.** git refuses to remove a worktree holding
-uncommitted or untracked files; report that refusal, never work around it. Those files are
-the agent's work and they are uncommitted exactly when losing them would matter most.
-
-**The watching half is Claude-only.** `watch`/`--notify` join panes to Claude Code's session
-records. Agents from other tools open, get labelled and grouped, and run — but never raise a
-`waiting` alert, because nothing publishes that state. Say so rather than letting someone
-plan a run around alerts that will not arrive.
+- Prompts go in argv, never `send-text` into a live TUI; that has no delivery acknowledgment.
+- Address a known pane by ID, not a tab index that can move. `reveal-pane` focuses the exact
+  pane across windows and splits; a stale ID must fail rather than select another pane.
+- When spawning directly, use an idempotency key. An IPC timeout can still create a pane.
+- Cleanup only the run's own tabs/worktrees. `close --remove-worktrees` never forces git
+  removal and preserves user-created, shared, in-use, or dirty worktrees. Closing tabs also
+  stops their programs; respect the user's existing authorization and ongoing work.

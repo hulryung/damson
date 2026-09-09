@@ -16,3 +16,5 @@ jobs:
         run: swift build --product damson-crew
       - name: Test CLI teardown against an isolated socket
         run: python3 scripts/test-crew-cli.py .build/debug/damson-crew
+      - name: Test managed workflows with real worker processes
+        run: python3 scripts/test-workflow-cli.py .build/debug/damson-crew
