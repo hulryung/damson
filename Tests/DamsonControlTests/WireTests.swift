@@ -154,6 +154,13 @@ final class WireTests: XCTestCase {
         XCTAssertEqual(cmd.kind, .switchTab(index: 3))
     }
 
+    func testRevealPaneRoundTripPreservesTarget() throws {
+        let json = encodeCommand(.revealPane, target: .id("blocked-pane"))
+        let command = try JSONDecoder().decode(ControlCommand.self, from: Data(json.utf8))
+        XCTAssertEqual(command.kind, .revealPane)
+        XCTAssertEqual(command.target, .id("blocked-pane"))
+    }
+
     func testDecodeUnknownCommandRejected() {
         let data = Data(#"{"cmd":"obliterate-universe"}"#.utf8)
         XCTAssertThrowsError(try JSONDecoder().decode(ControlCommand.self, from: data))

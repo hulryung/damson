@@ -18,7 +18,7 @@ final class ResolvingDamsonClientTests: XCTestCase {
         socket = "new.sock"
         XCTAssertNil(PaneFocuser(client: client).reveal(paneID: "A"))
         _ = Coordinator(client: client).reattach([CrewTask(name: "review")])
-        XCTAssertEqual(destinations, ["old.sock", "new.sock", "new.sock", "new.sock"])
+        XCTAssertEqual(destinations, ["old.sock", "new.sock", "new.sock"])
     }
 
     func testFailedRequestsAreNotAutomaticallyReplayed() {

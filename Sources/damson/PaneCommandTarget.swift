@@ -30,8 +30,10 @@ protocol PaneCommandTarget: AnyObject {
     // them a place on this seam.
     /// The surface hosting `session`, when this controller owns it (id-addressed `zoom`).
     func surfaceView(for session: DamsonSession) -> DamsonSurfaceView?
-    /// Move focus from `session`'s pane toward `dir` (no neighbor = silent no-op, like the
-    /// active-pane path). false when this controller doesn't own the pane.
+    /// Reveal this exact pane in its owning window. false when not owned here.
+    func revealPane(for session: DamsonSession) -> Bool
+    /// Move focus from `session`'s pane toward `dir` (no neighbor = silent no-op).
+    /// false when this controller doesn't own the pane.
     func focusPane(from session: DamsonSession, _ dir: PaneFocusDirection) -> Bool
     /// Close `session`'s pane. false when this controller doesn't own the pane.
     func closePane(for session: DamsonSession) -> Bool

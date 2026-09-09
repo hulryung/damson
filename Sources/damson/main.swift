@@ -157,6 +157,15 @@ final class DamsonWindowController: NSWindowController, NSWindowDelegate, PaneTr
         tree.surfaceView(for: session)
     }
 
+    func revealPane(for session: DamsonSession) -> Bool {
+        guard let leaf = tree.leaf(for: session) else { return false }
+        tree.setActive(leaf)
+        window?.deminiaturize(nil)
+        window?.makeKeyAndOrderFront(nil)
+        window?.makeFirstResponder(tree.surfaceView(for: session))
+        return true
+    }
+
     func focusPane(from session: DamsonSession, _ dir: PaneFocusDirection) -> Bool {
         guard let leaf = tree.leaf(for: session) else { return false }
         tree.moveFocus(dir, from: leaf)
@@ -452,6 +461,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .applyLayout(let name):            return controlApplyLayout(name)
         case .spawnPane(let spec):              return controlSpawnPane(spec)
         case .listAgents:                       return controlListAgents()
+        case .revealPane:                      return controlRevealPane(cmd.target)
         case .paneInfo:                         return controlPaneInfo(cmd.target)
         case .setTitle(let title):              return controlSetTitle(title, cmd.target)
         case .listGroups:                       return controlListGroups()
@@ -627,6 +637,19 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @MainActor
     private var paneTargets: [PaneCommandTarget] {
         compactControllers as [PaneCommandTarget] + controllers
+    }
+
+    @MainActor
+    private func controlRevealPane(_ target: PaneTarget) -> ControlResponse {
+        switch resolvePane(target) {
+        case .failure(let response): return response
+        case .session(let session):
+            guard paneTargets.contains(where: { $0.revealPane(for: session) }) else {
+                return .err("pane is not in an open window")
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            return .ok()
+        }
     }
 
     @MainActor

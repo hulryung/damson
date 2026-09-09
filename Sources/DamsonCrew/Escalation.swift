@@ -107,18 +107,12 @@ public struct PaneFocuser {
     /// Focus the pane. Returns what went wrong, if anything.
     @discardableResult
     public func reveal(paneID: String) -> String? {
-        // `pane-info` on a closed id is a typed error rather than a fallback to the active
-        // pane, so this cannot quietly focus the wrong terminal.
-        switch client.send(.paneInfo, target: .id(paneID)) {
-        case .failure(let e): return e.message
-        case .success(let resp):
-            guard resp.ok, let tab = resp.pane?.tab else {
-                return resp.err ?? "damson did not say which tab that pane is in"
-            }
-            switch client.send(.switchTab(index: tab)) {
-            case .failure(let e): return e.message
-            case .success(let r): return r.ok ? nil : (r.err ?? "could not switch tab")
-            }
+        // The server resolves the pane and its owner in one main-actor operation. A tab
+        // index is window-local and can change between two requests.
+        switch client.send(.revealPane, target: .id(paneID)) {
+        case .failure(let error): return error.message
+        case .success(let response):
+            return response.ok ? nil : (response.err ?? "could not reveal pane")
         }
     }
 }

@@ -17,6 +17,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--pid', type=int, required=True)
     parser.add_argument('--bin-dir', type=Path, default=Path('.build/debug'))
+    parser.add_argument('--check-reveal', action='store_true',
+                        help='also test reveal-pane (requires the updated app)')
     args = parser.parse_args()
     binaries = args.bin_dir.resolve()
 
@@ -25,7 +27,7 @@ def main():
                                 capture_output=True, text=True, timeout=15)
         if result.returncode:
             raise RuntimeError(result.stderr)
-        return json.loads(result.stdout)
+        return json.loads(result.stdout) if result.stdout.strip() else None
 
     def crew(*options, code=0):
         result = subprocess.run([str(binaries / 'damson-crew'), *options, '--pid', str(args.pid)],
@@ -75,6 +77,23 @@ def main():
             assert len({p['id'] for p in panes}) == 3
             state = crew('status', '--tasks', first, '--group', groups[0])
             assert original.stdout.strip().split('\t')[1] in state.stdout
+            if args.check_reveal:
+                split = cli('spawn', '--split-v', '--cwd', str(root), '--', '/bin/cat')
+                original_id = original.stdout.strip().split('\t')[1]
+                cli('--pane', original_id, 'reveal-pane')
+                assert cli('pane-info')['id'] == original_id
+                cli('--pane', split['id'], 'reveal-pane')
+                assert cli('pane-info')['id'] == split['id'], 'wrong split focused'
+                cli('--pane', split['id'], 'close-pane')
+                active_after_close = cli('pane-info')['id']
+                try:
+                    cli('--pane', split['id'], 'reveal-pane')
+                except RuntimeError:
+                    pass
+                else:
+                    raise AssertionError('closed pane reveal was accepted')
+                assert cli('pane-info')['id'] == active_after_close, 'stale ID moved focus'
+                print('PASS: reveal exact tab/split; closed pane does not move focus')
             print('PASS: real spawn, idempotent retry, group isolation, partial failure, status')
         finally:
             for group in groups:

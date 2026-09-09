@@ -54,6 +54,8 @@ public enum ControlCommandKind: Equatable, Sendable {
     case listAgents
     /// One pane's details, by id (or the active pane when no target is given).
     case paneInfo
+    /// Bring the addressed pane, its tab and its window forward atomically.
+    case revealPane
     /// Subscribe to agent state changes. Unlike every other command this one does not
     /// answer and hang up: the connection stays open and each change arrives as one more
     /// NDJSON line until the client disconnects.
@@ -203,6 +205,8 @@ public struct ControlCommand: Decodable, Equatable, Sendable {
             self.kind = .spawnPane(spec)
         case "list-agents":
             self.kind = .listAgents
+        case "reveal-pane":
+            self.kind = .revealPane
         case "pane-info":
             self.kind = .paneInfo
         case "watch-agents":
@@ -315,6 +319,7 @@ public func encodeCommand(_ kind: ControlCommandKind) -> String {
         if let g = spec.group { parts.append(#""group":"\#(jsonEscape(g))""#) }
         return #"{"cmd":"spawn-pane","args":{\#(parts.joined(separator: ","))}}"#
     case .listAgents: return #"{"cmd":"list-agents"}"#
+    case .revealPane: return #"{"cmd":"reveal-pane"}"#
     case .paneInfo: return #"{"cmd":"pane-info"}"#
     case .watchAgents: return #"{"cmd":"watch-agents"}"#
     case .setTitle(let t):

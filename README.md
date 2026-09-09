@@ -110,6 +110,9 @@ of stopping to ask — an agent waiting on an approval is the most common way a 
 That does mean agents edit files and run commands without asking; **Settings → Agents** turns
 it off, along with the default agent, the notification behaviour, and where worktrees go.
 
+`damson-cli --pane ID reveal-pane` selects the exact pane and brings its owning window
+and tab forward. `watch --focus` uses this command; update the app and bundled CLIs together.
+
 One caveat worth knowing before you plan around it: **the watching half is Claude-only.**
 `watch --notify` works by joining a pane to Claude Code's own session records, so agents from
 other tools open, get labelled and grouped, and run — but never raise a "blocked on you"

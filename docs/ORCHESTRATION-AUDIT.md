@@ -7,7 +7,7 @@ claim that passing the existing unit tests proves all of that contract.
 
 ## Evidence recorded on 2026-09-10
 
-- Crew, Agents and Control suites: 245 tests, one existing environment-dependent skip,
+- Crew, Agents and Control suites: 246 tests, one existing environment-dependent skip,
   zero failures. Includes deterministic regressions that failed before the fixes for
   group scope, option pairs, cleanup errors, same-second session updates, and worktree paths.
 - `python3 scripts/test-crew-cli.py .build/debug/damson-crew`: seven passing CLI integration
@@ -17,7 +17,11 @@ claim that passing the existing unit tests proves all of that contract.
   spawn failure, status and group close. Three local shell fixtures each ran exactly once;
   all test panes were removed and pre-existing panes remained. No external AI was invoked.
 - The live smoke test uses the current crew binary with the installed app. It does not prove
-  newly changed app-side observer code, cross-window focus, or app-restart behavior.
+  newly changed app-side observer code or app-restart behavior.
+- Atomic reveal was also verified in a separately packaged current-build app with an isolated
+  bundle identity and control socket: two windows, an inactive split, and a closed pane ID.
+  The owning window became frontmost and pane-info identified the requested leaf as active.
+  `test-crew-live.py --check-reveal` passed tab/split selection and stale-ID preservation.
 
 ## Requirements and remaining verification
 
@@ -31,7 +35,7 @@ claim that passing the existing unit tests proves all of that contract.
 | Cleanup preserves pre-existing and shared worktrees | Not satisfied: branch lookup does not track ownership or active users. #30 remains open. Include retry after an already-closed group's cleanup fails. |
 | Agent observations notice session changes | Registry tests including equal-size subsecond rewrites; #28 fixed in PR #25. Live observer integration is still needed. |
 | Watcher reconnects and resumes naming/focus requests | Injectable-stream/client tests; #21 fixed in PR #25. Live reconnect and event-delivery verification remains. |
-| Blocked work is revealed in the correct window, tab and split | Not satisfied: two-request tab-index focus can select the wrong window or split. #29 remains open. |
+| Blocked work is revealed in the correct window, tab and split | Atomic reveal-by-ID implemented for both window controllers; wire/client tests and live two-window/split/stale-ID validation passed. #29 fixed in PR #25. |
 | Alerts and turn-finished events are delivered with meaningful names | Board/escalation tests cover decisions; live end-to-end delivery and naming scope remain to be verified. |
 | Regression gates run automatically | macOS crew-tests and SwiftLint workflows on PR #25. Recheck them after every pushed change. |
 
@@ -45,6 +49,6 @@ python3 scripts/test-crew-cli.py .build/debug/damson-crew
 python3 scripts/test-crew-live.py --pid PID
 ```
 
-Next implementation priorities are #29 (atomic pane reveal) and #30 (ownership-aware
-worktree lifecycle), followed by live observer/reconnect validation in an isolated app
+Next implementation priority is #30 (ownership-aware worktree lifecycle), followed by
+live observer/reconnect validation in an isolated app
 instance. Do not mark orchestration complete while these requirements remain unverified.

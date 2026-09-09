@@ -72,6 +72,7 @@ Commands:
                           and it survives a restart. Empty text clears it.
   agents                  Every pane, with its stable id, tab, pid, cwd and
                           agent status.
+  reveal-pane             Bring --pane <id> and its owning window/tab forward.
   pane-info               Details for --pane <id>, or the active pane.
   watch-agents            Stream agent state changes as NDJSON until interrupted.
                           Starts with one line per agent already running, then one
@@ -315,6 +316,9 @@ case "group":
 case "set-title":
     // Joined like send-text so an unquoted multi-word label works; no args clears it.
     cmdKind = .setTitle(rest.joined(separator: " "))
+case "reveal-pane":
+    guard rest.isEmpty else { die("reveal-pane takes no arguments (use --pane <id>)") }
+    cmdKind = .revealPane
 case "pane-info":
     guard rest.isEmpty else { die("pane-info takes no arguments (use --pane <id>)") }
     cmdKind = .paneInfo

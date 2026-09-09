@@ -57,40 +57,37 @@ final class EscalationTests: XCTestCase {
 
     private final class FakeDamson: DamsonClient {
         var sent: [ControlCommandKind] = []
-        var paneInfo: Result<ControlResponse, CrewError> = .success(.ok())
-        var switchResult: Result<ControlResponse, CrewError> = .success(.ok())
+        var targets: [PaneTarget] = []
+        var response: Result<ControlResponse, CrewError> = .success(.ok())
 
         func send(_ kind: ControlCommandKind, target: PaneTarget) -> Result<ControlResponse, CrewError> {
             sent.append(kind)
-            if case .paneInfo = kind { return paneInfo }
-            return switchResult
+            targets.append(target)
+            return response
         }
     }
 
-    func testRevealSwitchesToThePanesTab() {
+    func testRevealAddressesThePaneInOneRequest() {
         let fake = FakeDamson()
-        fake.paneInfo = .success(.pane(
-            PaneInfo(index: 0, cols: 80, rows: 24, active: false, id: "A", tab: 3)))
         XCTAssertNil(PaneFocuser(client: fake).reveal(paneID: "A"))
-        guard case .switchTab(let index)? = fake.sent.last else { return XCTFail("no switch") }
-        XCTAssertEqual(index, 3)
+        XCTAssertEqual(fake.sent, [.revealPane])
+        XCTAssertEqual(fake.targets, [.id("A")])
     }
 
-    /// An id that no longer resolves is a typed error from damson, never a fallback to the
-    /// active pane — so acting on a stale alert cannot yank the user to an unrelated tab.
-    func testRevealReportsAClosedPaneRatherThanSwitchingSomewhere() {
+    func testRevealReportsAClosedPaneWithoutFallingBack() {
         let fake = FakeDamson()
-        fake.paneInfo = .success(.err("no such pane: A"))
+        fake.response = .success(.err("no such pane: A"))
         XCTAssertEqual(PaneFocuser(client: fake).reveal(paneID: "A"), "no such pane: A")
-        XCTAssertEqual(fake.sent.count, 1, "it switched tabs anyway")
+        XCTAssertEqual(fake.sent, [.revealPane])
     }
 
-    func testRevealReportsAPaneWithNoTab() {
+    func testRevealReportsTransportFailureWithoutRetrying() {
         let fake = FakeDamson()
-        fake.paneInfo = .success(.pane(PaneInfo(index: 0, cols: 80, rows: 24, active: false, id: "A")))
-        XCTAssertNotNil(PaneFocuser(client: fake).reveal(paneID: "A"))
-        XCTAssertEqual(fake.sent.count, 1)
+        fake.response = .failure(CrewError("connection lost"))
+        XCTAssertEqual(PaneFocuser(client: fake).reveal(paneID: "A"), "connection lost")
+        XCTAssertEqual(fake.sent, [.revealPane])
     }
+
 }
 
 /// Agent questions are free-form model output and routinely contain quotes and backslashes.
