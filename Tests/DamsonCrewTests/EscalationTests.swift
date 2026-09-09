@@ -57,40 +57,37 @@ final class EscalationTests: XCTestCase {
 
     private final class FakeDamson: DamsonClient {
         var sent: [ControlCommandKind] = []
-        var paneInfo: Result<ControlResponse, CrewError> = .success(.ok())
-        var switchResult: Result<ControlResponse, CrewError> = .success(.ok())
+        var targets: [PaneTarget] = []
+        var response: Result<ControlResponse, CrewError> = .success(.ok())
 
         func send(_ kind: ControlCommandKind, target: PaneTarget) -> Result<ControlResponse, CrewError> {
             sent.append(kind)
-            if case .paneInfo = kind { return paneInfo }
-            return switchResult
+            targets.append(target)
+            return response
         }
     }
 
-    func testRevealSwitchesToThePanesTab() {
+    func testRevealAddressesThePaneInOneRequest() {
         let fake = FakeDamson()
-        fake.paneInfo = .success(.pane(
-            PaneInfo(index: 0, cols: 80, rows: 24, active: false, id: "A", tab: 3)))
         XCTAssertNil(PaneFocuser(client: fake).reveal(paneID: "A"))
-        guard case .switchTab(let index)? = fake.sent.last else { return XCTFail("no switch") }
-        XCTAssertEqual(index, 3)
+        XCTAssertEqual(fake.sent, [.revealPane])
+        XCTAssertEqual(fake.targets, [.id("A")])
     }
 
-    /// An id that no longer resolves is a typed error from damson, never a fallback to the
-    /// active pane — so acting on a stale alert cannot yank the user to an unrelated tab.
-    func testRevealReportsAClosedPaneRatherThanSwitchingSomewhere() {
+    func testRevealReportsAClosedPaneWithoutFallingBack() {
         let fake = FakeDamson()
-        fake.paneInfo = .success(.err("no such pane: A"))
+        fake.response = .success(.err("no such pane: A"))
         XCTAssertEqual(PaneFocuser(client: fake).reveal(paneID: "A"), "no such pane: A")
-        XCTAssertEqual(fake.sent.count, 1, "it switched tabs anyway")
+        XCTAssertEqual(fake.sent, [.revealPane])
     }
 
-    func testRevealReportsAPaneWithNoTab() {
+    func testRevealReportsTransportFailureWithoutRetrying() {
         let fake = FakeDamson()
-        fake.paneInfo = .success(.pane(PaneInfo(index: 0, cols: 80, rows: 24, active: false, id: "A")))
-        XCTAssertNotNil(PaneFocuser(client: fake).reveal(paneID: "A"))
-        XCTAssertEqual(fake.sent.count, 1)
+        fake.response = .failure(CrewError("connection lost"))
+        XCTAssertEqual(PaneFocuser(client: fake).reveal(paneID: "A"), "connection lost")
+        XCTAssertEqual(fake.sent, [.revealPane])
     }
+
 }
 
 /// Agent questions are free-form model output and routinely contain quotes and backslashes.
@@ -98,30 +95,23 @@ final class EscalationTests: XCTestCase {
 /// appears — the failure mode that looks exactly like "nothing was waiting".
 final class NotifierQuotingTests: XCTestCase {
     func testQuotesAndBackslashesSurviveIntoTheScript() throws {
-        let notifier = SystemNotifier()
-        let mirror = Mirror(reflecting: notifier)
-        _ = mirror   // the quoting helper is private; exercise it through a real delivery
-
-        // Build the same script the notifier builds, via a local copy of the rule, and
-        // assert osascript accepts it. That is the property that matters: it parses.
-        let nasty = #"Overwrite "foo\bar.swift"? (y/n)"#
-        let escaped = "\"" + nasty
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: " ") + "\""
-
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("damson-notification-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("notification.scpt")
+        let alert = Escalation(kind: .blocked, subject: #"task "quoted""#,
+                               question: "Overwrite \"foo\\bar.swift\"?\nChoose an option.", paneID: "A")
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        // `return <literal>` — parses and echoes it back without posting a notification.
-        proc.arguments = ["-e", "return \(escaped)"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osacompile")
+        // Compile the real production script without posting a notification during tests.
+        proc.arguments = ["-o", output.path, "-e", SystemNotifier().script(for: alert)]
+        let errors = Pipe()
+        proc.standardError = errors
         try proc.run()
-        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let details = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         proc.waitUntilExit()
-
-        XCTAssertEqual(proc.terminationStatus, 0, "osascript rejected the escaped question")
-        XCTAssertEqual(out.trimmingCharacters(in: .whitespacesAndNewlines), nasty)
+        XCTAssertEqual(proc.terminationStatus, 0, details)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
     }
 }

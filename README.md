@@ -90,6 +90,9 @@ apart at a glance. Give a task a `repo` instead of a `cwd` and a git worktree is
 ]
 ```
 
+Task names must be unique within a list. Different groups can reuse the same task names;
+retrying a task within its group reattaches to the existing tab.
+
 **It is not tied to Claude.** Worktree support is per-tool and inconsistent — `claude -w`,
 `grok --worktree=<name>`, nothing at all in `codex` or `cursor-agent` — so damson-crew makes
 the worktree itself and starts the agent in it. The prompt is appended as the last argument,
@@ -99,11 +102,24 @@ flag takes `{prompt}` in its `command`.
 `close --remove-worktrees` tidies them up afterwards, and **never forces**: git refuses to
 remove a worktree holding uncommitted or untracked files, and that refusal is reported rather
 than worked around. Teardown cannot destroy an agent's unsaved work.
+Crew records ownership in git's worktree metadata. Reused user-created worktrees are
+preserved; shared worktrees remain until the last owning group releases them. Cleanup also
+checks for panes using the worktree in other running Damson instances. Worktrees created by
+older versions without ownership records are preserved rather than adopted automatically.
+Use `--worktree-root DIR` to override the location for a run.
+
+When cleanup cannot complete, `close` reports the reason and exits nonzero. Once the cause
+is resolved, repeat `close --remove-worktrees --tasks FILE --group NAME --yes`; cleanup can
+continue even if the group's tabs were already closed. Missing or
+invalid task files are rejected before any tabs are closed.
 
 Agents run with `--dangerously-skip-permissions` by default, so a task runs through instead
 of stopping to ask — an agent waiting on an approval is the most common way a run stalls.
 That does mean agents edit files and run commands without asking; **Settings → Agents** turns
 it off, along with the default agent, the notification behaviour, and where worktrees go.
+
+`damson-cli --pane ID reveal-pane` selects the exact pane and brings its owning window
+and tab forward. `watch --focus` uses this command; update the app and bundled CLIs together.
 
 One caveat worth knowing before you plan around it: **the watching half is Claude-only.**
 `watch --notify` works by joining a pane to Claude Code's own session records, so agents from

@@ -10,22 +10,44 @@ public protocol GitRunner {
 
 /// Runs the real thing.
 public struct SystemGit: GitRunner {
-    public init() {}
+    private let executableURL: URL
+    private let argumentsPrefix: [String]
+
+    public init() {
+        executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        argumentsPrefix = ["git"]
+    }
+
+    init(executableURL: URL, argumentsPrefix: [String]) {
+        self.executableURL = executableURL
+        self.argumentsPrefix = argumentsPrefix
+    }
+
+    private final class PipeReader: @unchecked Sendable {
+        let handle: FileHandle
+        private(set) var data = Data()
+        init(_ handle: FileHandle) { self.handle = handle }
+        func read() { data = handle.readDataToEndOfFile() }
+    }
 
     public func run(_ args: [String]) -> Result<String, CrewError> {
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["git"] + args
+        proc.executableURL = executableURL
+        proc.arguments = argumentsPrefix + args
         let out = Pipe(), err = Pipe()
         proc.standardOutput = out
         proc.standardError = err
         do { try proc.run() } catch {
             return .failure(CrewError("could not run git: \(error)"))
         }
-        // Read before waiting: a pipe that fills while we wait deadlocks the child.
+        // Each pipe must drain independently: git can fill stderr while keeping stdout open.
+        let stderrReader = PipeReader(err.fileHandleForReading)
+        let readers = DispatchGroup()
+        DispatchQueue.global(qos: .utility).async(group: readers) { stderrReader.read() }
         let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         proc.waitUntilExit()
+        readers.wait() // The reader's data is only accessed after its writer has completed.
+        let stderr = String(decoding: stderrReader.data, as: UTF8.self)
         guard proc.terminationStatus == 0 else {
             let message = (stderr.isEmpty ? stdout : stderr)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -87,7 +109,8 @@ public struct WorktreeManager {
     }
 
     public func list(repo: String) -> Result<[Worktree], CrewError> {
-        git.run(["-C", repo, "worktree", "list", "--porcelain"]).map(Self.parseList)
+        git.run(["-C", (repo as NSString).expandingTildeInPath,
+                 "worktree", "list", "--porcelain", "-z"]).map(Self.parseList)
     }
 
     static func parseList(_ text: String) -> [Worktree] {
@@ -98,7 +121,10 @@ public struct WorktreeManager {
             if let path { out.append(Worktree(path: path, branch: branch)) }
             path = nil; branch = nil
         }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        // -z leaves paths verbatim, even when a directory contains newlines. Keep accepting
+        // legacy newline fixtures; live git output always uses NUL-delimited fields.
+        let separator: Character = text.contains("\0") ? "\0" : "\n"
+        for line in text.split(separator: separator, omittingEmptySubsequences: false) {
             if line.hasPrefix("worktree ") {
                 flush()
                 path = String(line.dropFirst("worktree ".count))
@@ -128,7 +154,30 @@ public struct WorktreeManager {
         ensureWorktree(repo: repo, branch: branch, base: base).map(\.path)
     }
 
-    public func ensureWorktree(repo: String, branch: String, base: String?) -> Result<Ensured, CrewError> {
+    public func ensureWorktree(repo: String, branch: String, base: String?,
+                               group: String? = nil) -> Result<Ensured, CrewError> {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: (repo as NSString).expandingTildeInPath,
+                                             isDirectory: &isDirectory), isDirectory.boolValue else {
+            return .failure(CrewError("no such repository: \(repo)"))
+        }
+        let ownership = WorktreeOwnership(git: git)
+        return ownership.locked(repo: repo) {
+            let made = try ensureUnlocked(repo: repo, branch: branch, base: base).get()
+            try ownership.register(path: made.path, branch: branch, group: group, created: made.created)
+            return made
+        }
+    }
+
+    public func removeOwned(repo: String, path: String, branch: String, group: String?,
+                            inUse: (String) throws -> Bool) -> Result<Void, CrewError> {
+        let ownership = WorktreeOwnership(git: git)
+        return ownership.locked(repo: repo) {
+            try ownership.remove(repo: repo, path: path, branch: branch, group: group, inUse: inUse)
+        }
+    }
+
+    private func ensureUnlocked(repo: String, branch: String, base: String?) -> Result<Ensured, CrewError> {
         let expanded = (repo as NSString).expandingTildeInPath
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue else {
@@ -171,7 +220,7 @@ public struct WorktreeManager {
             args += ["-b", branch, path]
             if let base, !base.isEmpty { args.append(base) }
         }
-        return git.run(args).map { _ in Ensured(path: path, created: true) }
+        return git.run(args).map { _ in Ensured(path: Self.realpath(path), created: true) }
     }
 
     /// Remove a worktree. **Never forces.**

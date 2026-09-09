@@ -76,14 +76,17 @@ public protocol Notifier {
 public struct SystemNotifier: Notifier {
     public init() {}
 
-    public func deliver(_ escalation: Escalation) {
-        let script = """
+    func script(for escalation: Escalation) -> String {
+        """
         display notification \(quote(escalation.body)) \
         with title \(quote(escalation.title)) sound name "Submarine"
         """
+    }
+
+    public func deliver(_ escalation: Escalation) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
+        proc.arguments = ["-e", script(for: escalation)]
         // Best effort. A notification that could not be posted must never take down the
         // watcher — losing the alert is bad, losing every future alert is worse.
         try? proc.run()
@@ -107,18 +110,12 @@ public struct PaneFocuser {
     /// Focus the pane. Returns what went wrong, if anything.
     @discardableResult
     public func reveal(paneID: String) -> String? {
-        // `pane-info` on a closed id is a typed error rather than a fallback to the active
-        // pane, so this cannot quietly focus the wrong terminal.
-        switch client.send(.paneInfo, target: .id(paneID)) {
-        case .failure(let e): return e.message
-        case .success(let resp):
-            guard resp.ok, let tab = resp.pane?.tab else {
-                return resp.err ?? "damson did not say which tab that pane is in"
-            }
-            switch client.send(.switchTab(index: tab)) {
-            case .failure(let e): return e.message
-            case .success(let r): return r.ok ? nil : (r.err ?? "could not switch tab")
-            }
+        // The server resolves the pane and its owner in one main-actor operation. A tab
+        // index is window-local and can change between two requests.
+        switch client.send(.revealPane, target: .id(paneID)) {
+        case .failure(let error): return error.message
+        case .success(let response):
+            return response.ok ? nil : (response.err ?? "could not reveal pane")
         }
     }
 }

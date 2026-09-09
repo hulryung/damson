@@ -30,10 +30,13 @@ public struct RunStatus: Equatable {
 public struct RunManager {
     private let client: DamsonClient
     private let worktrees: WorktreeManager
+    private let usageClients: () -> [DamsonClient]
 
-    public init(client: DamsonClient, worktrees: WorktreeManager = WorktreeManager()) {
+    public init(client: DamsonClient, worktrees: WorktreeManager = WorktreeManager(),
+                usageClients: @escaping () -> [DamsonClient] = { [] }) {
         self.client = client
         self.worktrees = worktrees
+        self.usageClients = usageClients
     }
 
     /// Join the task list to what is on screen, by tab label.
@@ -44,9 +47,8 @@ public struct RunManager {
             guard resp.ok, let panes = resp.panes else {
                 return .failure(CrewError(resp.err ?? "damson did not list its panes"))
             }
-            // Only panes in this run's group count when a group was named, so two runs that
-            // happen to use the same task name cannot be mistaken for each other.
-            let relevant = panes.filter { group == nil || $0.group == group }
+            // nil means an ungrouped run, not every group. Match the same scope as spawn keys.
+            let relevant = panes.filter { $0.group == group }
             var byLabel: [String: PaneInfo] = [:]
             for pane in relevant { if let t = pane.title { byLabel[t] = pane } }
             let rows = tasks.map { task in
@@ -84,19 +86,50 @@ public struct RunManager {
     /// `git worktree remove` refuses a tree with uncommitted or untracked files, and that
     /// refusal is the point: those files are the agent's work, and it is uncommitted exactly
     /// when losing it would matter most. A refusal is reported, not worked around.
-    public func removeWorktrees(of tasks: [CrewTask]) -> [WorktreeOutcome] {
+    public func removeWorktrees(of tasks: [CrewTask], group: String? = nil) -> [WorktreeOutcome] {
         tasks.compactMap { task -> WorktreeOutcome? in
             guard let repo = task.repo, let branch = task.worktreeBranch else { return nil }
-            guard case .success(let trees) = worktrees.list(repo: repo),
-                  let tree = trees.first(where: { $0.branch == branch }) else { return nil }
-            switch worktrees.remove(repo: repo, path: tree.path) {
+            let trees: [Worktree]
+            switch worktrees.list(repo: repo) {
+            case .failure(let error):
+                return WorktreeOutcome(task: task.name, path: repo,
+                                       kept: "could not list worktrees: \(error.message)")
+            case .success(let listed): trees = listed
+            }
+            guard let tree = trees.first(where: { $0.branch == branch }) else { return nil }
+            let removal = worktrees.removeOwned(repo: repo, path: tree.path, branch: branch, group: group) { path in
+                let root = WorktreeManager.realpath(path)
+                for observer in [client] + usageClients() {
+                    let response = try observer.send(.listAgents).get()
+                    guard response.ok, let panes = response.panes else {
+                        throw CrewError(response.err ?? "could not check whether worktree is in use")
+                    }
+                    if panes.contains(where: { pane in
+                        guard let cwd = pane.cwd else { return false }
+                        let resolved = WorktreeManager.realpath(cwd)
+                        return resolved == root || resolved.hasPrefix(root + "/")
+                    }) { return true }
+                }
+                return false
+            }
+            switch removal {
             case .success:        return WorktreeOutcome(task: task.name, path: tree.path, kept: nil)
             case .failure(let e): return WorktreeOutcome(task: task.name, path: tree.path, kept: e.message)
             }
         }
     }
 
-    public func close(group: String) -> Result<Void, CrewError> {
+    public func close(group: String, allowMissing: Bool = false) -> Result<Void, CrewError> {
+        if allowMissing {
+            switch client.send(.listGroups) {
+            case .failure(let error): return .failure(error)
+            case .success(let response):
+                guard response.ok, let groups = response.groups else {
+                    return .failure(CrewError(response.err ?? "could not list groups before cleanup"))
+                }
+                if !groups.contains(where: { $0.name == group }) { return .success(()) }
+            }
+        }
         switch client.send(.closeGroup(group)) {
         case .failure(let e): return .failure(e)
         case .success(let resp):

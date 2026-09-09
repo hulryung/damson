@@ -1261,9 +1261,23 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         return nil
     }
 
-    /// id-addressed `focus-pane` — move focus relative to `session`'s pane, in whichever
-    /// tab it lives. A move within a non-current tab updates that tab's active pane
-    /// without switching tabs. false when no tab of this window owns the pane.
+    /// Reveal the exact leaf, unfolding its group and selecting its owning tab/window.
+    func revealPane(for session: DamsonSession) -> Bool {
+        for (index, tab) in tabs.enumerated() {
+            guard let leaf = tab.tree.leaf(for: session) else { continue }
+            // Select the leaf before preparing the tab transition so its arrival restores
+            // this pane as first responder, not the previously selected split.
+            tab.tree.setActive(leaf)
+            selectTab(index)
+            window?.deminiaturize(nil)
+            window?.makeKeyAndOrderFront(nil)
+            window?.makeFirstResponder(tab.tree.surfaceView(for: session))
+            return true
+        }
+        return false
+    }
+
+    /// Move focus relative to a pane without switching its tab or window.
     func focusPane(from session: DamsonSession, _ dir: PaneFocusDirection) -> Bool {
         for tab in tabs {
             guard let leaf = tab.tree.leaf(for: session) else { continue }

@@ -72,16 +72,18 @@ public struct Coordinator {
     /// per-tool and inconsistent — `claude -w`, `grok --worktree=<name>`, and nothing at all
     /// in `codex` or `cursor-agent`. All any of them needs is to be started in the right
     /// directory, so doing it once here makes a task list portable across every one.
-    func workingDirectory(for task: CrewTask) -> Result<String?, CrewError> {
+    func workingDirectory(for task: CrewTask, group: String? = nil) -> Result<String?, CrewError> {
         guard let repo = task.repo, let branch = task.worktreeBranch else {
             return .success(task.resolvedCWD)
         }
-        return worktrees.ensureWorktree(repo: repo, branch: branch, base: task.base)
+        return worktrees.ensureWorktree(repo: repo, branch: branch, base: task.base, group: group)
             .map { made in
                 // Only a worktree this call CREATED. A reused one either was already
                 // trusted or the user declined once, and re-deciding for them would
                 // silently overturn that.
-                if trustNewWorktrees, made.created { _ = acceptTrust(made.path) }
+                let program = task.argv(defaultCommand: defaultCommand).first
+                let isClaude = program.map { ($0 as NSString).lastPathComponent == "claude" } ?? false
+                if trustNewWorktrees, made.created, isClaude { _ = acceptTrust(made.path) }
                 return made.path
             }
     }
@@ -90,7 +92,7 @@ public struct Coordinator {
     /// third could not start should leave four agents working and one thing to fix, not
     /// nothing at all.
     ///
-    /// Every spawn carries the task name as its idempotency key. That is not belt-and-braces:
+    /// Every spawn carries its group and task name as its idempotency key. That is not belt-and-braces:
     /// damson's control handler reports a timeout at 2s **while the queued work still runs to
     /// completion**, so a spawn that overruns a tab-creation animation answers "failed" for a
     /// tab that did open. Without the key, re-running the list would mint a second agent for
@@ -100,7 +102,7 @@ public struct Coordinator {
             // A worktree that cannot be made is this task's failure, not the run's: the
             // others should still start.
             let cwd: String?
-            switch workingDirectory(for: task) {
+            switch workingDirectory(for: task, group: group) {
             case .failure(let e):
                 return Outcome(task: task.name, paneID: nil, error: e.message)
             case .success(let path):
@@ -112,7 +114,8 @@ public struct Coordinator {
                                         to: task.argv(defaultCommand: defaultCommand))
             let spec = SpawnSpec(cwd: cwd,
                                  argv: argv,
-                                 key: task.name,
+                                 key: group.map { "crew:group:\($0.utf8.count):\($0):\(task.name)" }
+                                     ?? "crew:ungrouped:\(task.name)",
                                  title: task.name,
                                  group: group)
             switch client.send(.spawnPane(spec)) {

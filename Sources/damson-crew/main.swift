@@ -26,14 +26,15 @@ Options:
                      {"name": "review-api", "repo": "~/dev/api",
                       "branch": "agent/review-api", "base": "main",
                       "prompt": "…", "command": ["codex"]}
-                   `name` is the tab label AND the spawn key, so re-running a
-                   list reattaches to its tabs instead of duplicating them.
+                   `name` is the tab label and scopes the spawn key with its group; a
+                   repeated list reattaches to its tabs instead of duplicating them.
                    `command` overrides the agent; the prompt is appended last,
                    which claude, codex, grok and cursor-agent all take. Put
                    {prompt} in the command for a tool that wants a flag.
   --group NAME     Put every tab in this group, so the run can be folded or
                    closed as a unit (damson-cli group close NAME).
   --pid PID        Target a specific damson instance (default: most recent).
+  --worktree-root DIR  Override the worktree root for this invocation.
   --command CMD    Agent to run. Default: from Settings → Orchestration.
   --skip-permissions / --no-skip-permissions
                    Pass --dangerously-skip-permissions to claude, so it does not
@@ -65,7 +66,7 @@ Options:
                    uncommitted or untracked files, and that refusal is
                    reported rather than worked around.
 
-`run` is safe to repeat: every spawn carries the task name as its key, so a
+`run` is safe to repeat: every spawn is keyed by group and task name, so a
 second run reattaches to the tabs it already opened. `status` says which
 tasks have tabs and which are blocked on you.
 
@@ -129,21 +130,6 @@ final class PaneNames {
     }
 }
 
-/// Talks to damson over the same unix socket `damson-cli` uses. Linking `DamsonControl`
-/// rather than shelling out to the CLI is deliberate: the CLI is shipped inside the app
-/// bundle and only reaches PATH if something linked it there, so a coordinator that ran it
-/// as a subprocess would fail on a machine where nobody had.
-struct SocketClient: DamsonClient {
-    let socketPath: String
-
-    func send(_ kind: ControlCommandKind, target: PaneTarget) -> Result<ControlResponse, CrewError> {
-        switch sendCommand(socketPath: socketPath, commandJSON: encodeCommand(kind, target: target)) {
-        case .success(let resp): return .success(resp)
-        case .failure(let e):    return .failure(CrewError(e.description))
-        }
-    }
-}
-
 var args = CommandLine.arguments.dropFirst().map { $0 }
 guard let sub = args.first, sub != "-h", sub != "--help" else { print(usage); exit(args.isEmpty ? 2 : 0) }
 args = Array(args.dropFirst())
@@ -154,6 +140,7 @@ var pid: Int?
 // Defaults come from damson's Orchestration settings; every one can be overridden per run.
 let settings = OrchestrationSettings.load()
 var command: [String] = settings.agentCommand
+var worktreeRoot = settings.worktreeRoot
 var skipPermissions = settings.skipPermissions
 var trustNewWorktrees = settings.trustNewWorktrees
 var notify = settings.notifyOnWaiting
@@ -174,6 +161,9 @@ while i < args.count {
     case "--pid":
         i += 1; guard i < args.count, let v = Int(args[i]) else { die("--pid requires a number") }
         pid = v; i += 1
+    case "--worktree-root":
+        i += 1; guard i < args.count else { die("--worktree-root requires a directory") }
+        worktreeRoot = args[i]; i += 1
     case "--command":
         i += 1; guard i < args.count else { die("--command requires a command") }
         command = [args[i]]; i += 1
@@ -221,26 +211,40 @@ func readTasks(_ path: String) -> TaskList {
     do { return try TaskList.parse(data) } catch { die("damson-crew: \(error)") }
 }
 
-let socketPath: String
-switch pickDamsonSocket(pid: pid) {
-case .success(let p): socketPath = p
-case .failure(let e): die(e.message)
+// Validate all task input before any operation can close tabs or launch programs.
+if sub == "run" || sub == "status" {
+    guard tasksPath != nil else { die("\(sub) requires --tasks") }
 }
-let client = SocketClient(socketPath: socketPath)
+if sub == "close" {
+    guard let group, !group.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        die("close requires a non-empty --group")
+    }
+    guard confirmed else {
+        die("close would shut every tab in group '\(group)' and the programs in them. " +
+            "Re-run with --yes if that is what you want.")
+    }
+    if removeWorktrees, tasksPath == nil { die("--remove-worktrees needs --tasks to know which ones") }
+}
+let taskList = tasksPath.map(readTasks)
+
+func resolveSocket() -> Result<String, CrewError> {
+    pickDamsonSocket(pid: pid).mapError { CrewError($0.message) }
+}
+if case .failure(let error) = resolveSocket() { die(error.message) }
+let client = ResolvingDamsonClient(resolve: resolveSocket)
 // An explicit worktree root keeps every run's trees in one place; empty means beside the
 // repo, which is the default because it keeps them obviously related to what they branch from.
-let worktrees: WorktreeManager = settings.worktreeRoot.isEmpty
+let worktrees: WorktreeManager = worktreeRoot.isEmpty
     ? WorktreeManager()
     : WorktreeManager(rootFor: { repo in
-        let root = (settings.worktreeRoot as NSString).expandingTildeInPath
+        let root = (worktreeRoot as NSString).expandingTildeInPath
         return URL(fileURLWithPath: root)
             .appendingPathComponent(URL(fileURLWithPath: repo).lastPathComponent).path
       })
 
 switch sub {
 case "run":
-    guard let tasksPath else { die("run requires --tasks") }
-    let list = readTasks(tasksPath)
+    guard let list = taskList else { die("run requires --tasks") }
     // Reattach to what is already on screen and open only the rest.
     //
     // `--key` alone is NOT enough here. damson keeps its key→pane table in memory, so it
@@ -292,19 +296,12 @@ case "watch":
     // `run` in another, so the panes a watcher most wants to name are created AFTER it
     // connects — a startup-only lookup left every one of them reported as a bare id for the
     // rest of the run, which is most of the value of naming them at all.
-    let names = PaneNames(client: client, tasks: tasksPath.map { readTasks($0).tasks } ?? [])
+    let names = PaneNames(client: client, tasks: taskList?.tasks ?? [])
 
     let notifier = SystemNotifier()
     let focuser = PaneFocuser(client: client)
     let watcher = AgentWatcher(
-        stream: AgentWatcher.socketStream {
-            // Re-resolved per attempt: damson's socket path carries its pid, so a restart
-            // (including an update) moves it.
-            switch pickDamsonSocket(pid: pid) {
-            case .success(let p): return .success(p)
-            case .failure(let e): return .failure(CrewError(e.message))
-            }
-        },
+        stream: AgentWatcher.socketStream(resolve: resolveSocket),
         // Called on the reading thread, so it only ever touches the cache — damson drops a
         // subscriber whose mailbox fills, and a socket round-trip here would risk exactly that.
         taskFor: { names.cached($0) },
@@ -348,8 +345,7 @@ case "watch":
     watcher.run()
 
 case "status":
-    guard let tasksPath else { die("status requires --tasks") }
-    let list = readTasks(tasksPath)
+    guard let list = taskList else { die("status requires --tasks") }
     switch RunManager(client: client, worktrees: worktrees).status(of: list.tasks, group: group) {
     case .failure(let e): die("damson-crew: \(e.message)")
     case .success(let status):
@@ -363,21 +359,20 @@ case "status":
 
 case "close":
     guard let group else { die("close requires --group") }
-    // Destructive: several tabs and the programs inside them. Making it the natural
-    // consequence of a typo is exactly what a coordinator must not do.
-    guard confirmed else {
-        die("close would shut every tab in group '\(group)' and the programs in them. " +
-            "Re-run with --yes if that is what you want.")
-    }
-    let manager = RunManager(client: client, worktrees: worktrees)
-    switch manager.close(group: group) {
+    let manager = RunManager(client: client, worktrees: worktrees, usageClients: {
+        // Another app instance can use the same checkout, even with the same group name.
+        listDamsonInstances().map { instance in
+            ResolvingDamsonClient(resolve: { .success(instance.socketPath) })
+        }
+    })
+    switch manager.close(group: group, allowMissing: removeWorktrees) {
     case .failure(let e): die("damson-crew: \(e.message)", code: 1)
     case .success:        print("closed \(group)")
     }
     if removeWorktrees {
-        guard let tasksPath else { die("--remove-worktrees needs --tasks to know which ones") }
+        guard let list = taskList else { die("--remove-worktrees needs --tasks to know which ones") }
         var kept = 0
-        for outcome in manager.removeWorktrees(of: readTasks(tasksPath).tasks) {
+        for outcome in manager.removeWorktrees(of: list.tasks, group: group) {
             if let why = outcome.kept {
                 kept += 1
                 FileHandle.standardError.write(Data("kept \(outcome.path): \(why)\n".utf8))
@@ -387,7 +382,8 @@ case "close":
         }
         if kept > 0 {
             FileHandle.standardError.write(
-                Data("\(kept) worktree(s) kept because they hold uncommitted work\n".utf8))
+                Data("\(kept) worktree cleanup operation(s) failed; see errors above\n".utf8))
+            exit(1)
         }
     }
 

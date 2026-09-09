@@ -69,10 +69,10 @@ final class CoordinatorTests: XCTestCase {
                        ["/opt/homebrew/bin/claude", "--dangerously-skip-permissions", "go"])
     }
 
-    /// The task name is the spawn key, so a repeat is answered with the first pane rather
+    /// The task name supplies a stable spawn key, so a repeat returns the first pane rather
     /// than minting a second agent. damson reports a timeout at 2s while the queued work
     /// still completes, so "failed" for a tab that did open is a case that really happens.
-    func testEverySpawnCarriesTheTaskNameAsItsKey() {
+    func testEverySpawnCarriesAnUngroupedTaskKey() {
         let fake = FakeDamson()
         fake.answers = [.success(pane("A")), .success(pane("B"))]
         _ = Coordinator(client: fake).fanOut(tasks, group: nil)
@@ -81,7 +81,26 @@ final class CoordinatorTests: XCTestCase {
             guard case .spawnPane(let s) = kind else { return nil }
             return s.key
         }
-        XCTAssertEqual(keys, ["review-api", "fix-parser"])
+        XCTAssertEqual(keys, ["crew:ungrouped:review-api", "crew:ungrouped:fix-parser"])
+    }
+
+    func testSpawnKeysSeparateGroupsAndRemainStableOnRetry() {
+        let fake = FakeDamson()
+        let coordinator = Coordinator(client: fake)
+        for group: String? in ["run-a", "run-b", nil, "run-a"] {
+            _ = coordinator.fanOut([CrewTask(name: "review")], group: group)
+        }
+        let keys = fake.sent.compactMap { kind -> String? in
+            guard case .spawnPane(let spec) = kind else { return nil }
+            return spec.key
+        }
+        XCTAssertEqual(Set(keys.prefix(3)).count, 3)
+        XCTAssertEqual(keys.first, keys.last)
+        _ = coordinator.fanOut([CrewTask(name: "b:c")], group: "a")
+        _ = coordinator.fanOut([CrewTask(name: "c")], group: "a:b")
+        guard case .spawnPane(let a) = fake.sent[4],
+              case .spawnPane(let b) = fake.sent[5] else { return XCTFail("no spawn") }
+        XCTAssertNotEqual(a.key, b.key)
     }
 
     func testGroupIsAppliedToEveryTask() {
