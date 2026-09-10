@@ -126,11 +126,33 @@ One caveat worth knowing before you plan around it: **the watching half is Claud
 other tools open, get labelled and grouped, and run — but never raise a "blocked on you"
 alert, because nothing publishes that state.
 
-**What this deliberately isn't:** a queue. Claude Code has no completion signal for a session
-running in a terminal, so nothing here decides a task is finished and starts the next one.
-It fans work out and routes your attention to whichever agent is stuck — the judgement stays
-with you. [docs/CLAUDE-ORCHESTRATION.md](docs/CLAUDE-ORCHESTRATION.md) has the measurements
-behind that, and everything else that was tried and rejected.
+### Completing a multi-agent project
+
+For a request such as “build a game with several agents”, the orchestration skill can
+prepare a dependency graph, run implementations in parallel, then integrate and validate
+what they produced. Use the managed workflow mode:
+
+```sh
+damson-crew workflow run --plan workflow.json --state .crew/game-1
+damson-crew workflow status --state .crew/game-1
+```
+
+Tasks are finite commands running in real Damson panes. A task succeeds only after its
+command, validation commands, and required output checks pass. Dependent tasks wait for
+that result; failed prerequisites block their descendants. Plans control parallelism,
+shared-resource exclusion, timeouts, and bounded retries. Logs and results remain in the
+state directory after panes finish. Repeat the same command to resume a stopped
+coordinator without replaying completed work or duplicating live attempts.
+
+The skill supplies the planning and final artifact review; the CLI executes the plan.
+Prompt tasks default to Claude print mode and require validation commands. Other finite
+agent commands can be supplied explicitly. Interactive `run`/`watch` remain available for
+sessions you want to take over: their `idle` state never advances a workflow.
+
+See the [workflow schema and example](plugins/damson-orchestration/skills/damson-orchestration/references/workflows.md).
+The example's syntax/unit checks should be followed by a real browser play check before
+calling a game finished. Update the app, bundled CLIs, and orchestration plugin together
+when adopting managed workflows.
 
 ## Embedding Damson in your app
 

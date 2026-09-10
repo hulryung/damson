@@ -1,5 +1,8 @@
 # Orchestration reliability audit
 
+This document records the interactive fan-out audit from PR #25. Managed dependent
+workflows added in PR #33 have a separate [acceptance audit](WORKFLOW-AUDIT.md).
+
 The user-facing contract is the README's fan-out and attention routing: start one task per
 tab, keep runs separate, retry without duplicates, observe agents, bring blocked work to
 the user, and clean up without losing unrelated or uncommitted work. This audit is not a
