@@ -1687,6 +1687,10 @@ private func buildToolsMenu(into mainMenu: NSMenu) {
         keyEquivalent: ""
     )
     toolsMenu.addItem(detachItem)
+    toolsMenu.addItem(.separator())
+    let computer = NSMenuItem(title: "Computer Control…", action: #selector(ComputerControlPanel.showPanel), keyEquivalent: "")
+    computer.target = MainActor.assumeIsolated { ComputerControlPanel.shared }
+    toolsMenu.addItem(computer)
 }
 
 func installMainMenu() {

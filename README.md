@@ -154,6 +154,14 @@ The example's syntax/unit checks should be followed by a real browser play check
 calling a game finished. Update the app, bundled CLIs, and orchestration plugin together
 when adopting managed workflows.
 
+## Desktop control (in development)
+
+`damson-computer` adds a separate macOS helper for app/window discovery, Accessibility
+inspection, screenshots, and input. Damson's **Tools → Computer Control…** panel shows
+ownership and permissions and can stop the helper's session. Desktop access is exclusive
+across workflows; physical user input pauses it. See the [computer control guide](docs/COMPUTER-CONTROL.md)
+and [implementation audit](docs/COMPUTER-AUDIT.md) for setup and current verification status.
+
 ## Embedding Damson in your app
 
 Damson's engine ships as a Swift Package, `DamsonTerminal` — the same VT parser, grid, and Metal renderer the app uses, available as a library so you can put a terminal view inside your own macOS app. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.

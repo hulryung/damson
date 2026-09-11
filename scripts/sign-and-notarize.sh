@@ -99,6 +99,12 @@ codesign --force --options runtime --timestamp \
     --sign "$APPLE_SIGNING_IDENTITY" \
     "$APP/Contents/MacOS/damson-keeper"
 
+# Sign the desktop helper independently so TCC can retain its stable identity.
+codesign --force --options runtime --timestamp \
+    --sign "$APPLE_SIGNING_IDENTITY" "$APP/Contents/Resources/damson-computer"
+codesign --force --options runtime --timestamp \
+    --sign "$APPLE_SIGNING_IDENTITY" "$APP/Contents/Helpers/Damson Computer.app"
+
 echo "==> codesign main bundle"
 codesign --force --options runtime --timestamp \
     --entitlements "$ENTITLEMENTS" \
