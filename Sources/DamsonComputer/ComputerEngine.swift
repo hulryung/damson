@@ -14,10 +14,15 @@ public final class ComputerEngine {
         sessions = ComputerSessionStore(root: root)
     }
 
-    public func stop() {
-        sessions.stop()
+    public func stop(reason: String = "requested") {
+        sessions.stop(reason: reason)
         desktop.clearElements()
         onChange?()
+    }
+
+    public func interruptForInput(timestamp: TimeInterval, kind: String) {
+        guard let session = sessions.session, timestamp >= session.inputStarted else { return }
+        stop(reason: "external_input:\(kind)")
     }
 
     public func handle(_ request: ComputerRequest) async -> Data {
@@ -61,7 +66,7 @@ public final class ComputerEngine {
         switch request.command {
         case "status":
             sessions.expire()
-            return ["helperPID": ProcessInfo.processInfo.processIdentifier, "protocolVersion": 1, "paused": sessions.paused, "busy": busy, "session": publicSession(), "permissions": desktop.permissions()]
+            return ["helperPID": ProcessInfo.processInfo.processIdentifier, "protocolVersion": 1, "pauseReason": sessions.pauseReason as Any? ?? NSNull(), "paused": sessions.paused, "busy": busy, "session": publicSession(), "permissions": desktop.permissions()]
         case "permissions": return desktop.permissions(prompt: args["prompt"] == "true")
         case "apps": return ["apps": desktop.apps()]
         case "stop": stop(); return ["paused": true]

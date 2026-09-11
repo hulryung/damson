@@ -180,7 +180,7 @@ public final class DesktopAccess {
 
     private func post(_ event: CGEvent) {
         event.setIntegerValueField(.eventSourceUserData, value: Self.eventTag)
-        event.post(tap: .cghidEventTap)
+        event.post(tap: event.type == .scrollWheel ? .cgSessionEventTap : .cghidEventTap)
     }
 
     private func requireAccessibility() throws {

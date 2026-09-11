@@ -106,7 +106,11 @@ final class ComputerControlPanel: NSWindowController {
                     let access = permissions["accessibility"] as? Bool == true ? "allowed" : "needed"
                     let screen = permissions["screenRecording"] as? Bool == true ? "allowed" : "needed"
                     let state: String
-                    if result["paused"] as? Bool == true { state = "Paused — desktop control is stopped." } else if let session = result["session"] as? [String: Any] {
+                    if result["paused"] as? Bool == true {
+                        let interrupted = (result["pauseReason"] as? String)?.hasPrefix("external_input:") == true
+                        state = interrupted ? "Paused — mouse or keyboard activity interrupted the task."
+                            : "Paused — desktop control is stopped."
+                    } else if let session = result["session"] as? [String: Any] {
                         state = "In use: \(session["owner"] ?? "")\nTarget app PID: \(session["pid"] ?? "")"
                     } else { state = "Ready — no task owns the desktop." }
                     return "\(state)\n\nAccessibility: \(access)\nScreen Recording: \(screen)"

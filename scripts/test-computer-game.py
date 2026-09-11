@@ -59,6 +59,8 @@ try:
     restart = next(n for n in walk(tree) if n.get('AXRole') == 'AXButton'
                    and 'Restart' in (n.get('AXTitle', '') + n.get('AXDescription', '')))
     call('press', session=session, element=restart['id'])
+    wait(lambda s: s['state'] == 'ready')
+    call('key', session=session, key='space')
     wait(lambda s: s['state'] == 'running')
     restarted = call('capture', session=session, window=window['id'])
     print(json.dumps({'passed': True, 'artifacts': lease['artifacts'],

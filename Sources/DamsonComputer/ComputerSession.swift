@@ -14,6 +14,7 @@ public struct ComputerSession: Codable, Equatable {
     public let owner: String
     public let targetPID: Int32
     public let targetStarted: String
+    public let inputStarted: TimeInterval
     public let created: Date
     public var expires: Date
     public let artifacts: String
@@ -24,6 +25,7 @@ public struct ComputerSession: Codable, Equatable {
 public final class ComputerSessionStore {
     public private(set) var session: ComputerSession?
     public private(set) var paused = false
+    public private(set) var pauseReason: String?
     private let root: URL
     private let now: () -> Date
     private let clockNow: () -> ContinuousClock.Instant
@@ -62,7 +64,7 @@ public final class ComputerSessionStore {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                attributes: [.posixPermissions: 0o700])
         let value = ComputerSession(token: token, owner: owner, targetPID: pid,
-                                    targetStarted: started, created: now(),
+                                    targetStarted: started, inputStarted: ProcessInfo.processInfo.systemUptime, created: now(),
                                     expires: now().addingTimeInterval(ttl), artifacts: directory.path)
         try JSONEncoder().encode(value).write(to: directory.appendingPathComponent("session.json"), options: .atomic)
         deadline = clockNow().advanced(by: .seconds(ttl))
@@ -94,8 +96,13 @@ public final class ComputerSessionStore {
         deadline = nil
     }
 
-    public func stop() { session = nil; deadline = nil; paused = true }
-    public func resume() { paused = false }
+    public func stop(reason: String = "requested") {
+        if !paused { pauseReason = reason }
+        session = nil
+        deadline = nil
+        paused = true
+    }
+    public func resume() { paused = false; pauseReason = nil }
 
     private func validateTTL(_ ttl: Double) throws {
         guard ttl.isFinite, (5...300).contains(ttl) else {

@@ -6,6 +6,11 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let field = NSTextField(string: "")
     let label = NSTextField(labelWithString: "Count: 0")
     var count = 0
+    var scrollPosition: CGFloat = 0
+    var scrollEvents: [[String: Any]] = []
+    var eventMonitor: Any?
+    var timer: Timer?
+    var lastSaved: Data?
     let output = ProcessInfo.processInfo.environment["DAMSON_COMPUTER_FIXTURE_STATE"] ?? "/tmp/damson-computer-fixture-state.json"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -33,17 +38,30 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         content.addSubview(scroll)
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in self?.save(scroll: scroll.contentView.bounds.origin.y) }
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            self?.scrollEvents.append(["dy": event.scrollingDeltaY, "dx": event.scrollingDeltaX,
+                                       "x": event.locationInWindow.x, "y": event.locationInWindow.y,
+                                       "phase": event.phase.rawValue])
+            self?.save()
+            return event
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.save() }
         save()
     }
     @objc func increment() { count += 1; label.stringValue = "Count: \(count)"; save() }
     func controlTextDidChange(_ obj: Notification) { save() }
     func save(scroll: CGFloat? = nil) {
-        var value: [String: Any] = ["count": count, "text": field.stringValue, "pid": getpid()]
-        if let scroll { value["scroll"] = scroll }
+        if let scroll { scrollPosition = scroll }
+        let value: [String: Any] = ["count": count, "text": field.stringValue, "pid": getpid(),
+                                    "scroll": scrollPosition, "scrollEvents": scrollEvents,
+                                    "editing": field.currentEditor() != nil,
+                                    "selectionLength": field.currentEditor()?.selectedRange.length ?? -1]
         let data = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        if data == lastSaved { return }
         try! data.write(to: URL(fileURLWithPath: output), options: .atomic)
+        lastSaved = data
     }
 }
 let application = NSApplication.shared

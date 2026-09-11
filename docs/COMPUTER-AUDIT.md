@@ -44,6 +44,28 @@ Status: **in progress; not release-ready yet** (2026-09-11).
 3. Scroll events needed their target point set explicitly. Code is corrected;
    a full live rerun is still pending.
 
+## Resumed acceptance (2026-09-11)
+
+- Latest targeted suite: 16 Computer tests passed, including rejecting queued input
+  that predates session acquisition. Zero-delta window-related mouseMoved events are
+  excluded, and status retains the first pause reason rather than overwriting it
+  during cleanup. External input diagnostics include the event source process ID.
+- Native acceptance again reached Unicode typing and screenshot capture. The full
+  run still failed at scrolling: the fixture did not receive a scroll event. A
+  session-tap routing candidate is implemented but is not yet verified as a fix.
+- A later run also exposed an acceptance sequencing issue: typing began without
+  checking that cmd+a had selected the prior text. The fixture now observes actual
+  editing/selection state, and the test waits for it before typing.
+- During other runs, external mouse movement revoked the lease and another app
+  (Markdown Prism's development build) became frontmost. Tests stopped; these are
+  not passing playtests. A further uninterrupted desktop window was requested.
+- The bundled CLI successfully launched the helper with bundle identity
+  `app.damson.computer`. Unlike the development process, it reports both Accessibility
+  and Screen Recording denied. Its macOS permission prompts have been requested;
+  user grants are pending. The helper remains paused.
+- The game observer was corrected to read the game's actual `data-status` attribute
+  and assert Restart returns to ready before starting another round.
+
 ## Outstanding completion gates
 
 - Rerun the full native suite with the latest binary, including scrolling,

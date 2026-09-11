@@ -55,6 +55,21 @@ final class ComputerEngineTests: XCTestCase {
         XCTAssertEqual((try response(data)["error"] as? [String: String])?["code"], "paused")
     }
 
+    @MainActor
+    func testDelayedInputFromBeforeAcquisitionDoesNotRevokeNewSession() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = ComputerEngine(root: root)
+        let session = try engine.sessions.acquire(owner: "a", pid: 1, started: "x", ttl: 30)
+        engine.interruptForInput(timestamp: session.inputStarted - 0.1, kind: "mouseMoved")
+        XCTAssertEqual(engine.sessions.session?.token, session.token)
+        XCTAssertFalse(engine.sessions.paused)
+        engine.interruptForInput(timestamp: session.inputStarted + 0.1, kind: "mouseMoved")
+        XCTAssertNil(engine.sessions.session)
+        XCTAssertTrue(engine.sessions.paused)
+        XCTAssertEqual(engine.sessions.pauseReason, "external_input:mouseMoved")
+    }
+
     private func response(_ data: Data) throws -> [String: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }

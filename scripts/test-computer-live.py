@@ -46,7 +46,7 @@ lease = call("acquire", pid=pid, owner="native-acceptance", ttl=120)
 token = lease["token"]
 try:
     error = call("acquire", ok=False, pid=pid, owner="other-workflow")
-    assert error["code"] == "busy"
+    assert error["code"] == "busy", error
     assert call("key", ok=False, session=token, key="a", pid=pid)["code"] == "invalid_argument"
     call("focus", session=token)
     time.sleep(.3)
@@ -64,7 +64,10 @@ try:
     wait_for(lambda: state()["count"] == count + 2)
     bounds = field["bounds"]
     call("click", session=token, x=bounds["x"]+30, y=bounds["y"]+bounds["height"]/2)
+    wait_for(lambda: state().get("editing") is True)
+    selection_length = len(state()["text"].encode("utf-16-le")) // 2
     call("key", session=token, key="cmd+a")
+    wait_for(lambda: state().get("selectionLength") == selection_length)
     call("type", session=token, text="Damson 한글 🎮")
     wait_for(lambda: state()["text"] == "Damson 한글 🎮")
     windows = call("windows", session=token)["windows"]
@@ -76,6 +79,7 @@ try:
     scroll = next(node for node in nodes if node.get("AXRole") == "AXScrollArea")
     bounds = scroll["bounds"]
     call("click", session=token, x=bounds["x"]+100, y=bounds["y"]+100)
+    time.sleep(.1)
     call("scroll", session=token, dy=-150)
     wait_for(lambda: state().get("scroll", 0) > 0)
     call("stop")

@@ -77,7 +77,9 @@ never restore authority. The helper's process lock and private user socket enfor
 across separate workflows; workflow `resources: ["desktop"]` is only a scheduling hint
 inside one workflow and cannot replace the helper lease.
 
-Physical mouse movement, clicks, scrolling, or keyboard input stop an active session.
+External mouse movement, clicks, scrolling, or keyboard input stop an active session
+(including events from other desktop automation). Input queued before the session and
+zero-delta mouseMoved events from window updates do not revoke a newly acquired lease.
 The helper pauses and requires explicit Resume. **Agents must not automatically resume
 a user stop.** Ask the user when to continue. A fresh lease is required after resuming.
 Stop remains available during asynchronous capture and text input. Text input yields

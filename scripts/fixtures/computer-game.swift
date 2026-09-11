@@ -29,7 +29,7 @@ final class GameFixture: NSObject, NSApplicationDelegate, WKScriptMessageHandler
               for (let i = 0; i < pixels.length; i += 4) hash = ((hash << 5) - hash + pixels[i]) | 0;
             }
             window.webkit.messageHandlers.acceptance.postMessage({
-              state: document.body?.dataset.state || '',
+              state: document.body?.dataset.status || '',
               status: document.querySelector('#status')?.textContent || '',
               canvasHash: hash, keys
             });

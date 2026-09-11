@@ -37,9 +37,14 @@ private final class ComputerHelperDelegate: NSObject, NSApplicationDelegate {
         engine.onChange = { [weak self] in self?.refresh() }
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .mouseMoved]) { [weak self] event in
             guard event.cgEvent?.getIntegerValueField(.eventSourceUserData) != DesktopAccess.eventTag else { return }
+            // WindowServer can send a zero-delta mouseMoved when a window opens
+            // under a stationary cursor. That is not a user moving the mouse.
+            if event.type == .mouseMoved, event.deltaX == 0, event.deltaY == 0 { return }
             Task { @MainActor in
                 guard let self, self.engine.sessions.session != nil else { return }
-                self.engine.stop()
+                let sourcePID = event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? -1
+                self.engine.interruptForInput(timestamp: event.timestamp,
+                                              kind: "\(event.type):sourcePID=\(sourcePID)")
             }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
