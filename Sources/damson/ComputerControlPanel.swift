@@ -11,7 +11,7 @@ final class ComputerControlPanel: NSWindowController {
     private var loading = false
 
     private init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 300),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Computer Control"
         super.init(window: window)
@@ -31,13 +31,30 @@ final class ComputerControlPanel: NSWindowController {
             controls.addArrangedSubview(NSButton(title: title, target: self, action: action))
         }
         stack.addArrangedSubview(controls)
-        stack.addArrangedSubview(NSButton(title: "Show Session Logs", target: self, action: #selector(showLogs)))
+        let permissionTitle = NSTextField(labelWithString: "macOS Permissions")
+        permissionTitle.font = .boldSystemFont(ofSize: 13)
+        stack.addArrangedSubview(permissionTitle)
+        let settings = NSStackView()
+        settings.addArrangedSubview(NSButton(title: "Accessibility Settings…", target: self, action: #selector(openAccessibility)))
+        settings.addArrangedSubview(NSButton(title: "Screen Recording Settings…", target: self, action: #selector(openScreenRecording)))
+        stack.addArrangedSubview(settings)
+        let permissionHelp = NSTextField(wrappingLabelWithString: "Enable Damson Computer in System Settings. If it is missing from the list, use Show Helper in Finder to locate the app when adding it.")
+        permissionHelp.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(permissionHelp)
+        let files = NSStackView()
+        files.addArrangedSubview(NSButton(title: "Show Helper in Finder", target: self, action: #selector(showHelper)))
+        files.addArrangedSubview(NSButton(title: "Show Session Logs", target: self, action: #selector(showLogs)))
+        stack.addArrangedSubview(files)
         window.contentView?.addSubview(stack)
         if let content = window.contentView {
             NSLayoutConstraint.activate([
                 stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
                 stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24)
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
+                stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
+                status.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                note.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                permissionHelp.widthAnchor.constraint(equalTo: stack.widthAnchor)
             ])
         }
         window.center()
@@ -77,6 +94,27 @@ final class ComputerControlPanel: NSWindowController {
     @objc private func stop() { send("stop") }
     @objc private func resume() { send("resume") }
     @objc private func permissions() { send("permissions", arguments: ["prompt": "true"]) }
+    @objc private func openAccessibility() { openSettings(.accessibility) }
+    @objc private func openScreenRecording() { openSettings(.screenRecording) }
+    private func openSettings(_ destination: ComputerPrivacySettings) {
+        if !destination.open() {
+            let alert = NSAlert()
+            alert.messageText = "Could not open System Settings"
+            alert.informativeText = "Open System Settings → Privacy & Security and enable Damson Computer."
+            alert.runModal()
+        }
+    }
+    @objc private func showHelper() {
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Damson Computer.app")
+        guard FileManager.default.fileExists(atPath: helper.path) else {
+            let alert = NSAlert()
+            alert.messageText = "Computer helper is not installed"
+            alert.informativeText = "Use a Damson build that includes Damson Computer."
+            alert.runModal()
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([helper])
+    }
     @objc private func showLogs() { NSWorkspace.shared.open(ComputerPaths.artifacts) }
 
     private func send(_ command: String, arguments: [String: String] = [:]) {

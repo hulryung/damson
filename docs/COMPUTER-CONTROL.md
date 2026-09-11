@@ -21,6 +21,10 @@ mode do not prove that the distributed helper has permission.
 In Damson, **Tools → Computer Control…** starts the helper, shows the current task and
 permission state, and provides Stop/Resume controls. The helper also has a **DC** menu
 bar item, so Stop remains accessible even when Damson is not frontmost.
+Both the panel and the DC menu include **Accessibility Settings…** and **Screen Recording
+Settings…** shortcuts. Enable **Damson Computer** in those macOS lists. **Show Helper in
+Finder** reveals the exact bundled app to select when adding it manually. These controls
+navigate to settings; they do not grant permissions automatically.
 
 Run `permissions` to check access and `permissions --prompt true` to request it. Grant
 Accessibility and Screen Recording to the app macOS names in System Settings. Restart

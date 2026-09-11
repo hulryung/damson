@@ -30,6 +30,9 @@ private final class ComputerHelperDelegate: NSObject, NSApplicationDelegate {
         add("Stop Desktop Control", action: #selector(stop), to: menu)
         add("Resume Desktop Control", action: #selector(resume), to: menu)
         add("Grant Permissions…", action: #selector(permissions), to: menu)
+        add("Accessibility Settings…", action: #selector(openAccessibility), to: menu)
+        add("Screen Recording Settings…", action: #selector(openScreenRecording), to: menu)
+        add("Show Helper in Finder", action: #selector(showHelper), to: menu)
         add("Show Session Logs", action: #selector(logs), to: menu)
         menu.addItem(.separator())
         add("Quit Damson Computer", action: #selector(quit), to: menu)
@@ -74,6 +77,9 @@ private final class ComputerHelperDelegate: NSObject, NSApplicationDelegate {
     @objc private func stop() { engine.stop() }
     @objc private func resume() { engine.sessions.resume(); refresh() }
     @objc private func permissions() { _ = engine.desktop.permissions(prompt: true) }
+    @objc private func openAccessibility() { ComputerPrivacySettings.accessibility.open() }
+    @objc private func openScreenRecording() { ComputerPrivacySettings.screenRecording.open() }
+    @objc private func showHelper() { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
     @objc private func logs() { NSWorkspace.shared.open(ComputerPaths.artifacts) }
     @objc private func quit() { engine.stop(); NSApp.terminate(nil) }
 }
