@@ -25,6 +25,9 @@ Status: **in progress; not release-ready yet** (2026-09-11).
   These event tests do not post input and do not replace the pending native rerun.
 - Existing CLI integration suites: **10 crew + 7 workflow tests passed**.
 - SwiftLint: **0 errors**; existing and structural warnings remain.
+- `test-computer-duplicate.py` passed against the live paused helper: a second
+  helper exits with failure code 1, the original PID stays reachable, and its paused
+  state and lack of session are preserved. No desktop input was posted.
 - Production app bundle built successfully in an isolated temporary output folder.
 - Development helper reports Accessibility and Screen Recording access.
 - Native target confirmed AX button press, identical-request deduplication,
@@ -51,7 +54,8 @@ Status: **in progress; not release-ready yet** (2026-09-11).
 - Run the real Snake game via `computer-game.swift` and
   `test-computer-game.py`: start, trusted direction input, movement, pause,
   restart, and retained screenshots.
-- Verify restart/duplicate helper behavior and failure cleanup through the CLI.
+- Verify helper restart invalidation and failure cleanup through the CLI.
+  Duplicate startup exclusion is already verified.
 - Re-run affected checks after any changes and update this audit with final evidence.
 
 The desktop tests are paused pending the user's indication that the desktop is

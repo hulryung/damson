@@ -119,3 +119,8 @@ it, then run `python3 scripts/test-computer-live.py PATH_TO_CLI STATE_JSON`. The
 checks native AX actions, real clicks and Unicode edits, screenshot generation, scrolling,
 request deduplication, rejection of wrong targets, and cancellation. Run only while the
 user has made the desktop available for the test. It never targets user documents.
+
+`python3 scripts/test-computer-duplicate.py PATH_TO_CLI` checks duplicate helper
+startup against an already paused helper. It performs no screen capture or input and
+asserts that the existing PID and paused state remain unchanged. Startup failures
+return a nonzero process exit code.

@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 @MainActor
 private final class ComputerHelperDelegate: NSObject, NSApplicationDelegate {
@@ -18,8 +19,9 @@ private final class ComputerHelperDelegate: NSObject, NSApplicationDelegate {
             }
         } catch {
             NSLog("Damson Computer: %@", String(describing: error))
-            NSApp.terminate(nil)
-            return
+            // Startup failure must be observable by direct CLI supervisors.
+            // Terminating NSApplication normally would incorrectly exit with 0.
+            Darwin.exit(EXIT_FAILURE)
         }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
