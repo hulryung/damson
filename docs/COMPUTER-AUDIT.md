@@ -19,6 +19,10 @@ Status: **in progress; not release-ready yet** (2026-09-11).
 
 - Full `swift test`: **760 tests, 24 skipped, 0 failures**. This includes 9 new
   Computer session/engine tests. Skips are existing platform/environment gates.
+- Follow-up targeted suite: **15 Computer tests passed**, including clock-jump
+  expiry/renewal and real CGEvent construction checks for Unicode, released modifiers,
+  fractional/negative global coordinates, and explicit pixel-scroll location/deltas.
+  These event tests do not post input and do not replace the pending native rerun.
 - Existing CLI integration suites: **10 crew + 7 workflow tests passed**.
 - SwiftLint: **0 errors**; existing and structural warnings remain.
 - Production app bundle built successfully in an isolated temporary output folder.

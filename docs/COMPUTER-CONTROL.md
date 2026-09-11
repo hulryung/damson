@@ -70,6 +70,8 @@ US key positions); use `type` for literal Unicode text.
 ## Ownership, cancellation, and failure
 
 Only one session can own the desktop. TTL is 5–300 seconds; renew while actively working.
+Lease expiry uses ContinuousClock (including elapsed sleep time), so changing the system
+clock cannot extend or prematurely expire authority. Reported dates are display metadata.
 An expired session, helper restart, or Stop invalidates its token. Existing artifact files
 never restore authority. The helper's process lock and private user socket enforce this
 across separate workflows; workflow `resources: ["desktop"]` is only a scheduling hint

@@ -9,11 +9,11 @@ final class ComputerSessionTests: XCTestCase {
     override func tearDownWithError() throws { try? FileManager.default.removeItem(at: root) }
 
     func testExclusiveLeaseExpiresAndRejectsStaleOwner() throws {
-        var time = Date()
-        let store = ComputerSessionStore(root: root, now: { time })
+        var time = ContinuousClock.now
+        let store = ComputerSessionStore(root: root, clockNow: { time })
         let first = try store.acquire(owner: "workflow-a", pid: 1, started: "one", ttl: 10)
         XCTAssertThrowsError(try store.acquire(owner: "workflow-b", pid: 2, started: "two", ttl: 10))
-        time.addTimeInterval(11)
+        time = time.advanced(by: .seconds(11))
         let second = try store.acquire(owner: "workflow-b", pid: 2, started: "two", ttl: 10)
         XCTAssertThrowsError(try store.release(first.token))
         XCTAssertEqual(try store.require(second.token), second)
@@ -42,15 +42,42 @@ final class ComputerSessionTests: XCTestCase {
     }
 
     func testRenewExtendsOnlyLiveSession() throws {
-        var time = Date()
-        let store = ComputerSessionStore(root: root, now: { time })
+        var time = ContinuousClock.now
+        let store = ComputerSessionStore(root: root, clockNow: { time })
         let first = try store.acquire(owner: "a", pid: 1, started: "one", ttl: 10)
-        time.addTimeInterval(9)
+        time = time.advanced(by: .seconds(9))
         _ = try store.renew(first.token, ttl: 20)
-        time.addTimeInterval(15)
+        time = time.advanced(by: .seconds(15))
         XCTAssertNoThrow(try store.require(first.token))
-        time.addTimeInterval(6)
+        time = time.advanced(by: .seconds(6))
         XCTAssertThrowsError(try store.renew(first.token, ttl: 20))
+    }
+
+    func testWallClockJumpsCannotExtendOrPrematurelyExpireLease() throws {
+        var wall = Date()
+        var clock = ContinuousClock.now
+        let store = ComputerSessionStore(root: root, now: { wall }, clockNow: { clock })
+        let session = try store.acquire(owner: "a", pid: 1, started: "one", ttl: 10)
+        wall.addTimeInterval(86_400)
+        clock = clock.advanced(by: .seconds(5))
+        XCTAssertNoThrow(try store.require(session.token))
+        wall.addTimeInterval(-172_800)
+        clock = clock.advanced(by: .seconds(5))
+        XCTAssertThrowsError(try store.require(session.token))
+    }
+
+    func testRenewUsesElapsedTimeDespiteChangedWallClock() throws {
+        var wall = Date()
+        var clock = ContinuousClock.now
+        let store = ComputerSessionStore(root: root, now: { wall }, clockNow: { clock })
+        let session = try store.acquire(owner: "a", pid: 1, started: "one", ttl: 10)
+        clock = clock.advanced(by: .seconds(8))
+        wall.addTimeInterval(-3_600)
+        _ = try store.renew(session.token, ttl: 20)
+        clock = clock.advanced(by: .seconds(19))
+        XCTAssertNoThrow(try store.require(session.token))
+        clock = clock.advanced(by: .seconds(1))
+        XCTAssertThrowsError(try store.require(session.token))
     }
 
     func testRestartNeverRestoresAuthorityFromArtifactFiles() throws {

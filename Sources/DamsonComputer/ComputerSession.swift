@@ -26,16 +26,23 @@ public final class ComputerSessionStore {
     public private(set) var paused = false
     private let root: URL
     private let now: () -> Date
+    private let clockNow: () -> ContinuousClock.Instant
+    private var deadline: ContinuousClock.Instant?
 
-    public init(root: URL, now: @escaping () -> Date = Date.init) {
+    public init(root: URL, now: @escaping () -> Date = Date.init,
+                clockNow: @escaping () -> ContinuousClock.Instant = { .now }) {
         self.root = root
         self.now = now
+        self.clockNow = clockNow
     }
 
     @discardableResult
     public func expire() -> Bool {
-        if let current = session, current.expires <= now() {
+        // Wall-clock dates are display metadata. ContinuousClock also advances
+        // during sleep, and cannot extend a lease when system time moves backwards.
+        if session != nil, let deadline, deadline <= clockNow() {
             session = nil
+            self.deadline = nil
             return true
         }
         return false
@@ -58,6 +65,7 @@ public final class ComputerSessionStore {
                                     targetStarted: started, created: now(),
                                     expires: now().addingTimeInterval(ttl), artifacts: directory.path)
         try JSONEncoder().encode(value).write(to: directory.appendingPathComponent("session.json"), options: .atomic)
+        deadline = clockNow().advanced(by: .seconds(ttl))
         session = value
         return value
     }
@@ -75,6 +83,7 @@ public final class ComputerSessionStore {
         var value = try require(token)
         try validateTTL(ttl)
         value.expires = now().addingTimeInterval(ttl)
+        deadline = clockNow().advanced(by: .seconds(ttl))
         session = value
         return value
     }
@@ -82,9 +91,10 @@ public final class ComputerSessionStore {
     public func release(_ token: String?) throws {
         _ = try require(token)
         session = nil
+        deadline = nil
     }
 
-    public func stop() { session = nil; paused = true }
+    public func stop() { session = nil; deadline = nil; paused = true }
     public func resume() { paused = false }
 
     private func validateTTL(_ ttl: Double) throws {

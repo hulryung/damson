@@ -4,7 +4,7 @@ import ApplicationServices
 @MainActor
 public final class DesktopAccess {
     private var elements: [String: AXUIElement] = [:]
-    private let eventSource = CGEventSource(stateID: .privateState)
+    private let events = DesktopEvents()
     public static let eventTag: Int64 = 0x44414D534F4E
 
     public init() {}
@@ -102,10 +102,7 @@ public final class DesktopAccess {
             throw ComputerFailure("target_occluded", "The point is not on an exposed window of the target app.")
         }
         for kind: CGEventType in [.leftMouseDown, .leftMouseUp] {
-            guard let event = CGEvent(mouseEventSource: eventSource, mouseType: kind, mouseCursorPosition: point, mouseButton: .left) else {
-                throw ComputerFailure("input", "Cannot create mouse event.")
-            }
-            post(event)
+            post(try events.mouse(kind, at: point))
         }
     }
 
@@ -123,10 +120,7 @@ public final class DesktopAccess {
             try authorize()
             try validate(session, foreground: true)
             for down in [true, false] {
-                guard let event = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: down) else { continue }
-                event.flags = []
-                units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress!) }
-                post(event)
+                post(try events.unicode(units, down: down))
             }
             // Let the target process input and let physical user input revoke this
             // session between characters instead of queuing thousands of events.
@@ -152,9 +146,7 @@ public final class DesktopAccess {
             }
         }
         for down in [true, false] {
-            guard let event = CGEvent(keyboardEventSource: eventSource, virtualKey: code, keyDown: down) else { continue }
-            event.flags = down ? flags : []
-            post(event)
+            post(try events.key(code, down: down, flags: flags))
         }
     }
 
@@ -168,13 +160,7 @@ public final class DesktopAccess {
         guard targetAtPoint(point, pid: session.targetPID) else {
             throw ComputerFailure("target_occluded", "Place the pointer on the target with a click before scrolling.")
         }
-        guard let event = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: 2,
-                                  wheel1: dy, wheel2: dx, wheel3: 0) else {
-            throw ComputerFailure("input", "Cannot create scroll event.")
-        }
-        event.location = point
-        event.flags = []
-        post(event)
+        post(try events.scroll(dx: dx, dy: dy, at: point))
     }
 
     private func targetAtPoint(_ point: CGPoint, pid: Int32) -> Bool {
