@@ -179,6 +179,11 @@ final class CompactTabBarView: NSView {
     /// agree on this set, so it is computed once per update.
     private var hiddenTabs: Set<Int> = []
 
+    /// One rounded band behind each group's run, in the group's colour, keyed by group name.
+    /// A grouped tab is drawn exactly like a loose one, so without this the only sign that a
+    /// group exists is its header chip — and where the group ENDS is not shown at all.
+    private var groupBands: [String: CALayer] = [:]
+
     func update(titles: [String], selectedIndex: Int, groups: [GroupSlot?] = []) {
         self.selectedIndex = selectedIndex
         self.groupSlots = groups.count == titles.count ? groups : Array(repeating: nil, count: titles.count)
@@ -494,6 +499,7 @@ final class CompactTabBarView: NSView {
         for (i, other) in tabButtons.enumerated() where i != idx {
             if let x = positions[i] { moveTab(other, toX: x, animated: true) }
         }
+        layoutGroupBands()
     }
 
     // MARK: - Group drag
@@ -528,6 +534,7 @@ final class CompactTabBarView: NSView {
         for j in drag.first..<(drag.first + drag.count) where j < tabButtons.count {
             tabButtons[j].frame.origin.x = tabBaseX(j) + dx
         }
+        layoutGroupBands()
     }
 
     private func finishGroupDrag() {
@@ -663,6 +670,7 @@ final class CompactTabBarView: NSView {
         newTabButton.frame.origin.x = max(leadingReservation, min(x + 4, rightEdge - btnSize))
         updatePillPathIfNeeded()
         layoutSeparators()
+        layoutGroupBands()
         positionSelectionPill()
     }
 
@@ -710,6 +718,62 @@ final class CompactTabBarView: NSView {
 
     /// Thin vertical dividers on the boundaries between tabs. The two boundaries
     /// touching the selected tab stay hidden — its shape draws that edge itself.
+    /// The span each group occupies on the row right now: its header plus the members still
+    /// on screen. Read from the live frames rather than recomputed from the layout pass, so
+    /// a drag — which moves frames directly — keeps the band under the tabs it belongs to.
+    private func groupRuns() -> [(name: String, colorIndex: Int?, rect: NSRect)] {
+        var runs: [(String, Int?, NSRect)] = []
+        var i = 0
+        while i < groupSlots.count {
+            guard let slot = groupSlots[i], slot.isFirst else { i += 1; continue }
+            var rect = groupHeaders[i]?.frame
+            var j = i
+            while j < groupSlots.count, groupSlots[j]?.name == slot.name {
+                // The tab under the cursor has left the row; stretching the band after it
+                // would claim space the group no longer occupies.
+                if !hiddenTabs.contains(j), j != draggingIndex, j < tabButtons.count {
+                    rect = rect.map { $0.union(tabButtons[j].frame) } ?? tabButtons[j].frame
+                }
+                j += 1
+            }
+            if let rect, rect.width > 0 {
+                runs.append((slot.name, slot.colorIndex, rect.insetBy(dx: -3, dy: 0)))
+            }
+            i = j
+        }
+        return runs
+    }
+
+    private func layoutGroupBands() {
+        var wanted: Set<String> = []
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for run in groupRuns() {
+            wanted.insert(run.name)
+            let band: CALayer
+            if let existing = groupBands[run.name] {
+                band = existing
+            } else {
+                band = CALayer()
+                band.cornerRadius = 9
+                // Behind the separators and the selection shape whatever order those were
+                // created in: the selected tab has to stay cut out of the band, the way
+                // Chrome draws the active tab inside a group strip.
+                band.zPosition = -1
+                layer?.addSublayer(band)
+                groupBands[run.name] = band
+            }
+            band.frame = run.rect
+            band.backgroundColor = TabGroupHeaderView.color(for: run.colorIndex)
+                .withAlphaComponent(0.22).cgColor
+        }
+        for (name, band) in groupBands where !wanted.contains(name) {
+            band.removeFromSuperlayer()
+            groupBands.removeValue(forKey: name)
+        }
+        CATransaction.commit()
+    }
+
     private func layoutSeparators() {
         let needed = max(0, tabButtons.count - 1)
         while separators.count < needed {
