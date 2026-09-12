@@ -6,6 +6,14 @@
         <description>damson release feed</description>
         <language>en</language>
         <item>
+            <title>Damson 0.8.0</title>
+            <pubDate>Sat, 12 Sep 2026 17:09:07 +0000</pubDate>
+            <sparkle:version>432</sparkle:version>
+            <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/hulryung/damson/releases/download/v0.8.0/Damson-0.8.0.dmg" type="application/octet-stream" sparkle:edSignature="QjiyvJh0BArGE01fTmE0CNSdoZZyipT6VyH29mGlOIOdF80nwO2/J2XW9+XdAOVMihjf09IMxQB/P1pf50hiCQ==" length="4092067" />
+        </item>
+        <item>
             <title>Damson 0.7.1</title>
             <pubDate>Fri, 11 Sep 2026 14:47:21 +0000</pubDate>
             <sparkle:version>414</sparkle:version>
