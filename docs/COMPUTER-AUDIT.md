@@ -96,6 +96,22 @@ Status: **in progress; not release-ready yet** (2026-09-12).
   `setup-permissions` CLI returned `shown: true` (PID 92608). Permission grants and
   actual appearance in the macOS lists remain user-dependent and unverified.
 
+## Permission list registration verified (2026-09-13)
+
+- Read-only tccd logs identified stale ad-hoc code requirements for the helper.
+  Installed the helper at `~/Applications/Damson Computer.app` and signed it with
+  the existing Developer ID. Verified its designated requirement is based on
+  bundle ID and signing team, not a build-specific cdhash.
+- Reset only this helper's previously denied Accessibility/ScreenCapture records
+  using tccutil; restarted it and made separate standard permission requests.
+  Selected only Open System Settings in the macOS request dialogs, never Allow
+  or a permission switch. No TCC database was edited.
+- Orca's live System Settings AX tree confirmed Damson Computer exists in both
+  Accessibility and Screen & System Audio Recording, with both switch values 0.
+  Helper PID 69266 responds at the stable installed path, with both permissions
+  false and no active session. This establishes registration, not granted access
+  or successful desktop control. Existing native/game completion gates remain.
+
 ## Outstanding completion gates
 
 - Rerun the full native suite with the latest binary, including scrolling,

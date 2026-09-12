@@ -139,3 +139,27 @@ user has made the desktop available for the test. It never targets user document
 startup against an already paused helper. It performs no screen capture or input and
 asserts that the existing PID and paused state remain unchanged. Startup failures
 return a nonzero process exit code.
+
+## Development builds missing from macOS permission lists
+
+A valid ad-hoc signature is not a stable privacy identity across rebuilds. On the
+2026-09-13 acceptance machine, tccd reported `Failed to match existing code
+requirement` for `app.damson.computer`: its saved requirement contained the old
+binary's cdhash. Repeating permission requests did not repair that stale record.
+Use the same Developer ID signing identity for successive installed builds, and
+keep the helper at a stable location. Do not replace an in-use or newly authorized
+helper with an ad-hoc build while testing permissions.
+
+For this local acceptance run, the helper was installed at
+`~/Applications/Damson Computer.app`, signed with the existing Developer ID, and
+its previously denied Accessibility/ScreenCapture records were reset using
+`tccutil reset SERVICE app.damson.computer`. This is an explicit development repair,
+not startup behavior: never reset a user's permission decision automatically.
+A helper restart was needed to clear the cached screen-capture denial.
+
+Request one permission at a time and finish its macOS **Open System Settings**
+prompt before requesting the next. In this run, requesting screen capture while
+an Accessibility prompt was still open did not produce the screen-recording list
+entry. After completing the separate requests, both lists showed **Damson Computer**
+with switches **off**. No file picker, TCC database edit, or permission grant was
+needed. The user can now enable either switch in System Settings.
