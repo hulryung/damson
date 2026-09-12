@@ -212,3 +212,16 @@ public struct TabGroupLayout: Equatable {
         return true
     }
 }
+
+public extension TabGroupLayout {
+    /// The palette slot to give a new group: the lowest one no existing group uses, then
+    /// round-robin once every slot is taken. Colour is what tells two adjacent groups apart
+    /// at a glance, so neighbours must not share one while a free slot remains.
+    ///
+    /// Groups saved before groups had colours carry none; they do not reserve a slot.
+    func nextColorIndex(paletteCount: Int) -> Int {
+        guard paletteCount > 0 else { return 0 }
+        let taken = Set(groups.values.compactMap { $0.colorIndex })
+        return (0..<paletteCount).first { !taken.contains($0) } ?? (taken.count % paletteCount)
+    }
+}

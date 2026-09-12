@@ -62,7 +62,7 @@ final class TabGroupHeaderView: NSView, ImmediateTitlebarClick {
     func configure(name: String, colorIndex: Int?, collapsed: Bool,
                    memberCount: Int, attention: Bool) {
         nameLabel.stringValue = name
-        nameLabel.textColor = collapsed ? .labelColor : .secondaryLabelColor
+        nameLabel.textColor = .labelColor
         dot.layer?.backgroundColor = Self.color(for: colorIndex).cgColor
         countLabel.stringValue = collapsed ? "\(memberCount)" : ""
         countLabel.isHidden = !collapsed
@@ -71,16 +71,19 @@ final class TabGroupHeaderView: NSView, ImmediateTitlebarClick {
         attentionLabel.stringValue = (collapsed && attention) ? "◑" : ""
         attentionLabel.textColor = .systemOrange
         attentionLabel.isHidden = attentionLabel.stringValue.isEmpty
-        layer?.backgroundColor = collapsed
-            ? NSColor.labelColor.withAlphaComponent(0.10).cgColor
-            : NSColor.labelColor.withAlphaComponent(0.05).cgColor
+        // Tinted with the group's own colour, a shade stronger than the band the bar
+        // draws behind the run, so the chip reads as the handle of that band rather than
+        // as one more grey tab. Folded groups get more of it — then the chip IS the group.
+        layer?.backgroundColor = Self.color(for: colorIndex)
+            .withAlphaComponent(collapsed ? 0.55 : 0.34).cgColor
         needsLayout = true
     }
 
     /// A palette rather than a stored colour, so a theme change moves the hue with it.
+    static let palette: [NSColor] = [.systemBlue, .systemGreen, .systemOrange, .systemPurple,
+                                     .systemPink, .systemTeal, .systemYellow, .systemRed]
+
     static func color(for index: Int?) -> NSColor {
-        let palette: [NSColor] = [.systemBlue, .systemGreen, .systemOrange, .systemPurple,
-                                  .systemPink, .systemTeal, .systemYellow, .systemRed]
         guard let index else { return .systemGray }
         return palette[((index % palette.count) + palette.count) % palette.count]
     }

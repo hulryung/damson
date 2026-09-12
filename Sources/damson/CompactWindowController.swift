@@ -247,6 +247,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
                 addTab(tree: PaneTreeView(restoredRoot: root), customTitle: title)
             }
             groupLayout = layout
+            colorUncoloredGroups()
             // `selectedTab` is an index into the SAVED order, so it moves with everything else.
             let sel = order.firstIndex(of: restore.selectedTab) ?? restore.selectedTab
             if sel >= 0 && sel < tabs.count { selectTab(sel) }
@@ -305,7 +306,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             self?.moveTab(at: idx, toWindowAt: point) ?? false
         }
         tabBar.onTabRenamed = { [weak self] idx, title in self?.renameTab(idx, to: title) }
-        tabBar.onGroupToggled = { [weak self] name in self?.toggleGroupCollapsed(named: name) }
+        tabBar.onGroupToggled = { [weak self] name in self?.toggleGroupFromHeader(named: name) }
         tabBar.onGroupMoved = { [weak self] name, to in self?.moveGroup(named: name, to: to) }
         tabBar.onGroupRenamed = { [weak self] name, new in
             _ = self?.renameGroup(named: name, to: new)
@@ -556,7 +557,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         if let existing = groupLayout.group(named: name) {
             id = existing.id
         } else {
-            let fresh = TabGroup(name: name)
+            let fresh = TabGroup(name: name, colorIndex: nextGroupColorIndex())
             groupLayout.define(fresh)
             id = fresh.id
         }
@@ -570,6 +571,23 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         }
         refreshTabBar()
         return true
+    }
+
+    /// The palette slot for a new group. Until this existed every group was created with no
+    /// colour at all and the whole palette went unused — every group drew grey, which is
+    /// exactly the bar's own colour, so a grouped tab looked like a loose one.
+    private func nextGroupColorIndex() -> Int {
+        groupLayout.nextColorIndex(paletteCount: TabGroupHeaderView.palette.count)
+    }
+
+    /// Groups saved before groups had colours come back with none. Give them one on the way
+    /// in rather than leaving those windows grey forever.
+    private func colorUncoloredGroups() {
+        for group in groupLayout.orderedGroups() where group.colorIndex == nil {
+            var colored = group
+            colored.colorIndex = nextGroupColorIndex()
+            groupLayout.update(colored)
+        }
     }
 
     /// Whether this window holds a group by that name.
@@ -651,7 +669,24 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         }
     }
 
-    /// Fold or unfold a group by name, from the header click or the control socket.
+    /// Clicking a group's header. Unfolding also selects the group's first tab, so the
+    /// click lands somewhere: a header that only unfolded left the user looking at a row of
+    /// tabs with the same pane still on screen, and the tab they came for is almost always
+    /// the one they just revealed. Folding keeps `toggleGroupCollapsed`'s own rule, which
+    /// moves the selection out of the tabs about to disappear.
+    ///
+    /// `damson-cli group expand` deliberately does NOT go through here: a scripted expand
+    /// that stole the selection would surprise whatever was driving it.
+    func toggleGroupFromHeader(named name: String) {
+        syncGroupLayout()
+        let wasCollapsed = groupLayout.group(named: name)?.collapsed ?? false
+        guard toggleGroupCollapsed(named: name) == .ok, wasCollapsed else { return }
+        guard let group = groupLayout.group(named: name),
+              let first = groupLayout.range(of: group.id)?.first else { return }
+        selectTab(first, transition: .switch(fromIndex: currentIndex, towardRight: nil))
+    }
+
+    /// Fold or unfold a group by name, from `toggleGroupFromHeader` or the control socket.
     ///
     /// Folding the group that holds the active tab would leave the user unable to see where
     /// they are, so activation moves to the nearest tab outside the group first. If there is

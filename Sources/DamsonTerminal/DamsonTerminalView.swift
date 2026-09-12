@@ -2127,6 +2127,21 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             return
         }
 
+        // A modified cursor/navigation key, encoded here rather than left to the text
+        // system: AppKit turns Option+Up into a paragraph motion and Shift+Up into a
+        // selection command, and `doCommand` receives either a selector with the modifier
+        // stripped or — for most combinations — nothing at all, so the PTY saw no bytes
+        // whatsoever. Measured before the fix: plain ↑ arrived as ESC [A while ⌥↑, ⇧↑ and
+        // ⌥← arrived as nothing, which is why Codex's "⌥ + ↑ to answer" could not be
+        // answered. Skipped mid-composition, where the IME owns the arrows.
+        if markedText.isEmpty, let key = NavKey(keyCode: event.keyCode),
+           let seq = key.sequence(shift: mods.contains(.shift),
+                                  option: mods.contains(.option),
+                                  control: mods.contains(.control)) {
+            session.write(Data(seq))
+            return
+        }
+
         // Everything else: send to NSTextInputContext. Handles Korean/Japanese/
         // Chinese IME composition, plain input, Enter/Tab/arrows (the doCommand
         // path), Backspace (doCommand), etc. consistently.
