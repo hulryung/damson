@@ -160,7 +160,11 @@ public final class DesktopAccess {
         guard targetAtPoint(point, pid: session.targetPID) else {
             throw ComputerFailure("target_occluded", "Place the pointer on the target with a click before scrolling.")
         }
-        post(try events.scroll(dx: dx, dy: dy, at: point))
+        // Route to the already validated foreground target. Session-tap posting
+        // can return successfully without delivering a scroll to this application.
+        let event = try events.scroll(dx: dx, dy: dy, at: point)
+        event.setIntegerValueField(.eventSourceUserData, value: Self.eventTag)
+        event.postToPid(session.targetPID)
     }
 
     private func targetAtPoint(_ point: CGPoint, pid: Int32) -> Bool {
@@ -180,7 +184,7 @@ public final class DesktopAccess {
 
     private func post(_ event: CGEvent) {
         event.setIntegerValueField(.eventSourceUserData, value: Self.eventTag)
-        event.post(tap: event.type == .scrollWheel ? .cgSessionEventTap : .cghidEventTap)
+        event.post(tap: .cghidEventTap)
     }
 
     private func requireAccessibility() throws {

@@ -130,6 +130,23 @@ Status: **in progress; not release-ready yet** (2026-09-12).
 - Requested another uninterrupted test window. Scroll, long-input cancellation,
   game play, panel interaction, and CLI restart/revocation still need live evidence.
 
+## Continued native debugging (2026-09-13)
+
+- Reproduced the scroll failure with the current signed helper: the command returned
+  success, but the fixture recorded no scrollWheel events and its scroll offset
+  stayed at zero. Changed scroll posting from the session tap to the already
+  validated foreground target PID. This is a candidate fix, not a verified pass.
+- Instrumented the native fixture's actual key/mouse events. Cmd+A arrived with
+  the Command flag, but the bare fixture lacked a standard Edit/Select All menu.
+  Added the real responder-chain Select All action so nonempty selection and the
+  long-input cancellation sequence can be tested meaningfully.
+- Rebuilt and installed the scroll candidate at the existing Developer-ID-signed
+  helper path; both permissions survived the update. Release build and 17 selected
+  Computer tests passed; these do not prove delivery to an actual app.
+- The next native run was interrupted by external mouse movement before its
+  ownership check completed. Helper PID 69958 remains paused with no active lease.
+  Asked for another input-free test interval; did not resume that interruption.
+
 ## Outstanding completion gates
 
 - Rerun the full native suite with the latest binary, including scrolling,

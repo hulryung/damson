@@ -9,11 +9,22 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var scrollPosition: CGFloat = 0
     var scrollEvents: [[String: Any]] = []
     var eventMonitor: Any?
+    var inputMonitor: Any?
+    var inputEvents: [[String: Any]] = []
     var timer: Timer?
     var lastSaved: Data?
     let output = ProcessInfo.processInfo.environment["DAMSON_COMPUTER_FIXTURE_STATE"] ?? "/tmp/damson-computer-fixture-state.json"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A bare AppKit fixture has no standard Edit menu. Supply the real
+        // responder-chain action so Cmd+A is meaningful for nonempty text.
+        let menu = NSMenu()
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        menu.addItem(editItem)
+        NSApp.mainMenu = menu
         window = NSWindow(contentRect: NSRect(x: 160, y: 180, width: 520, height: 440),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Damson Computer Acceptance"
@@ -45,6 +56,13 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             self?.save()
             return event
         }
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .leftMouseDown]) { [weak self] event in
+            self?.inputEvents.append(["type": event.type.rawValue, "keyCode": event.type == .leftMouseDown ? -1 : Int(event.keyCode),
+                                      "flags": event.modifierFlags.rawValue])
+            if let self, self.inputEvents.count > 50 { self.inputEvents.removeFirst() }
+            self?.save()
+            return event
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.save() }
@@ -56,7 +74,7 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         if let scroll { scrollPosition = scroll }
         let value: [String: Any] = ["count": count, "text": field.stringValue, "pid": getpid(),
                                     "scroll": scrollPosition, "scrollEvents": scrollEvents,
-                                    "editing": field.currentEditor() != nil,
+                                    "editing": field.currentEditor() != nil, "inputEvents": inputEvents,
                                     "selectionLength": field.currentEditor()?.selectedRange.length ?? -1]
         let data = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
         if data == lastSaved { return }
