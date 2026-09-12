@@ -81,6 +81,8 @@ try:
     assert pathlib.Path(capture["path"]).read_bytes().startswith(b"\x89PNG")
     assert capture["pixelWidth"] > 0 and capture["scaleX"] > 0
     assert call("click", ok=False, session=token, x=-100000, y=-100000)["code"] == "target_occluded"
+    call("focus", session=token)
+    wait_for(lambda: any(app["pid"] == pid and app["active"] for app in call("apps")["apps"]))
     scroll = next(node for node in nodes if node.get("AXRole") == "AXScrollArea")
     bounds = scroll["bounds"]
     call("click", session=token, x=bounds["x"]+100, y=bounds["y"]+100)

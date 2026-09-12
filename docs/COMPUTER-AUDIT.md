@@ -112,6 +112,24 @@ Status: **in progress; not release-ready yet** (2026-09-12).
   false and no active session. This establishes registration, not granted access
   or successful desktop control. Existing native/game completion gates remain.
 
+## Packaged-helper input acceptance (2026-09-13)
+
+- After the user enabled access, restarting the same signed installed helper made
+  both permission checks true (PID 69549). Native fixture rebuilt from current source.
+- The native test confirmed exclusive ownership, argument rejection, AXPress with
+  duplicate-request suppression, coordinate clicks, cmd+a, exact `Damson 한글 🎮`
+  input, capture, and rejection of an out-of-window click. The retained PNG was
+  visually inspected and shows Count: 2 and the exact input string.
+  Evidence: `~/Library/Application Support/Damson/Computer/sessions/509EC175-C1B1-46D7-A73F-FBED238C0AF9/`.
+- The run then failed with `focus_changed` before scrolling. The test now explicitly
+  focuses the fixture again after capture and waits for actual foreground state.
+  This revised sequence has not passed yet.
+- The next attempt stopped before focus due to external mouse movement
+  (`external_input:NSEventType(rawValue: 5):sourcePID=0`). The helper stayed paused
+  with no lease; no automatic resume was attempted after that interruption.
+- Requested another uninterrupted test window. Scroll, long-input cancellation,
+  game play, panel interaction, and CLI restart/revocation still need live evidence.
+
 ## Outstanding completion gates
 
 - Rerun the full native suite with the latest binary, including scrolling,
