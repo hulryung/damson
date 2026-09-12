@@ -32,7 +32,8 @@ helper, including when the app is nested inside Damson or in a development folde
 
 Both the panel and the DC menu include **Accessibility Settings…** and **Screen Recording
 Settings…** shortcuts. Enable **Damson Computer** in those macOS lists. **Show Helper in
-Finder** reveals the exact bundled app to select when adding it manually. These controls
+Finder** reveals the observed running helper (or the bundled helper before a connection)
+to select when adding it manually. The panel also shows the observed helper path. These controls
 navigate to settings; they do not grant permissions automatically.
 
 Run `permissions` to check access and `permissions --prompt true` to request it. Grant
@@ -139,6 +140,26 @@ user has made the desktop available for the test. It never targets user document
 startup against an already paused helper. It performs no screen capture or input and
 asserts that the existing PID and paused state remain unchanged. Startup failures
 return a nonzero process exit code.
+
+`python3 scripts/test-computer-restart.py PATH_TO_CLI STATE_JSON` restarts the
+idle installed helper without posting desktop input. It checks the unavailable
+interval, old-token rejection, a fresh lease, retained permissions, and final Stop.
+It refuses to resume an external-input pause.
+
+The production panel can be exercised independently of Damson terminal sessions:
+
+```sh
+swift build -c release --product damson
+COMPUTER_TEST_BIN_DIR=$(swift build -c release --show-bin-path)
+swiftc -I "$COMPUTER_TEST_BIN_DIR/Modules" Sources/damson/ComputerControlPanel.swift \
+  scripts/fixtures/computer-panel.swift "$COMPUTER_TEST_BIN_DIR"/DamsonComputer.build/*.o \
+  "$COMPUTER_TEST_BIN_DIR"/DamsonControl.build/*.o -o /tmp/damson-panel-acceptance
+/tmp/damson-panel-acceptance
+```
+
+This runs actual panel button actions against the installed idle helper. It requires
+both permissions already allowed and leaves control stopped. `--hold` keeps the panel
+visible for 45 seconds for external screenshot/accessibility inspection.
 
 ## Development builds missing from macOS permission lists
 

@@ -1,6 +1,6 @@
 # Computer control implementation audit
 
-Status: **in progress; not release-ready yet** (2026-09-12).
+Status: **implementation and local acceptance complete; pending review/release** (2026-09-13).
 
 ## Implemented
 
@@ -205,13 +205,46 @@ Status: **in progress; not release-ready yet** (2026-09-12).
   helper uses the existing Developer ID signature and retains both permissions.
   It is paused with no lease after acceptance. Fixes are local, not yet released.
 
-## Outstanding completion gates
+## Restart, control panel, and final packaging (2026-09-13)
 
-- Merge the verified #34/#35 changes through review before treating them as released.
-- Exercise Damson's Computer Control panel against the permitted packaged helper.
-- Verify live CLI restart invalidation with an existing token and failure cleanup.
-  Duplicate startup exclusion and unit-level restart invalidation are already tested.
-- Re-run affected checks after changes; retain native and game acceptance evidence.
+- `scripts/test-computer-restart.py` passed against the installed signed helper:
+  old PID 71964 exited, unavailable status failed, new PID 72400 had no old lease,
+  the old token was rejected with `invalid_session`, and a new lease could be
+  acquired/released. Both permissions and the actual helper path were unchanged.
+  Cleanup stopped control. This test posts no desktop input.
+- Found and fixed #36: the panel's Start/Reveal paths previously always pointed at
+  its bundle, although the connected helper could run from another installation.
+  The panel now remembers and displays the observed helper path.
+- Compiled the actual production `ComputerControlPanel.swift` into an isolated
+  native acceptance app. Real Resume/Stop/Start button actions updated the live
+  helper and panel status correctly; Start preserved helper PID and paused state.
+  The test asserts the actual path and both permission states, and cleans up with
+  Stop. Existing Damson terminal sessions were not opened or changed.
+- Orca's native observer independently read all panel controls and captured the
+  window via ScreenCaptureKit. Visually checked the screenshot: status, helper
+  path, permission shortcuts, and all buttons fit without clipping. This observer
+  supplied visual evidence only; Damson's own panel sent the management commands.
+- Final `scripts/build-app.sh` succeeded in `/tmp/damson-computer-verified`, including
+  the current app, CLI and helper. That temporary development package is not a
+  signed public release and was not installed over the authorized helper.
 
-The helper is paused after testing. Native and WebKit scroll acceptance now pass.
-Control-panel and live restart validation remain; no release or merge has been performed.
+## Completion audit
+
+| Requirement | Evidence |
+| --- | --- |
+| Separate helper and CLI; app packaging | Final complete bundle build; stable running helper identity |
+| Visible permission setup and actual helper location | User-confirmed macOS entries/grants; live permission status; verified panel/path fix |
+| App/window inspection, AX actions, clicks, Unicode, shortcuts, screenshots | Passing full native acceptance and saved target PNG |
+| Reliable native and web scrolling | Four native and eight WebKit direction checks with actual 150-pixel offsets |
+| Isolation and interruption | Duplicate startup check, invalid/exclusive leases, native in-flight Stop and prior physical interruption evidence |
+| Occlusion including remote web content | WebKit click succeeds; foreign floating window blocks both click and scroll |
+| Expiry, renewal, deduplication, argument validation | 17 Computer tests plus live native request/exclusion checks |
+| Restart and recovery | Live process restart, unavailable interval, old-token rejection, new lease and permission retention |
+| Game interaction through the helper | Saved Snake acceptance: start, trusted movement, pause, AX restart, restart play |
+| Damson management panel | Actual production panel actions against installed helper; native AX/screenshot inspection |
+| Workflow integration and usage documentation | Computer control guide, existing desktop resource scheduling, game fixture integration |
+
+The implementation and local acceptance are complete. Issues #34–#36 remain open
+until their fixes are reviewed and merged. Publishing a signed release and closing
+those tracking issues are delivery follow-ups; no merge or release was performed
+in this acceptance run. The installed helper remains paused with no active lease.

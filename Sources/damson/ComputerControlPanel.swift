@@ -9,6 +9,11 @@ final class ComputerControlPanel: NSWindowController {
     private let status = NSTextField(wrappingLabelWithString: "Checking computer helper…")
     private var timer: Timer?
     private var loading = false
+    private var observedHelperURL: URL?
+
+    private var helperURL: URL {
+        observedHelperURL ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Damson Computer.app")
+    }
 
     private init() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
@@ -77,7 +82,7 @@ final class ComputerControlPanel: NSWindowController {
     }
 
     @objc private func startHelper() {
-        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Damson Computer.app")
+        let helper = helperURL
         guard FileManager.default.fileExists(atPath: helper.path) else {
             status.stringValue = "The helper is not bundled in this build. Use scripts/build-app.sh to build the complete app."
             return
@@ -100,7 +105,7 @@ final class ComputerControlPanel: NSWindowController {
         send("setup-permissions", arguments: ["section": destination.rawValue])
     }
     @objc private func showHelper() {
-        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Damson Computer.app")
+        let helper = helperURL
         guard FileManager.default.fileExists(atPath: helper.path) else {
             let alert = NSAlert()
             alert.messageText = "Computer helper is not installed"
@@ -130,11 +135,11 @@ final class ComputerControlPanel: NSWindowController {
         guard !loading else { return }
         loading = true
         Task {
-            let text = await Task.detached { () -> String in
+            let snapshot = await Task.detached { () -> (String, URL?) in
                 do {
                     let data = try ComputerTransport.call(ComputerRequest(command: "status"))
                     let response = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                    guard let result = response?["result"] as? [String: Any] else { return "Invalid helper response." }
+                    guard let result = response?["result"] as? [String: Any] else { return ("Invalid helper response.", nil) }
                     let permissions = result["permissions"] as? [String: Any] ?? [:]
                     let access = permissions["accessibility"] as? Bool == true ? "allowed" : "needed"
                     let screen = permissions["screenRecording"] as? Bool == true ? "allowed" : "needed"
@@ -146,10 +151,13 @@ final class ComputerControlPanel: NSWindowController {
                     } else if let session = result["session"] as? [String: Any] {
                         state = "In use: \(session["owner"] ?? "")\nTarget app PID: \(session["pid"] ?? "")"
                     } else { state = "Ready — no task owns the desktop." }
-                    return "\(state)\n\nAccessibility: \(access)\nScreen Recording: \(screen)"
-                } catch { return "Helper is stopped or unavailable.\nStart Helper to enable computer control." }
+                    let path = permissions["helperPath"] as? String
+                    let url = path.map { URL(fileURLWithPath: $0) }
+                    return ("\(state)\n\nAccessibility: \(access)\nScreen Recording: \(screen)\n\nHelper: \(path ?? "unknown")", url)
+                } catch { return ("Helper is stopped or unavailable.\nStart Helper to enable computer control.", nil) }
             }.value
-            status.stringValue = text
+            status.stringValue = snapshot.0
+            if let url = snapshot.1 { observedHelperURL = url }
             loading = false
         }
     }
