@@ -1,6 +1,6 @@
 # Computer control implementation audit
 
-Status: **in progress; not release-ready yet** (2026-09-11).
+Status: **in progress; not release-ready yet** (2026-09-12).
 
 ## Implemented
 
@@ -65,6 +65,22 @@ Status: **in progress; not release-ready yet** (2026-09-11).
   user grants are pending. The helper remains paused.
 - The game observer was corrected to read the game's actual `data-status` attribute
   and assert Restart returns to ready before starting another round.
+
+## Resumed audit (2026-09-12)
+
+- Rechecked the packaged helper through its live CLI: PID 4834 responds, has no
+  active session, is not paused, and still reports both Accessibility and Screen
+  Recording denied. No desktop actions were sent; permission/readiness input was
+  requested again for this resumed run.
+- The native acceptance script now checks both permissions and desktop ownership
+  before acquiring a session. It also starts a long text operation, observes a
+  partial value in the fixture's actual editor, sends Stop while the helper is busy,
+  and checks that the request fails, input stops, and the token is revoked. It
+  refuses to resume a pause caused by external input. This new live check is
+  **prepared, not passed**; it still needs the permitted packaged-helper run.
+- Python compilation and `git diff --check` passed. The 16 selected
+  `DamsonComputerTests` passed again with zero failures. These checks do not
+  establish live scrolling, cancellation, game play, or permission identity.
 
 ## Outstanding completion gates
 

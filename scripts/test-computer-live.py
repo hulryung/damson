@@ -41,9 +41,14 @@ def wait_for(predicate):
     raise AssertionError(state())
 
 # Never override a human stop implicitly. The test operator must resume explicitly.
-assert not call("status")["paused"], "Helper is paused; wait for the user and resume explicitly."
+initial_status = call("status")
+assert not initial_status["paused"], "Helper is paused; wait for the user and resume explicitly."
+assert initial_status["session"] is None, "Another session owns the desktop."
+assert initial_status["permissions"]["accessibility"], "Grant Accessibility to the packaged helper first."
+assert initial_status["permissions"]["screenRecording"], "Grant Screen Recording to the packaged helper first."
 lease = call("acquire", pid=pid, owner="native-acceptance", ttl=120)
 token = lease["token"]
+typing = None
 try:
     error = call("acquire", ok=False, pid=pid, owner="other-workflow")
     assert error["code"] == "busy", error
@@ -82,13 +87,50 @@ try:
     time.sleep(.1)
     call("scroll", session=token, dy=-150)
     wait_for(lambda: state().get("scroll", 0) > 0)
+    # Stop must remain responsive while a long Unicode input is in flight.
+    # Observe the real editor before stopping; a short sleep cannot prove partial input.
+    bounds = field["bounds"]
+    call("click", session=token, x=bounds["x"]+30, y=bounds["y"]+bounds["height"]/2)
+    wait_for(lambda: state().get("editing") is True)
+    selection_length = len(state()["text"].encode("utf-16-le")) // 2
+    call("key", session=token, key="cmd+a")
+    wait_for(lambda: state().get("selectionLength") == selection_length)
+    payload = "x" * 3000
+    typing = subprocess.Popen([cli, "type", "--session", token, "--text", payload],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    wait_for(lambda: 20 <= len(state()["text"]) < len(payload)
+             and state()["text"] == "x" * len(state()["text"]))
+    assert call("status")["busy"], "Typing finished before cancellation could be tested."
     call("stop")
+    stdout, stderr = typing.communicate(timeout=5)
+    interrupted = json.loads(stdout)
+    assert typing.returncode != 0 and not interrupted["ok"], (stdout, stderr)
+    assert interrupted["error"]["code"] == "paused", interrupted
+    # Allow already-dispatched events to drain, then ensure no new text arrives.
+    time.sleep(.2)
+    stopped_text = state()["text"]
+    assert 0 < len(stopped_text) < len(payload), state()
+    until = time.monotonic() + .5
+    while time.monotonic() < until:
+        assert state()["text"] == stopped_text, "Input continued after Stop."
+        time.sleep(.05)
+    stopped = call("status")
+    assert not stopped["busy"] and stopped["session"] is None, stopped
+    assert stopped["pauseReason"] == "requested", "A user interruption must not be resumed by this test."
     assert call("key", ok=False, session=token, key="a")["code"] == "paused"
     call("resume")
     assert call("key", ok=False, session=token, key="a")["code"] == "invalid_session"
     print(json.dumps({"passed": True, "artifacts": lease["artifacts"], "capture": capture,
                       "checks": ["global exclusion", "strict arguments", "AX press", "request deduplication",
                                  "coordinate click", "Unicode typing", "keyboard shortcut", "screenshot",
-                                 "occlusion guard", "scroll", "stop/revoke"]}, indent=2))
+                                 "occlusion guard", "scroll", "stop/revoke", "long input cancellation"]}, indent=2))
 finally:
-    call("stop")
+    try:
+        call("stop")
+    finally:
+        if typing is not None and typing.poll() is None:
+            try:
+                typing.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                typing.kill()
+                typing.communicate(timeout=5)
