@@ -137,12 +137,11 @@ if [[ "$running_inside_target" == "true" ]]; then
     echo "    2. Damson menu > Restart Damson"
 fi
 
-# 3b) Link damson-cli onto PATH. build-app.sh only drops it in Contents/Resources, so
-#     without this `damson-cli` is not a command and nothing outside the app — a script, a
-#     coordinator driving `spawn`/`watch-agents` — can reach the control socket at all.
+# 3b) Link the bundled CLIs onto PATH for terminal, workflow, and desktop control.
+#     build-app.sh places these executables in Contents/Resources.
 #     Skipped rather than sudo-prompting if the target directory is not writable.
 CLI_LINK_DIR="${CLI_LINK_DIR:-/usr/local/bin}"
-for tool in damson-cli damson-crew; do
+for tool in damson-cli damson-crew damson-computer; do
     SRC="$DEST/Contents/Resources/$tool"
     [[ -x "$SRC" ]] || continue
     if [[ -d "$CLI_LINK_DIR" && -w "$CLI_LINK_DIR" ]]; then
