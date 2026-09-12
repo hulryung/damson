@@ -161,8 +161,8 @@ public final class DesktopAccess {
             throw ComputerFailure("target_occluded", "Place the pointer on the target with a click before scrolling.")
         }
         let event = try events.scroll(dx: dx, dy: dy, at: point)
-        event.setIntegerValueField(.eventSourceUserData, value: Self.eventTag)
-        event.postToPid(session.targetPID)
+        // Let WindowServer resolve global coordinates into the hit-tested window.
+        post(event)
         return ["dispatched": true, "verificationRequired": true, "x": point.x, "y": point.y]
     }
 
@@ -178,7 +178,14 @@ public final class DesktopAccess {
         guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &element) == .success,
               let element else { return false }
         var owner: pid_t = 0
-        return AXUIElementGetPid(element, &owner) == .success && owner == pid
+        if AXUIElementGetPid(element, &owner) == .success && owner == pid { return true }
+        // WebKit exposes content through a separate accessibility process. Only
+        // accept it when its containing AX window belongs to the leased app.
+        var windowValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &windowValue) == .success,
+              let windowValue, CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { return false }
+        let window = unsafeBitCast(windowValue, to: AXUIElement.self)
+        return AXUIElementGetPid(window, &owner) == .success && owner == pid
     }
 
     private func post(_ event: CGEvent) {

@@ -169,14 +169,49 @@ Status: **in progress; not release-ready yet** (2026-09-12).
   pass. Reinstalled the signed helper and left it paused with no session; stopped
   the temporary game server. No merge or release performed.
 
+## Verified scroll and remote WebKit hit testing (2026-09-13)
+
+- Fixed #34: dispatch a standalone continuous pixel scroll with scroll count 1
+  through the HID event path after foreground and AX hit-test checks. Global
+  coordinates now reach the correct local window position. In this environment,
+  count-zero events were not delivered reliably; Mos remained running and its
+  settings were not changed. The exact downstream cause is not established.
+- Removed unsuccessful PID/window-tag and synthetic gesture experiments. Phased
+  gestures caused overshoot and affected subsequent input; the final event has no
+  phase or momentum state and requires no asynchronous gap.
+- Fixed #35: WebKit hit-test elements can belong to its content process. Accept
+  that element only when its containing AX window belongs to the leased host app.
+  Unknown ownership still fails closed.
+- The full native acceptance suite now exits successfully, including four actual
+  150-pixel up/down movements, Unicode/selection, screenshots, exclusion, request
+  deduplication, occlusion rejection, token revocation and in-flight cancellation.
+  Evidence: session `4BFB71D8-55AD-4CA4-BC87-B4002C72523F`, local log
+  `/tmp/damson-native-scroll-fixed.log`.
+- Added `scripts/fixtures/computer-scroll.swift` and `scripts/test-computer-scroll.py`.
+  The isolated WKWebView observes DOM scroll offsets and trusted wheel events;
+  JavaScript does not perform input. Eight horizontal/vertical operations each
+  moved exactly 150 CSS pixels and returned to the origin. A separate floating
+  occluder then blocked both coordinate click and scroll as expected.
+  Evidence: session `981A47AD-2D84-4A47-AFF8-80AFEFA5791E`, local log
+  `/tmp/damson-web-scroll-occlusion.log`. The captured target was visually inspected
+  on the preceding successful WebKit run.
+- Build the web fixture with `swiftc scripts/fixtures/computer-scroll.swift -o
+  /tmp/damson-scroll-fixture`, launch it as an isolated regular app, wait for
+  `/tmp/damson-computer-scroll-state.json` to contain its live PID, then run:
+  `python3 scripts/test-computer-scroll.py CLI /tmp/damson-computer-scroll-state.json
+  /tmp/damson-scroll-fixture`. The executable argument is used for the temporary
+  foreign occluder; the test terminates that process in cleanup.
+- Release helper build and 17 Computer unit tests pass. The installed standalone
+  helper uses the existing Developer ID signature and retains both permissions.
+  It is paused with no lease after acceptance. Fixes are local, not yet released.
+
 ## Outstanding completion gates
 
-- Fix issue #34 and rerun native viewport scrolling, including both directions and
-  a real web view. The full native suite must exit successfully.
+- Merge the verified #34/#35 changes through review before treating them as released.
 - Exercise Damson's Computer Control panel against the permitted packaged helper.
 - Verify live CLI restart invalidation with an existing token and failure cleanup.
   Duplicate startup exclusion and unit-level restart invalidation are already tested.
 - Re-run affected checks after changes; retain native and game acceptance evidence.
 
-The helper is paused after testing. Scroll is an implementation failure, not a
-permission blocker. No release or merge has been performed.
+The helper is paused after testing. Native and WebKit scroll acceptance now pass.
+Control-panel and live restart validation remain; no release or merge has been performed.

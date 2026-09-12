@@ -87,14 +87,17 @@ try:
     bounds = scroll["bounds"]
     call("click", session=token, x=bounds["x"]+100, y=bounds["y"]+100)
     time.sleep(.1)
-    scroll_before = state().get("scroll", 0)
-    print("Scroll dispatch:", call("scroll", session=token, dy=-150), flush=True)
     scroll_passed = True
     try:
-        wait_for(lambda: state().get("scroll", 0) > scroll_before)
+        for delta in [-150, 150, -150, 150]:
+            scroll_before = state().get("scroll", 0)
+            print("Scroll dispatch:", call("scroll", session=token, dy=delta), flush=True)
+            wait_for(lambda: (state().get("scroll", 0) - scroll_before) * delta < 0)
+            time.sleep(.2)
+            assert abs(state()["scroll"] - (scroll_before - delta)) <= 1, state()
     except AssertionError:
         scroll_passed = False
-        print("Scroll failed: actual offset stayed unchanged", flush=True)
+        print("Scroll failed: actual viewport did not move by the expected pixel delta", flush=True)
     # Stop must remain responsive while a long Unicode input is in flight.
     # Observe the real editor before stopping; a short sleep cannot prove partial input.
     bounds = field["bounds"]

@@ -38,6 +38,9 @@ struct DesktopEvents {
                                   wheel1: dy, wheel2: dx, wheel3: 0) else {
             throw ComputerFailure("input", "Cannot create scroll event.")
         }
+        // This is one standalone continuous pixel scroll, with no gesture left
+        // open. A zero count can be consumed or re-smoothed by mouse utilities.
+        event.setIntegerValueField(.scrollWheelEventScrollCount, value: 1)
         event.location = point
         event.flags = []
         return event

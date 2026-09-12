@@ -27,6 +27,10 @@ final class DesktopEventsTests: XCTestCase {
         XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1), -150)
         XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2), 42)
         XCTAssertTrue(event.flags.isEmpty)
+        XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventIsContinuous), 1)
+        XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventScrollCount), 1)
+        XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventScrollPhase), 0)
+        XCTAssertEqual(event.getIntegerValueField(.scrollWheelEventMomentumPhase), 0)
     }
 
     func testMousePreservesNegativeFractionalGlobalPoints() throws {
