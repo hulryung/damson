@@ -57,7 +57,7 @@ final class ComputerPermissionSetup: NSWindowController {
         if let destination { request(destination) }
         if timer == nil {
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self, self.window?.isVisible == true else { return }
                     self.refresh()
                 }

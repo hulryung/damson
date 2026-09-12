@@ -12,8 +12,10 @@ jobs:
       - uses: actions/checkout@v5
       - name: Test crew, agent observation, and control protocol
         run: swift test --filter 'DamsonCrewTests|DamsonAgentsTests|DamsonControlTests|DamsonComputerTests'
-      - name: Build coordinator
-        run: swift build --product damson-crew
+      - name: Build coordinator and app
+        run: |
+          swift build --product damson-crew
+          swift build --product damson
       - name: Test CLI teardown against an isolated socket
         run: python3 scripts/test-crew-cli.py .build/debug/damson-crew
       - name: Test managed workflows with real worker processes

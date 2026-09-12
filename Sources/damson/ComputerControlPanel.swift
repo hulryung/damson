@@ -73,7 +73,7 @@ final class ComputerControlPanel: NSWindowController {
         refresh()
         if timer == nil {
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self, self.window?.isVisible == true else { return }
                     self.refresh()
                 }
@@ -90,7 +90,7 @@ final class ComputerControlPanel: NSWindowController {
         let config = NSWorkspace.OpenConfiguration()
         config.activates = false
         NSWorkspace.shared.openApplication(at: helper, configuration: config) { [weak self] _, error in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 if let error { self?.status.stringValue = error.localizedDescription } else { self?.refresh() }
             }
         }

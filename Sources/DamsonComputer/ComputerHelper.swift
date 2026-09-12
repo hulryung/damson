@@ -12,7 +12,7 @@ private final class ComputerHelperDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
             try server.start { [weak self] request, completion in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self else { completion(Data("{\"ok\":false}".utf8)); return }
                     completion(await self.engine.handle(request))
                 }
@@ -43,7 +43,7 @@ private final class ComputerHelperDelegate: NSObject, NSApplicationDelegate {
             // WindowServer can send a zero-delta mouseMoved when a window opens
             // under a stationary cursor. That is not a user moving the mouse.
             if event.type == .mouseMoved, event.deltaX == 0, event.deltaY == 0 { return }
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self, self.engine.sessions.session != nil else { return }
                 let sourcePID = event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? -1
                 self.engine.interruptForInput(timestamp: event.timestamp,
@@ -51,7 +51,7 @@ private final class ComputerHelperDelegate: NSObject, NSApplicationDelegate {
             }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.engine.sessions.expire()
                 self.refresh()
