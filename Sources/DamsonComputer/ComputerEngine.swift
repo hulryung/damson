@@ -103,7 +103,7 @@ public final class ComputerEngine {
                 _ = try sessions.require(session.token)
             }
         case "key": try desktop.key(required(args, "key"), session: session)
-        case "scroll": try desktop.scroll(dx: integer(args, "dx", default: 0), dy: integer(args, "dy"), session: session)
+        case "scroll": return try desktop.scroll(dx: integer(args, "dx", default: 0), dy: integer(args, "dy"), session: session)
         case "capture":
             let id: UInt32 = try integer(args, "window")
             busy = true

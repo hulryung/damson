@@ -147,19 +147,36 @@ Status: **in progress; not release-ready yet** (2026-09-12).
   ownership check completed. Helper PID 69958 remains paused with no active lease.
   Asked for another input-free test interval; did not resume that interruption.
 
+## Native cancellation and game acceptance (2026-09-13)
+
+- Observed the native fixture while a 3,000-character operation was in flight.
+  Stop returned, the type request failed with `paused`, only a prefix was inserted,
+  text remained unchanged after event draining, and the old token was rejected
+  after Resume. This now supplies live evidence for long-input cancellation.
+- The test retains scroll failure as a failing exit status but continues independent
+  checks while authority remains valid. It reports passed checks separately and
+  compares scroll position against the pre-action offset, avoiding stale success.
+- Snake acceptance passed: actual start, trusted ArrowDown input, canvas movement,
+  pause, AXPress Restart returning to ready, and another start. Saved three captures
+  in `~/Library/Application Support/Damson/Computer/sessions/E1A5D655-2BDB-4D81-BD37-0E100EDA62DB/`;
+  inspected the paused-game PNG. WebKit initially omitted Restart from the AX tree;
+  the observer now waits for it rather than assuming the first snapshot is complete.
+- Scroll remains reproducibly broken. Dispatch coordinates were observed as the
+  intended global point. Alternative sources/units/taps/window metadata did not
+  establish a passing viewport check and were removed. Kept target-PID delivery
+  and added dispatch coordinates for diagnosis. Tracked in GitHub issue #34.
+- Final release CLI build, Python compilation, diff checks, and 17 Computer tests
+  pass. Reinstalled the signed helper and left it paused with no session; stopped
+  the temporary game server. No merge or release performed.
+
 ## Outstanding completion gates
 
-- Rerun the full native suite with the latest binary, including scrolling,
-  stop/revoke, and interruption of a long text operation.
-- Verify the packaged helper's launch and actual macOS permission identity;
-  development-process inherited permissions are not sufficient evidence.
-- Exercise Damson's Computer Control panel against that helper.
-- Run the real Snake game via `computer-game.swift` and
-  `test-computer-game.py`: start, trusted direction input, movement, pause,
-  restart, and retained screenshots.
-- Verify helper restart invalidation and failure cleanup through the CLI.
-  Duplicate startup exclusion is already verified.
-- Re-run affected checks after any changes and update this audit with final evidence.
+- Fix issue #34 and rerun native viewport scrolling, including both directions and
+  a real web view. The full native suite must exit successfully.
+- Exercise Damson's Computer Control panel against the permitted packaged helper.
+- Verify live CLI restart invalidation with an existing token and failure cleanup.
+  Duplicate startup exclusion and unit-level restart invalidation are already tested.
+- Re-run affected checks after changes; retain native and game acceptance evidence.
 
-The desktop tests are paused pending the user's indication that the desktop is
-available. No release or merge has been performed.
+The helper is paused after testing. Scroll is an implementation failure, not a
+permission blocker. No release or merge has been performed.

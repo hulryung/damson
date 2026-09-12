@@ -150,7 +150,7 @@ public final class DesktopAccess {
         }
     }
 
-    public func scroll(dx: Int32, dy: Int32, session: ComputerSession) throws {
+    public func scroll(dx: Int32, dy: Int32, session: ComputerSession) throws -> [String: Any] {
         try requireAccessibility()
         try validate(session, foreground: true)
         guard abs(Int64(dx)) <= 2000, abs(Int64(dy)) <= 2000 else {
@@ -160,11 +160,10 @@ public final class DesktopAccess {
         guard targetAtPoint(point, pid: session.targetPID) else {
             throw ComputerFailure("target_occluded", "Place the pointer on the target with a click before scrolling.")
         }
-        // Route to the already validated foreground target. Session-tap posting
-        // can return successfully without delivering a scroll to this application.
         let event = try events.scroll(dx: dx, dy: dy, at: point)
         event.setIntegerValueField(.eventSourceUserData, value: Self.eventTag)
         event.postToPid(session.targetPID)
+        return ["dispatched": true, "verificationRequired": true, "x": point.x, "y": point.y]
     }
 
     private func targetAtPoint(_ point: CGPoint, pid: Int32) -> Bool {

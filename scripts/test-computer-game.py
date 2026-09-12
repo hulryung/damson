@@ -55,9 +55,16 @@ try:
         yield node
         for child in node.get('children', []):
             yield from walk(child)
-    tree = call('inspect', session=session)['tree']
-    restart = next(n for n in walk(tree) if n.get('AXRole') == 'AXButton'
-                   and 'Restart' in (n.get('AXTitle', '') + n.get('AXDescription', '')))
+    restart = None
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        tree = call('inspect', session=session)['tree']
+        restart = next((n for n in walk(tree) if n.get('AXRole') == 'AXButton'
+                        and 'Restart' in (n.get('AXTitle', '') + n.get('AXDescription', ''))), None)
+        if restart is not None:
+            break
+        time.sleep(.1)
+    assert restart is not None, 'Restart button did not appear in the live accessibility tree.'
     call('press', session=session, element=restart['id'])
     wait(lambda s: s['state'] == 'ready')
     call('key', session=session, key='space')

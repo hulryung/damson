@@ -87,8 +87,14 @@ try:
     bounds = scroll["bounds"]
     call("click", session=token, x=bounds["x"]+100, y=bounds["y"]+100)
     time.sleep(.1)
-    call("scroll", session=token, dy=-150)
-    wait_for(lambda: state().get("scroll", 0) > 0)
+    scroll_before = state().get("scroll", 0)
+    print("Scroll dispatch:", call("scroll", session=token, dy=-150), flush=True)
+    scroll_passed = True
+    try:
+        wait_for(lambda: state().get("scroll", 0) > scroll_before)
+    except AssertionError:
+        scroll_passed = False
+        print("Scroll failed: actual offset stayed unchanged", flush=True)
     # Stop must remain responsive while a long Unicode input is in flight.
     # Observe the real editor before stopping; a short sleep cannot prove partial input.
     bounds = field["bounds"]
@@ -122,10 +128,11 @@ try:
     assert call("key", ok=False, session=token, key="a")["code"] == "paused"
     call("resume")
     assert call("key", ok=False, session=token, key="a")["code"] == "invalid_session"
-    print(json.dumps({"passed": True, "artifacts": lease["artifacts"], "capture": capture,
+    print(json.dumps({"passed": scroll_passed, "scrollPassed": scroll_passed, "artifacts": lease["artifacts"], "capture": capture,
                       "checks": ["global exclusion", "strict arguments", "AX press", "request deduplication",
                                  "coordinate click", "Unicode typing", "keyboard shortcut", "screenshot",
-                                 "occlusion guard", "scroll", "stop/revoke", "long input cancellation"]}, indent=2))
+                                 "occlusion guard", "stop/revoke", "long input cancellation"] + (["scroll"] if scroll_passed else [])}, indent=2))
+    assert scroll_passed, "Scroll did not move the actual viewport."
 finally:
     try:
         call("stop")
