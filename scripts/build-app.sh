@@ -36,6 +36,7 @@ swift build -c release --product damson
 swift build -c release --product damson-cli
 swift build -c release --product damson-crew
 swift build -c release --product damson-keeper
+swift build -c release --product damson-computer
 
 # To build an arm64 + x86_64 universal binary, add --arch arm64 --arch x86_64
 # (for now only the build machine's architecture; CI handles universal).
@@ -74,6 +75,28 @@ chmod 0755 "$RESOURCES_DIR/damson-crew"
 # damson-keeper — session-survival daemon spawned by the app at restart handoff.
 cp "$KEEPER_BIN" "$MACOS_DIR/damson-keeper"
 chmod 0755 "$MACOS_DIR/damson-keeper"
+
+# Computer control has a stable app identity for macOS privacy permissions.
+cp "$BIN_DIR/damson-computer" "$RESOURCES_DIR/damson-computer"
+COMPUTER_APP="$CONTENTS/Helpers/Damson Computer.app"
+mkdir -p "$COMPUTER_APP/Contents/MacOS"
+cp "$BIN_DIR/damson-computer" "$COMPUTER_APP/Contents/MacOS/damson-computer"
+python3 - "$COMPUTER_APP/Contents/Info.plist" "$MARKETING_VERSION" "$BUILD_NUMBER" <<'PYINFO'
+import plistlib, sys
+with open(sys.argv[1], 'wb') as output:
+    plistlib.dump({
+        'CFBundleExecutable': 'damson-computer',
+        'CFBundleIdentifier': 'app.damson.computer',
+        'CFBundleName': 'Damson Computer',
+        'CFBundleDisplayName': 'Damson Computer',
+        'CFBundlePackageType': 'APPL',
+        'CFBundleShortVersionString': sys.argv[2],
+        'CFBundleVersion': sys.argv[3],
+        'LSMinimumSystemVersion': '13.0',
+        'LSUIElement': True,
+        'NSHighResolutionCapable': True,
+    }, output)
+PYINFO
 
 # Sparkle.framework — SwiftPM does not auto-bundle it into the .app, so copy it directly.
 # The RPATH of the SwiftPM-built binary is only @loader_path (= the MacOS directory,

@@ -77,6 +77,14 @@ tests is supporting evidence, not a substitute for this check. Fix observed defe
 the requested scope and repeat affected checks. Report the runnable artifact, how to run it,
 and exactly what was verified. Do not claim completion from status labels alone.
 
+## Desktop verification
+
+When the deliverable requires actual macOS screen interaction, use the bundled
+`damson-computer` helper. Read [references/computer.md](references/computer.md) before
+acquiring the desktop. Keep build/logic tests parallel; give UI verification a desktop
+resource and acquire a helper lease, which also excludes unrelated workflows. Record
+screenshots and verify app state after input. A user interruption is a stop, not a retry.
+
 ## Control invariants
 
 - Prompts go in argv, never `send-text` into a live TUI; that has no delivery acknowledgment.

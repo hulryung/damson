@@ -7,6 +7,7 @@ let package = Package(
         .macOS(.v13),
     ],
     products: [
+        .executable(name: "damson-computer", targets: ["damson-computer"]),
         // Engine library — the GPU terminal + VT stack. Also consumed downstream by
         // the Orchard cockpit (github.com/hulryung/damson-ide), so treat its public
         // API as a versioned contract: coordinate breaking changes with a tag bump.
@@ -54,6 +55,9 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
     ],
     targets: [
+        .target(name: "DamsonComputer", dependencies: ["DamsonControl"]),
+        .executableTarget(name: "damson-computer", dependencies: ["DamsonComputer"]),
+        .testTarget(name: "DamsonComputerTests", dependencies: ["DamsonComputer"]),
         .target(
             name: "DamsonTerminal",
             path: "Sources/DamsonTerminal"
@@ -93,6 +97,7 @@ let package = Package(
                 "DamsonAgents",
                 "DamsonTabGroups",
                 "DamsonCrew",
+                "DamsonComputer",
                 "CFDPass",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
