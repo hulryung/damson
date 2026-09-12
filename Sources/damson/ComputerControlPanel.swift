@@ -27,7 +27,7 @@ final class ComputerControlPanel: NSWindowController {
         stack.addArrangedSubview(note)
         let controls = NSStackView()
         for (title, action) in [("Start Helper", #selector(startHelper)), ("Stop", #selector(stop)),
-                                ("Resume", #selector(resume)), ("Permissions…", #selector(permissions))] {
+                                ("Resume", #selector(resume)), ("Set Up Permissions…", #selector(permissions))] {
             controls.addArrangedSubview(NSButton(title: title, target: self, action: action))
         }
         stack.addArrangedSubview(controls)
@@ -38,7 +38,7 @@ final class ComputerControlPanel: NSWindowController {
         settings.addArrangedSubview(NSButton(title: "Accessibility Settings…", target: self, action: #selector(openAccessibility)))
         settings.addArrangedSubview(NSButton(title: "Screen Recording Settings…", target: self, action: #selector(openScreenRecording)))
         stack.addArrangedSubview(settings)
-        let permissionHelp = NSTextField(wrappingLabelWithString: "Enable Damson Computer in System Settings. If it is missing from the list, use Show Helper in Finder to locate the app when adding it.")
+        let permissionHelp = NSTextField(wrappingLabelWithString: "Use Set Up Permissions to request access from the helper and add it to macOS settings. The setup window shows the exact helper path and can copy it for the + dialog.")
         permissionHelp.textColor = .secondaryLabelColor
         stack.addArrangedSubview(permissionHelp)
         let files = NSStackView()
@@ -93,16 +93,11 @@ final class ComputerControlPanel: NSWindowController {
 
     @objc private func stop() { send("stop") }
     @objc private func resume() { send("resume") }
-    @objc private func permissions() { send("permissions", arguments: ["prompt": "true"]) }
+    @objc private func permissions() { send("setup-permissions") }
     @objc private func openAccessibility() { openSettings(.accessibility) }
     @objc private func openScreenRecording() { openSettings(.screenRecording) }
     private func openSettings(_ destination: ComputerPrivacySettings) {
-        if !destination.open() {
-            let alert = NSAlert()
-            alert.messageText = "Could not open System Settings"
-            alert.informativeText = "Open System Settings → Privacy & Security and enable Damson Computer."
-            alert.runModal()
-        }
+        send("setup-permissions", arguments: ["section": destination.rawValue])
     }
     @objc private func showHelper() {
         let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Damson Computer.app")

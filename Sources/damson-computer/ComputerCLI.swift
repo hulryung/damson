@@ -7,6 +7,7 @@ damson-computer — observe and control one macOS app through a desktop session.
 
   start                        Launch the bundled Damson Computer helper.
   status                       Show owner, pause state, and permissions (JSON).
+  setup-permissions            Open the helper’s permission setup window.
   permissions [--prompt true]  Check or request macOS permissions.
   apps                         List running GUI apps.
   acquire --pid PID --owner NAME [--ttl 60]

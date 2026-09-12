@@ -70,6 +70,14 @@ final class ComputerEngineTests: XCTestCase {
         XCTAssertEqual(engine.sessions.pauseReason, "external_input:mouseMoved")
     }
 
+    @MainActor
+    func testInvalidPermissionSectionDoesNotOpenSetup() async throws {
+        let engine = ComputerEngine()
+        let result = await engine.handle(ComputerRequest(command: "setup-permissions", arguments: ["section": "wrong"]))
+        let error = try XCTUnwrap(response(result)["error"] as? [String: String])
+        XCTAssertEqual(error["code"], "invalid_argument")
+    }
+
     private func response(_ data: Data) throws -> [String: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }

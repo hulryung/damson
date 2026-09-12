@@ -67,6 +67,9 @@ public final class ComputerEngine {
         case "status":
             sessions.expire()
             return ["helperPID": ProcessInfo.processInfo.processIdentifier, "protocolVersion": 1, "pauseReason": sessions.pauseReason as Any? ?? NSNull(), "paused": sessions.paused, "busy": busy, "session": publicSession(), "permissions": desktop.permissions()]
+        case "setup-permissions":
+            ComputerPermissionSetup.shared.present(destination: args["section"].flatMap(ComputerPrivacySettings.init(rawValue:)))
+            return ["shown": true]
         case "permissions": return desktop.permissions(prompt: args["prompt"] == "true")
         case "apps": return ["apps": desktop.apps()]
         case "stop": stop(); return ["paused": true]
@@ -123,7 +126,7 @@ public final class ComputerEngine {
 
     private func validateArguments(_ request: ComputerRequest) throws {
         let schema: [String: Set<String>] = [
-            "status": [], "apps": [], "stop": [], "resume": [],
+            "status": [], "apps": [], "stop": [], "resume": [], "setup-permissions": ["section"],
             "permissions": ["prompt"], "acquire": ["pid", "owner", "ttl"],
             "renew": ["session", "ttl"], "release": ["session"],
             "windows": ["session"], "focus": ["session"], "inspect": ["session"],
@@ -137,6 +140,9 @@ public final class ComputerEngine {
         let unknown = Set(request.arguments.keys).subtracting(allowed)
         guard unknown.isEmpty else {
             throw ComputerFailure("invalid_argument", "Unknown arguments: \(unknown.sorted().joined(separator: ", "))")
+        }
+        if let section = request.arguments["section"], ComputerPrivacySettings(rawValue: section) == nil {
+            throw ComputerFailure("invalid_argument", "Unknown permission section.")
         }
         if let prompt = request.arguments["prompt"], !["true", "false"].contains(prompt) {
             throw ComputerFailure("invalid_argument", "--prompt must be true or false.")

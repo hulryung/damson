@@ -9,11 +9,11 @@ public final class DesktopAccess {
 
     public init() {}
 
-    public func permissions(prompt: Bool = false) -> [String: Any] {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
+    public func permissions(prompt: Bool = false, destination: ComputerPrivacySettings? = nil) -> [String: Any] {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt && destination != .screenRecording] as CFDictionary
         let accessibility = AXIsProcessTrustedWithOptions(options)
         let screen = CGPreflightScreenCaptureAccess()
-        if prompt, !screen { _ = CGRequestScreenCaptureAccess() }
+        if prompt, destination != .accessibility, !screen { _ = CGRequestScreenCaptureAccess() }
         return ["accessibility": accessibility, "screenRecording": screen,
                 "helperBundle": Bundle.main.bundleIdentifier ?? "unbundled",
                 "helperPath": Bundle.main.bundlePath]

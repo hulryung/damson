@@ -82,6 +82,20 @@ Status: **in progress; not release-ready yet** (2026-09-12).
   `DamsonComputerTests` passed again with zero failures. These checks do not
   establish live scrolling, cancellation, game play, or permission identity.
 
+## Permission discoverability (2026-09-12)
+
+- Added a helper-owned Set Up Permissions window. Each permission button requests
+  the matching macOS permission before opening its settings page. The window shows
+  the running helper's path, copies it on request, and explains the + / Command-Shift-G
+  fallback for a missing list entry. It polls actual permission state while visible.
+- The Damson panel routes setup requests to the running helper rather than requesting
+  permissions for the terminal process. DC menu settings entries also request the
+  matching permission. Unknown setup sections are rejected before opening UI.
+- Both executable builds and full app packaging succeeded; 17 Computer tests passed.
+  The updated helper was installed at the existing temporary test path and its
+  `setup-permissions` CLI returned `shown: true` (PID 92608). Permission grants and
+  actual appearance in the macOS lists remain user-dependent and unverified.
+
 ## Outstanding completion gates
 
 - Rerun the full native suite with the latest binary, including scrolling,
