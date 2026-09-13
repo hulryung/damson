@@ -269,6 +269,10 @@ public final class PTYHost: SessionIOBackend {
 
         if pid == 0 {
             // === child process ===
+            // The app ignores SIGPIPE, and an ignored signal survives execve: without this
+            // every program in a pane would too, and `yes | head` would end in
+            // "yes: stdout: Broken pipe" instead of `yes` quietly stopping.
+            BrokenPipes.restoreDefaultInChild()
             if let cwd = cwd {
                 // The parent already checked, but the directory can disappear in between.
                 // Refuse to exec rather than run somewhere else: a pane that visibly fails

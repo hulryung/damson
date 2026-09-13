@@ -9,6 +9,11 @@ import SwiftUI
 // Run via SwiftPM: `swift run damson`
 // A proper .app distribution will later graduate into a separate Xcode project.
 
+// First, before any pipe or socket exists: a write to a peer that hung up must come back
+// as EPIPE, not kill the app with every pane in it. 0.7.1 died exactly that way after
+// 7.6 hours. PTYHost gives the programs in panes the default behaviour back.
+BrokenPipes.ignoreInThisProcess()
+
 // If launched as a raw binary, wrap into a .app and relaunch.
 // Required to fix the Korean IME first-jamo race (LaunchServices registration).
 AppBundleTrampoline.relaunchInAppBundleIfNeeded()
