@@ -72,6 +72,12 @@ chmod 0755 "$RESOURCES_DIR/damson-cli"
 cp "$CREW_BIN" "$RESOURCES_DIR/damson-crew"
 chmod 0755 "$RESOURCES_DIR/damson-crew"
 
+# The Codex prompt for driving orchestration. Codex has no plugin system, so Settings
+# installs this file into ~/.codex/prompts, where it becomes /damson-orchestration —
+# the counterpart of the Claude Code skill the marketplace ships.
+mkdir -p "$RESOURCES_DIR/agents"
+cp "$REPO_ROOT/Resources/agents/codex-damson-orchestration.md" "$RESOURCES_DIR/agents/"
+
 # damson-keeper — session-survival daemon spawned by the app at restart handoff.
 cp "$KEEPER_BIN" "$MACOS_DIR/damson-keeper"
 chmod 0755 "$MACOS_DIR/damson-keeper"
