@@ -180,4 +180,55 @@ final class CoordinatorTests: XCTestCase {
         fake.answers = [.failure(CrewError("no instance"))]
         XCTAssertEqual(Coordinator(client: fake).reattach(tasks), [:])
     }
+
+    // MARK: - A window per run
+
+    private func windows(_ sent: [ControlCommandKind]) -> [String?] {
+        sent.compactMap { if case .spawnPane(let spec) = $0 { return spec.window } else { return nil } }
+    }
+
+    /// Off by default, a spawn names no window and damson puts it where it always has.
+    func testSpawnsNameNoWindowByDefault() {
+        let fake = FakeDamson()
+        fake.answers = [.success(pane("A")), .success(pane("B"))]
+        _ = Coordinator(client: fake).fanOut(tasks, group: "run-7")
+        XCTAssertEqual(windows(fake.sent), [nil, nil])
+    }
+
+    /// Every tab of one run shares one key, so damson opens ONE window for the run rather
+    /// than one per agent.
+    func testAGroupedRunSharesOneWindow() {
+        let fake = FakeDamson()
+        fake.answers = [.success(pane("A")), .success(pane("B"))]
+        _ = Coordinator(client: fake, newWindowPerRun: true).fanOut(tasks, group: "run-7")
+        let keys = windows(fake.sent)
+        XCTAssertEqual(keys.count, 2)
+        XCTAssertNotNil(keys[0])
+        XCTAssertEqual(Set(keys), [keys[0]], "the run's tabs would split across windows")
+    }
+
+    /// A grouped run's key comes from the group, so running the same group again later — to
+    /// start the tasks that failed, say — lands in the window that already holds it.
+    func testTheSameGroupAlwaysNamesTheSameWindow() {
+        let first = FakeDamson(), second = FakeDamson()
+        first.answers = [.success(pane("A")), .success(pane("B"))]
+        second.answers = [.success(pane("C")), .success(pane("D"))]
+        _ = Coordinator(client: first, newWindowPerRun: true).fanOut(tasks, group: "run-7")
+        _ = Coordinator(client: second, newWindowPerRun: true).fanOut(tasks, group: "run-7")
+        XCTAssertEqual(windows(first.sent), windows(second.sent))
+    }
+
+    /// Without a group nothing names the run, so each `fanOut` is its own: one shared key
+    /// across its tasks, and a different one for the next run.
+    func testAnUngroupedRunGetsAWindowOfItsOwn() {
+        let first = FakeDamson(), second = FakeDamson()
+        first.answers = [.success(pane("A")), .success(pane("B"))]
+        second.answers = [.success(pane("C")), .success(pane("D"))]
+        _ = Coordinator(client: first, newWindowPerRun: true).fanOut(tasks, group: nil)
+        _ = Coordinator(client: second, newWindowPerRun: true).fanOut(tasks, group: nil)
+        let a = windows(first.sent), b = windows(second.sent)
+        XCTAssertNotNil(a[0])
+        XCTAssertEqual(Set(a), [a[0]])
+        XCTAssertNotEqual(a[0], b[0], "two separate runs would share a window")
+    }
 }

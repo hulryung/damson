@@ -44,11 +44,16 @@ public struct OrchestrationSettings: Equatable {
     /// repository the user named, and only to Claude Code: codex and cursor-agent have
     /// their own gates and their own stores, which damson does not pretend to know.
     public var trustNewWorktrees: Bool
+    /// Open each run's tabs together in a window of their own, instead of in the window in
+    /// front. Off by default: it moves where every run appears, and people already running
+    /// agents beside their own tabs must not find them somewhere else after an update.
+    public var openRunsInNewWindow: Bool
 
     public static let `default` = OrchestrationSettings(
         agentCommand: ["claude"], skipPermissions: true,
         notifyOnWaiting: true, focusOnWaiting: false, notifyOnFinished: true,
-        stallMinutes: 5, worktreeRoot: "", trustNewWorktrees: true)
+        stallMinutes: 5, worktreeRoot: "", trustNewWorktrees: true,
+        openRunsInNewWindow: false)
 
     /// Read the app's preferences, falling back to the defaults for anything unset. Never
     /// throws and never fails: a coordinator must run whether or not the app has ever been
@@ -79,6 +84,9 @@ public struct OrchestrationSettings: Equatable {
         if defaults.object(forKey: Keys.trustNewWorktrees) != nil {
             s.trustNewWorktrees = defaults.bool(forKey: Keys.trustNewWorktrees)
         }
+        if defaults.object(forKey: Keys.openRunsInNewWindow) != nil {
+            s.openRunsInNewWindow = defaults.bool(forKey: Keys.openRunsInNewWindow)
+        }
         return s
     }
 
@@ -94,5 +102,6 @@ public struct OrchestrationSettings: Equatable {
         public static let stallMinutes     = "damson.orchestration.stallMinutes"
         public static let worktreeRoot    = "damson.orchestration.worktreeRoot"
         public static let trustNewWorktrees = "damson.orchestration.trustNewWorktrees"
+        public static let openRunsInNewWindow = "damson.orchestration.openRunsInNewWindow"
     }
 }

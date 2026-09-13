@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "damson-orchestration",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Coordinate visible coding agents in Damson: plan dependent tasks, run parallel implementations, verify outputs, resume durable workflows, or monitor interactive sessions.",
   "author": {
     "name": "Daekeun Kang",

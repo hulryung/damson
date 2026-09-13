@@ -48,12 +48,15 @@ public struct Coordinator {
     private let worktrees: WorktreeManager
     private let skipPermissions: Bool
     private let trustNewWorktrees: Bool
+    /// Open the run's tabs in a window of their own. See `OrchestrationSettings`.
+    private let newWindowPerRun: Bool
     /// Injected so the trust write can be tested without touching a real config.
     private let acceptTrust: (String) -> Result<Bool, CrewError>
 
     public init(client: DamsonClient, defaultCommand: [String] = ["claude"],
                 skipPermissions: Bool = true,
                 trustNewWorktrees: Bool = false,
+                newWindowPerRun: Bool = false,
                 worktrees: WorktreeManager = WorktreeManager(),
                 acceptTrust: @escaping (String) -> Result<Bool, CrewError> = {
                     WorkspaceTrust.accept(path: $0)
@@ -62,8 +65,20 @@ public struct Coordinator {
         self.defaultCommand = defaultCommand
         self.skipPermissions = skipPermissions
         self.trustNewWorktrees = trustNewWorktrees
+        self.newWindowPerRun = newWindowPerRun
         self.worktrees = worktrees
         self.acceptTrust = acceptTrust
+    }
+
+    /// The window key every spawn of one run carries, or nil to use the window in front.
+    ///
+    /// A grouped run is named by its group, so running that group again later — to start
+    /// the tasks that failed — reaches the window already holding it. Nothing names an
+    /// ungrouped run, so each call gets a fresh key: one window per run, not one shared by
+    /// every ungrouped run ever started.
+    private func windowKey(group: String?) -> String? {
+        guard newWindowPerRun else { return nil }
+        return group.map { "crew:group:\($0)" } ?? "crew:run:\(UUID().uuidString)"
     }
 
     /// Where a task should run: its worktree if it asked for one, else its `cwd`.
@@ -98,7 +113,9 @@ public struct Coordinator {
     /// tab that did open. Without the key, re-running the list would mint a second agent for
     /// that task.
     public func fanOut(_ tasks: [CrewTask], group: String?) -> [Outcome] {
-        tasks.map { task in
+        // Once per run, not per task: every tab of the run has to name the same window.
+        let window = windowKey(group: group)
+        return tasks.map { task in
             // A worktree that cannot be made is this task's failure, not the run's: the
             // others should still start.
             let cwd: String?
@@ -117,7 +134,8 @@ public struct Coordinator {
                                  key: group.map { "crew:group:\($0.utf8.count):\($0):\(task.name)" }
                                      ?? "crew:ungrouped:\(task.name)",
                                  title: task.name,
-                                 group: group)
+                                 group: group,
+                                 window: window)
             switch client.send(.spawnPane(spec)) {
             case .failure(let why):
                 return Outcome(task: task.name, paneID: nil, error: why.message)

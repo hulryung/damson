@@ -104,15 +104,23 @@ public struct SpawnSpec: Equatable, Sendable, Codable {
     /// idempotency `key` gives the spawn itself, so a coordinator looping over tasks never
     /// has to ask whether the group exists first.
     public let group: String?
+    /// Window for the new tab, by key. nil = the window in front, as before. Spawns that
+    /// share a key land in one window, which the first of them opens with itself as its
+    /// first tab; a spawn whose `group` already lives in some window goes to that window,
+    /// since a group cannot span two. That is what puts a whole run in a window of its own
+    /// — and keeps it there when the run is repeated to start the tasks that failed.
+    public let window: String?
 
     public init(split: SplitDir? = nil, cwd: String? = nil, argv: [String],
-                key: String? = nil, title: String? = nil, group: String? = nil) {
+                key: String? = nil, title: String? = nil, group: String? = nil,
+                window: String? = nil) {
         self.split = split
         self.cwd = cwd
         self.argv = argv
         self.key = key
         self.title = title
         self.group = group
+        self.window = window
     }
 }
 
@@ -317,6 +325,7 @@ public func encodeCommand(_ kind: ControlCommandKind) -> String {
         if let k = spec.key { parts.append(#""key":"\#(jsonEscape(k))""#) }
         if let t = spec.title { parts.append(#""title":"\#(jsonEscape(t))""#) }
         if let g = spec.group { parts.append(#""group":"\#(jsonEscape(g))""#) }
+        if let w = spec.window { parts.append(#""window":"\#(jsonEscape(w))""#) }
         return #"{"cmd":"spawn-pane","args":{\#(parts.joined(separator: ","))}}"#
     case .listAgents: return #"{"cmd":"list-agents"}"#
     case .revealPane: return #"{"cmd":"reveal-pane"}"#

@@ -209,9 +209,12 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
     var hasTabs: Bool { !tabs.isEmpty }
 
     /// If `restoring` is present, restore that tab/pane layout + cwd; otherwise a single
-    /// empty tab. `adopt` resolves a saved leaf's sessionID to a surviving PTY reclaimed
-    /// from the keeper (restart survival) — the default adopts nothing.
+    /// tab — a shell, or `firstTab` when a spawn opened the window for itself, so a run's
+    /// window does not start with a stray shell ahead of its agents. `adopt` resolves a
+    /// saved leaf's sessionID to a surviving PTY reclaimed from the keeper (restart
+    /// survival) — the default adopts nothing.
     init(restoring: RestorableWindow? = nil,
+         firstTab: DamsonConfig? = nil,
          adopt: (String) -> AdoptedSession? = { _ in nil }) {
         let window = CompactWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
@@ -252,7 +255,7 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             let sel = order.firstIndex(of: restore.selectedTab) ?? restore.selectedTab
             if sel >= 0 && sel < tabs.count { selectTab(sel) }
         } else {
-            addNewTab()
+            addNewTab(configOverride: firstTab)
         }
     }
 

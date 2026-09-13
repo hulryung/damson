@@ -53,6 +53,11 @@ Interactive options:
                    it has not seen, and a worktree is one — so without this a
                    fan-out stops once per task. Only worktrees this tool made,
                    and only Claude Code.
+  --new-window / --no-new-window
+                   Open this run's tabs together in a window of their own instead
+                   of the window in front. A grouped run keeps its window: run
+                   the same group again and the new tabs join it. Off by default;
+                   change the default in Settings → Agents.
   --notify / --no-notify
                    Post a macOS notification when an agent is blocked on you.
   --focus / --no-focus
@@ -151,6 +156,7 @@ var command: [String] = settings.agentCommand
 var worktreeRoot = settings.worktreeRoot
 var skipPermissions = settings.skipPermissions
 var trustNewWorktrees = settings.trustNewWorktrees
+var newWindow = settings.openRunsInNewWindow
 var notify = settings.notifyOnWaiting
 var focus = settings.focusOnWaiting
 var notifyDone = settings.notifyOnFinished
@@ -195,6 +201,10 @@ while i < args.count {
         trustNewWorktrees = true; i += 1
     case "--no-trust-new-worktrees":
         trustNewWorktrees = false; i += 1
+    case "--new-window":
+        newWindow = true; i += 1
+    case "--no-new-window":
+        newWindow = false; i += 1
     case "--yes":
         confirmed = true; i += 1
     case "--remove-worktrees":
@@ -277,6 +287,7 @@ case "run":
     let outcomes = Coordinator(client: client, defaultCommand: command,
                                skipPermissions: skipPermissions,
                                trustNewWorktrees: trustNewWorktrees,
+                               newWindowPerRun: newWindow,
                                worktrees: worktrees)
         .fanOut(needed, group: group)
     var byTask = existing

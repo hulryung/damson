@@ -6,9 +6,12 @@ public final class WorkflowRunner {
     private let executable: String
     private let store: WorkflowStore
     private let lock: WorkflowLock
+    /// Open the run's tabs in a window of their own. See `OrchestrationSettings`.
+    private let newWindowPerRun: Bool
     public private(set) var state: WorkflowState
 
-    public init(workflow: Workflow, directory: URL, executable: String, client: DamsonClient) throws {
+    public init(workflow: Workflow, directory: URL, executable: String, client: DamsonClient,
+                newWindowPerRun: Bool = false) throws {
         try workflow.validate()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                attributes: [.posixPermissions: 0o700])
@@ -17,6 +20,7 @@ public final class WorkflowRunner {
         state = try store.prepare(workflow: workflow)
         self.executable = executable
         self.client = client
+        self.newWindowPerRun = newWindowPerRun
     }
 
     /// A tick can be repeated after a crash, including a crash between journal and spawn.
@@ -52,11 +56,15 @@ public final class WorkflowRunner {
     }
 
     private func spawn(_ task: WorkflowTask, token: String) {
+        let group = "\(state.workflow.name)-\(state.runID.prefix(8))"
+        // The group is unique to this run, so the same key the interactive `run` uses puts
+        // every attempt of every task — retries included — in the one window.
         let spec = SpawnSpec(cwd: task.cwd,
             argv: [executable, "workflow-worker", store.attemptURL(token).path],
             key: "crew:workflow:\(state.runID):\(token)",
             title: "\(task.id) [\(state.tasks[task.id]?.attempts ?? 0)]",
-            group: "\(state.workflow.name)-\(state.runID.prefix(8))")
+            group: group,
+            window: newWindowPerRun ? "crew:group:\(group)" : nil)
         switch client.send(.spawnPane(spec)) {
         case .success(let response) where response.ok:
             state.tasks[task.id]?.pane = response.pane?.id

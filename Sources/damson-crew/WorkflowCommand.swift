@@ -80,7 +80,8 @@ enum WorkflowCommand {
         })
         let executable = Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
         let runner = try WorkflowRunner(workflow: flow, directory: directory,
-                                        executable: executable, client: client)
+                                        executable: executable, client: client,
+                                        newWindowPerRun: settings.openRunsInNewWindow)
         var previous: [String: String] = [:]
         repeat {
             try runner.tick()

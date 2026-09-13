@@ -538,6 +538,27 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Entries are dropped once their pane is gone, so the table cannot grow without bound.
     private var spawnedByKey: [String: UUID] = [:]
 
+    /// A window remembered by key without keeping it alive.
+    private struct WeakCompactWindow { weak var controller: CompactWindowController? }
+    /// Windows opened for a spawn's window key (`SpawnSpec.window`), so every spawn of one
+    /// run lands in the one window its first spawn opened. Weak, and checked against the
+    /// live list: a window the user closed must neither be kept alive nor spawned into.
+    private var windowsByKey: [String: WeakCompactWindow] = [:]
+
+    /// Where a spawn naming window `key` goes when that window already exists: the window
+    /// holding its group — a group cannot span two windows, and this is also what reunites
+    /// a run repeated after a restart, when this in-memory table is gone — else the window
+    /// the key opened, while it is still open. nil = none yet, so the spawn opens it.
+    @MainActor
+    private func existingWindow(forKey key: String, group: String?) -> CompactWindowController? {
+        if let group, let holder = compactControllers.first(where: { $0.groupName(exists: group) }) {
+            return holder
+        }
+        guard let known = windowsByKey[key]?.controller,
+              compactControllers.contains(where: { $0 === known }) else { return nil }
+        return known
+    }
+
     @MainActor
     private func controlSpawnPane(_ spec: SpawnSpec) -> ControlResponse {
         if let key = spec.key, let existing = spawnedByKey[key] {
@@ -561,19 +582,44 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if PTYHost.resolveProgram(spec.argv[0], env: probeConfig.env) == nil {
             return .err("no executable named '\(spec.argv[0])' on PATH")
         }
-        guard let window = activeCompact() ?? { spawnWindow(); return activeCompact() }() else {
-            return .err("no window to spawn into")
-        }
         var config = DamsonConfig.fromUserDefaults()
         config.argv = spec.argv
-        config.cwd = spec.cwd ?? window.activePaneDirectory
+        let keyed = spec.window.flatMap { existingWindow(forKey: $0, group: spec.group) }
+        let window: CompactWindowController
         let session: DamsonSession?
-        if let split = spec.split {
-            window.splitActivePane(direction: split == .vertical ? .vertical : .horizontal,
-                                   configOverride: config)
+        if let key = spec.window, keyed == nil {
+            // The first spawn for this key opens the window, as its first tab — not behind
+            // a shell the run never asked for. A split has nothing to split yet, so it
+            // becomes that first tab too. Always a compact window: that is what spawns into.
+            config.cwd = spec.cwd
+            let anchor = activeCompact()?.window
+            window = spawnCompactWindow(firstTab: config)
+            // Every compact window opens centred at the same size, so a run's window would
+            // land exactly over the one the user was working in — measured: identical
+            // frames — and their tabs would look replaced rather than joined by a window.
+            // Step it down and right the way macOS cascades documents.
+            if let anchor, let fresh = window.window, anchor !== fresh {
+                fresh.cascadeTopLeft(from: anchor.cascadeTopLeft(from: .zero))
+            }
+            windowsByKey[key] = WeakCompactWindow(controller: window)
             session = window.activeSession
         } else {
-            session = window.addNewTab(configOverride: config)
+            guard let target = keyed
+                    ?? activeCompact() ?? { spawnWindow(); return activeCompact() }() else {
+                return .err("no window to spawn into")
+            }
+            window = target
+            // A window found through its group is remembered under the key too, so an
+            // ungrouped spawn of the same run that follows lands beside it.
+            if let key = spec.window { windowsByKey[key] = WeakCompactWindow(controller: target) }
+            config.cwd = spec.cwd ?? window.activePaneDirectory
+            if let split = spec.split {
+                window.splitActivePane(direction: split == .vertical ? .vertical : .horizontal,
+                                       configOverride: config)
+                session = window.activeSession
+            } else {
+                session = window.addNewTab(configOverride: config)
+            }
         }
         guard let session else { return .err("failed to open a pane") }
         // Label before answering: a coordinator opening several agents in a loop would
@@ -1431,9 +1477,13 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.showWindow(nil)
     }
 
+    @discardableResult
     private func spawnCompactWindow(restoring: RestorableWindow? = nil,
-                                    adopt: (String) -> AdoptedSession? = { _ in nil }) {
-        let controller = CompactWindowController(restoring: restoring, adopt: adopt)
+                                    firstTab: DamsonConfig? = nil,
+                                    adopt: (String) -> AdoptedSession? = { _ in nil })
+        -> CompactWindowController {
+        let controller = CompactWindowController(restoring: restoring, firstTab: firstTab,
+                                                 adopt: adopt)
         let box = ObserverTokenBox()
         box.token = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
@@ -1448,6 +1498,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         compactControllers.append(controller)
         controller.showWindow(nil)
+        return controller
     }
 }
 

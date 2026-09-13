@@ -17,6 +17,13 @@ Direct `damson-cli spawn` opens a new tab unless `--split-h`/`--split-v` is prov
 Pass `--key`, `--title`, and `--group`. Keys are in memory, so after an app restart inspect
 existing panes before directly repeating a spawn. `run` handles that reattachment itself.
 
+A run's tabs open in the window in front unless Settings → Agents → "Open each run in a new
+window" is on; `--new-window` / `--no-new-window` override it for one run. In new-window mode
+the run gets one window of its own, with its agents as the first tabs, and a later run of the
+same group joins that window instead of opening another. `damson-cli spawn --window KEY` is
+the primitive underneath: spawns sharing a key share a window, and a spawn whose group already
+exists goes to the window holding it.
+
 Permission prompts are bypassed for Claude by default, following Settings → Agents;
 `--no-skip-permissions` overrides this per run. Explicit `--permission-mode` is respected.
 Other agents are launched without Claude-specific flags. Defaults also cover worktree

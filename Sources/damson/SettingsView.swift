@@ -59,6 +59,8 @@ struct DamsonSettingsView: View {
     private var worktreeRoot: String = ""
     @AppStorage(OrchestrationSettings.Keys.trustNewWorktrees)
     private var trustNewWorktrees: Bool = true
+    @AppStorage(OrchestrationSettings.Keys.openRunsInNewWindow)
+    private var openRunsInNewWindow: Bool = false
 
     @ObservedObject private var updater = DamsonUpdater.shared
 
@@ -419,6 +421,16 @@ struct DamsonSettingsView: View {
                         .font(.caption)
                         .foregroundColor(.orange)
                 }
+            }
+
+            Section("Windows") {
+                Toggle("Open each run in a new window", isOn: $openRunsInNewWindow)
+                Text("A run's agent tabs open together in a window of their own instead of "
+                     + "beside the tabs you are working in. Run the same group again and the "
+                     + "new tabs join that window. Override it for one run with "
+                     + "damson-crew run --new-window or --no-new-window.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             Section("Notifications") {

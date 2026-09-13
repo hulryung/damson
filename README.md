@@ -117,6 +117,8 @@ Agents run with `--dangerously-skip-permissions` by default, so a task runs thro
 of stopping to ask — an agent waiting on an approval is the most common way a run stalls.
 That does mean agents edit files and run commands without asking; **Settings → Agents** turns
 it off, along with the default agent, the notification behaviour, and where worktrees go.
+It also decides where a run's tabs appear: beside yours in the window in front (the default),
+or together in a window of their own — `damson-crew run --new-window` asks for that once.
 
 `damson-cli --pane ID reveal-pane` selects the exact pane and brings its owning window
 and tab forward. `watch --focus` uses this command; update the app and bundled CLIs together.

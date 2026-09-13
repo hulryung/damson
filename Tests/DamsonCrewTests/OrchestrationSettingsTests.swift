@@ -40,6 +40,17 @@ final class OrchestrationSettingsTests: XCTestCase {
         XCTAssertTrue(s.notifyOnWaiting, "an unset toggle was read as off")
     }
 
+    /// Off unless asked for: turning it on changes where every run's tabs appear, and the
+    /// people already running agents in their current window must not find them elsewhere.
+    func testNewWindowPerRunIsOffByDefault() {
+        XCTAssertFalse(OrchestrationSettings.load(domain: domain).openRunsInNewWindow)
+    }
+
+    func testNewWindowPerRunIsRead() {
+        defaults.set(true, forKey: OrchestrationSettings.Keys.openRunsInNewWindow)
+        XCTAssertTrue(OrchestrationSettings.load(domain: domain).openRunsInNewWindow)
+    }
+
     func testStoredValuesAreRead() {
         defaults.set("claude --model opus", forKey: OrchestrationSettings.Keys.agentCommand)
         defaults.set(false, forKey: OrchestrationSettings.Keys.skipPermissions)

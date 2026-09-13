@@ -54,12 +54,14 @@ Commands:
   dump-grid               Print the active pane's visible grid as plain text.
   zoom <in|out|reset>     Font zoom on the active pane (same path as Cmd+=/-).
 
-  spawn [--split-h|--split-v] [--cwd P] [--key K] [--title T] [--group G] -- argv...
+  spawn [--split-h|--split-v] [--cwd P] [--key K] [--title T] [--group G] [--window W] -- argv...
                           Open a pane running argv; prints its pane id as JSON.
                           --key makes a repeat return the SAME pane rather than
                           opening a second one, so a retry is safe.
                           --title labels the new tab (see set-title).
                           --group puts it in a tab group, creating it if needed.
+                          --window opens it in the window for key W: the first
+                          spawn with W opens a new window, later ones join it.
   group list              Print every tab group as JSON.
   group close <name>      Close every tab in a group, and the programs in them.
   group collapse <name>   Fold a group down to its header.
@@ -105,6 +107,7 @@ var spawnCwd: String?
 var spawnKey: String?
 var spawnTitle: String?
 var spawnGroup: String?
+var spawnWindow: String?
 
 var i = 0
 while i < args.count {
@@ -156,6 +159,11 @@ while i < args.count {
         i += 1
         guard i < args.count else { die("--group requires a name") }
         spawnGroup = args[i]
+        i += 1
+    case "--window":
+        i += 1
+        guard i < args.count else { die("--window requires a key") }
+        spawnWindow = args[i]
         i += 1
     default:
         // Options must precede the subcommand. Once a positional (the subcommand) is
@@ -277,7 +285,8 @@ case "spawn":
         die("spawn requires a command, after `--`: spawn [--split-h|--split-v] [--cwd P] [--key K] -- argv…")
     }
     cmdKind = .spawnPane(SpawnSpec(split: spawnSplit, cwd: spawnCwd, argv: rest,
-                                   key: spawnKey, title: spawnTitle, group: spawnGroup))
+                                   key: spawnKey, title: spawnTitle, group: spawnGroup,
+                                   window: spawnWindow))
 case "agents":
     guard rest.isEmpty else { die("agents takes no arguments") }
     cmdKind = .listAgents

@@ -215,6 +215,18 @@ done
 damson-cli group close run-7      # when the run is over
 ```
 
+### A window per run
+
+`--window KEY` picks the window instead of taking the one in front. The first spawn with a
+key opens a new window, with itself as the first tab — no shell ahead of the agents — and
+later spawns with the same key join it. A spawn whose `--group` already lives in some window
+goes to that window whatever its key says: a group cannot span two windows, and this is what
+reunites a run repeated after a restart, when damson's in-memory key table is gone.
+
+`damson-crew run` sends `crew:group:<group>` as the key when Settings → Agents → "Open each
+run in a new window" is on (or `--new-window` is passed), and a fresh key per run when the run
+has no group. Off — the default — sends no key, and tabs go where they always have.
+
 Groups are addressed **by name**: a coordinator names a run and never sees the UUID damson
 keys groups on internally. Names are not unique, so a command naming a group acts on the
 first one on screen — the only answer a user could predict.
