@@ -64,6 +64,15 @@ struct DamsonSettingsView: View {
 
     @ObservedObject private var updater = DamsonUpdater.shared
 
+    // Installing the command-line tools and the agent skills. Recomputed when the Agents
+    // tab appears, so the state shown is what is on disk rather than what was true when
+    // the settings window opened.
+    @State private var toolStatus: [ToolInstall.Status] = []
+    @State private var binChoice: ToolInstall.BinChoice?
+    @State private var toolMessage: String?
+    @State private var skillMessage: String?
+    @State private var installingSkill = false
+
     private let nerdFonts = FontDiscovery.nerdFontFamilies()
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
 
@@ -399,6 +408,45 @@ struct DamsonSettingsView: View {
     /// it. Every one of them can still be overridden per run with a flag.
     private var orchestrationTab: some View {
         Form {
+            Section("Setup") {
+                HStack {
+                    Text("Command-line tools")
+                    Spacer()
+                    Text(toolSummary).foregroundColor(.secondary)
+                    Button(toolButtonTitle) { installTools() }
+                }
+                Text("Links damson-cli, damson-crew and damson-computer into "
+                     + (binChoice.map { shortPath($0.url.path) } ?? "a folder on your PATH")
+                     + ". They are symlinks, so they follow this app when it updates.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if let choice = binChoice, !choice.onPath {
+                    Label("\(shortPath(choice.url.path)) is not on your PATH — add it to your "
+                          + "shell profile: export PATH=\"\(shortPath(choice.url.path)):$PATH\"",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .textSelection(.enabled)
+                }
+
+                HStack {
+                    Text("Agent skill")
+                    Spacer()
+                    if installingSkill { ProgressView().controlSize(.small) }
+                    Button("Claude Code") { installClaudeSkill() }.disabled(installingSkill)
+                    Button("Codex") { installCodexPrompt() }.disabled(installingSkill)
+                }
+                Text("Teaches the agent how to drive a run: the plugin for Claude Code, and a "
+                     + "/damson-orchestration prompt in ~/.codex/prompts for Codex, which has no "
+                     + "plugins. Both are safe to press again to update.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if let message = toolMessage ?? skillMessage {
+                    Text(message).font(.caption).foregroundColor(.secondary).textSelection(.enabled)
+                }
+            }
+
             Section("Agent") {
                 TextField("Command", text: $agentCommand)
                     .textFieldStyle(.roundedBorder)
@@ -491,6 +539,135 @@ struct DamsonSettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .onAppear { refreshToolStatus() }
+    }
+
+    // MARK: - Installing the tools and skills
+
+    /// The tools as this bundle carries them.
+    private var toolSource: URL {
+        Bundle.main.resourceURL ?? Bundle.main.bundleURL
+    }
+
+    private var toolSummary: String {
+        switch ToolInstall.overall(toolStatus) {
+        case .installed: return "installed"
+        case .notInstalled: return "not installed"
+        case .outdated: return "points at another copy"
+        case .partial(let n): return "\(n) to update"
+        case .blocked: return "name already taken"
+        case .unavailable: return "missing from this app"
+        }
+    }
+
+    private var toolButtonTitle: String {
+        switch ToolInstall.overall(toolStatus) {
+        case .installed: return "Reinstall"
+        case .notInstalled: return "Install"
+        case .outdated, .partial: return "Update"
+        case .blocked, .unavailable: return "Install"
+        }
+    }
+
+    /// `~` rather than the full home path: the folder is the point, not the user's name.
+    private func shortPath(_ path: String) -> String {
+        path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+    }
+
+    private func refreshToolStatus() {
+        // The app's own PATH is the minimal one LaunchServices hands a Dock launch, so ask
+        // the login shell — otherwise every folder looks "not on PATH".
+        let entries = ToolInstall.pathEntries(LoginEnvironment.loginPATH)
+        let choice = ToolInstall.chooseBinDirectory(candidates: ToolInstall.defaultCandidates(),
+                                                    pathEntries: entries)
+        binChoice = choice
+        toolStatus = ToolInstall.status(source: toolSource, binDir: choice.url)
+    }
+
+    private func installTools() {
+        guard let choice = binChoice else { return }
+        do {
+            let written = try ToolInstall.install(source: toolSource, binDir: choice.url)
+            toolMessage = written.isEmpty
+                ? "Already up to date in \(shortPath(choice.url.path))."
+                : "Linked \(written.joined(separator: ", ")) into \(shortPath(choice.url.path))."
+        } catch {
+            toolMessage = error.localizedDescription
+        }
+        skillMessage = nil
+        refreshToolStatus()
+    }
+
+    private func installCodexPrompt() {
+        let source = toolSource.appendingPathComponent("agents/codex-damson-orchestration.md")
+        let destination = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".codex/prompts/damson-orchestration.md")
+        do {
+            let written = try ToolInstall.installPrompt(from: source, to: destination)
+            skillMessage = written
+                ? "Wrote \(shortPath(destination.path)) — type /damson-orchestration in Codex."
+                : "Codex prompt already up to date."
+        } catch {
+            skillMessage = "Could not write the Codex prompt: \(error.localizedDescription)"
+        }
+        toolMessage = nil
+    }
+
+    /// Runs Claude Code's own plugin commands rather than copying files into its store: the
+    /// layout there is Claude Code's to change, and `claude plugin` is the supported door.
+    private func installClaudeSkill() {
+        installingSkill = true
+        toolMessage = nil
+        skillMessage = "Installing…"
+        let path = LoginEnvironment.mergedPATH(login: LoginEnvironment.loginPATH,
+                                               inherited: ProcessInfo.processInfo.environment["PATH"])
+        DispatchQueue.global(qos: .userInitiated).async {
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = path
+            guard let claude = PTYHost.resolveProgram("claude", env: env) else {
+                DispatchQueue.main.async {
+                    installingSkill = false
+                    skillMessage = "Claude Code's `claude` command is not on your PATH."
+                }
+                return
+            }
+            // `add`/`install` fail once the marketplace and plugin are there, and `update`
+            // fails before they are: try the first, fall back to the second.
+            func run(_ args: [String]) -> (ok: Bool, out: String) {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: claude)
+                p.arguments = args
+                p.environment = env
+                let pipe = Pipe()
+                p.standardOutput = pipe
+                p.standardError = pipe
+                do { try p.run() } catch { return (false, error.localizedDescription) }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                let text = String(decoding: data, as: UTF8.self)
+                // Progress is rewritten with \r, so splitting on newlines alone leaves the
+                // spinner line glued to the result. Keep the last line that says something.
+                let last = text.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .last { !$0.isEmpty } ?? ""
+                return (p.terminationStatus == 0, last)
+            }
+            // The marketplace first, then the plugin — and `update` runs whether or not
+            // `install` succeeded, because `install` reports success for a plugin that is
+            // already there at an old version, which is exactly the case this button is for.
+            var market = run(["plugin", "marketplace", "add", "hulryung/damson"])
+            if !market.ok { market = run(["plugin", "marketplace", "update", "damson"]) }
+            let install = run(["plugin", "install", "damson-orchestration@damson"])
+            let update = run(["plugin", "update", "damson-orchestration@damson"])
+            let ok = install.ok || update.ok
+            let summary = update.ok ? update.out : (install.ok ? install.out : update.out)
+            DispatchQueue.main.async {
+                installingSkill = false
+                skillMessage = ok
+                    ? "\(summary) — restart Claude Code to pick it up."
+                    : "claude plugin failed: \(summary.isEmpty ? market.out : summary)"
+            }
+        }
     }
 
     /// "Version 0.3.0 (259)" — shown next to the manual check button.

@@ -49,6 +49,12 @@ Code skill that teaches Claude how to drive it. Ask for "a tab per task" and you
 labelled tab per piece of work, grouped so the whole run folds or closes as a unit — and a
 notification when one of them is blocked waiting on you.
 
+**Settings → Agents → Setup** does the whole install: it links the command-line tools onto
+your `PATH` and installs the skill for Claude Code, or the `/damson-orchestration` prompt for
+Codex, which has no plugin system. Press the buttons again later to update.
+
+By hand, for Claude Code:
+
 ```sh
 claude plugin marketplace add hulryung/damson
 claude plugin install damson-orchestration@damson
@@ -61,14 +67,18 @@ checked out for one skill, take just the plugin (about 250 KB):
 claude plugin marketplace add hulryung/damson --sparse .claude-plugin plugins
 ```
 
-The skill drives two command-line tools that ship inside the app, at
-`Damson.app/Contents/Resources/`. Link them onto your `PATH` — `install-local.sh` does this
-for you, or by hand:
+The skill drives command-line tools that ship inside the app, at
+`Damson.app/Contents/Resources/`. Settings → Agents → Setup links them into `~/.local/bin`
+without `sudo`; by hand, anywhere on your `PATH`:
 
 ```sh
-sudo ln -sf /Applications/Damson.app/Contents/Resources/damson-cli  /usr/local/bin/
-sudo ln -sf /Applications/Damson.app/Contents/Resources/damson-crew /usr/local/bin/
+ln -sf /Applications/Damson.app/Contents/Resources/damson-cli      ~/.local/bin/
+ln -sf /Applications/Damson.app/Contents/Resources/damson-crew     ~/.local/bin/
+ln -sf /Applications/Damson.app/Contents/Resources/damson-computer ~/.local/bin/
 ```
+
+Symlinks rather than copies: they follow the app when it updates, so the CLI never ends up
+older than the app it talks to.
 
 `damson-cli` addresses panes one at a time; `damson-crew` runs a whole list of tasks and
 waits for the one that needs you:
