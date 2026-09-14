@@ -1,5 +1,12 @@
 <p align="center">
-  <img src="assets/og.png" alt="Damson — the terminal built only for macOS" width="720">
+  <a href="assets/damson-promo-en.mp4">
+    <img src="assets/damson-promo-en.gif" alt="Damson: a 4.8-second tour of the native macOS terminal and split-pane workspace" width="960">
+  </a>
+  <br>
+  <b>One terminal. Your whole crew.</b><br>
+  <a href="assets/damson-promo-en.mp4">Watch the 4.8-second film</a> ·
+  <a href="assets/damson-promo-ko.mp4">Korean version</a> ·
+  <a href="assets/screenshots/split-workspace.png">Actual app screenshot</a>
 </p>
 
 # Damson
