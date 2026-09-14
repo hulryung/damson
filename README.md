@@ -6,7 +6,8 @@
   <b>One terminal. Your whole crew.</b><br>
   <a href="assets/damson-promo-en.mp4">Watch the 4.8-second film</a> ·
   <a href="assets/damson-promo-ko.mp4">Korean version</a> ·
-  <a href="assets/screenshots/split-workspace.png">Actual app screenshot</a>
+  <a href="assets/screenshots/split-workspace.png">Actual app screenshot</a> ·
+  <a href="https://damson.app/en/features/screen-effects">Explore 14 screen effects</a>
 </p>
 
 # Damson

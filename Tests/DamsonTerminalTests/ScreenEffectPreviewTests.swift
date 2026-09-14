@@ -25,9 +25,24 @@ final class ScreenEffectPreviewTests: XCTestCase {
 
     /// A grid that looks like a working terminal — prompt lines, code, ls
     /// columns — so refraction/fog effects have realistic content to distort.
-    private func makeGrid(cols: Int, rows: Int) -> Grid {
+    private func makeGrid(cols: Int, rows: Int, showcase: Bool = false) -> Grid {
         let grid = Grid(cols: cols, rows: rows, pen: CellAttrs(fg: .default))
-        let lines = [
+        let lines = showcase ? [
+            "$ damson / make it yours",
+            "",
+            "SCREEN EFFECTS  /  Native Metal rendering",
+            "",
+            "$ cat palette.swift",
+            "let idea = \"Something worth building\"",
+            "let tools = [\"Swift\", \"Metal\", \"You\"]",
+            "",
+            "  01  WRITE     02  BUILD     03  EXPLORE",
+            "",
+            "$ echo \"Your terminal. Your atmosphere.\"",
+            "Your terminal. Your atmosphere.",
+            "",
+            "$ _",
+        ] : [
             "$ swift build -c release",
             "Building for production...",
             "[42/42] Compiling DamsonTerminal Grid.swift",
@@ -54,12 +69,12 @@ final class ScreenEffectPreviewTests: XCTestCase {
     }
 
     private func render(effect: ScreenEffect, time: Float?,
-                        cols: Int = 64, rows: Int = 14) throws -> CGImage {
+                        cols: Int = 64, rows: Int = 14, showcase: Bool = false) throws -> CGImage {
         let config = DamsonConfig(fontFamily: "Menlo", fontSize: 13,
                                   screenEffect: effect, screenEffectIntensity: 1.0)
         let backend = try XCTUnwrap(MetalTerminalBackend(config: config))
         backend.effectTimeOverride = time
-        let grid = makeGrid(cols: cols, rows: rows)
+        let grid = makeGrid(cols: cols, rows: rows, showcase: showcase)
         let font = fontWithNerdFallback(family: config.fontFamily, size: config.fontSize)
         let metrics = CellMetrics(
             width: max(("M" as NSString).size(withAttributes: [.font: font]).width, 1),
@@ -94,6 +109,24 @@ final class ScreenEffectPreviewTests: XCTestCase {
             }
         }
         return count > 0 ? sum / Double(count) : 0
+    }
+
+    /// Opt-in documentation export; no windows or user preferences are changed.
+    func testExportShowcase() throws {
+        guard ProcessInfo.processInfo.environment["DAMSON_EXPORT_EFFECTS"] == "1" else {
+            throw XCTSkip("Set DAMSON_EXPORT_EFFECTS=1 to export documentation media")
+        }
+        guard MetalDevice.shared != nil else { throw XCTSkip("Metal unavailable") }
+        for effect in ScreenEffect.allCases {
+            let still = try render(effect: effect, time: 17, showcase: true)
+            _ = try pngWrite(still, "\(effect.rawValue).png")
+            if effect.isAnimated {
+                for frame in 0..<72 {
+                    let cg = try render(effect: effect, time: 17 + Float(frame) / 15, showcase: true)
+                    _ = try pngWrite(cg, String(format: "\(effect.rawValue)-%03d.png", frame))
+                }
+            }
+        }
     }
 
     func testAnimatedEffectSheets() throws {
