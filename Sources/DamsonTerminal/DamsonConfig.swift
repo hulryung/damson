@@ -30,9 +30,9 @@ public struct DamsonConfig {
     public var animations: Bool
     /// Default cursor shape. If the shell/app changes it via DECSCUSR that wins; ps=0 (reset) reverts to this value.
     public var cursorShape: Grid.CursorShape
-    /// Slide the cursor to its new cell instead of jumping. Default OFF — it changes how
-    /// every keystroke looks. macOS Reduce Motion overrides it, like the other animations.
-    public var smoothCursor: Bool
+    /// How the cursor moves between cells. Default `.none` (jump) — the others change how
+    /// every keystroke looks. macOS Reduce Motion overrides them, like the other animations.
+    public var cursorMotion: CursorMotionStyle
     /// Whether to render programming ligatures (=>, !=, ->, ===, etc.) cell-aligned. Default OFF.
     /// Depends on the font's own OpenType liga/calt tables — fonts without ligatures (Menlo, etc.)
     /// show no change even when enabled. Visible with Fira Code / JetBrains Mono / D2CodingLigature, etc.
@@ -102,7 +102,7 @@ public struct DamsonConfig {
         cursorBlink: Bool = false,
         animations: Bool = true,
         cursorShape: Grid.CursorShape = .block,
-        smoothCursor: Bool = false,
+        cursorMotion: CursorMotionStyle = .none,
         ligatures: Bool = false,
         showScrollbar: Bool = false,
         doubleWidthIcons: Bool = true,
@@ -130,7 +130,7 @@ public struct DamsonConfig {
         self.cursorBlink = cursorBlink
         self.animations = animations
         self.cursorShape = cursorShape
-        self.smoothCursor = smoothCursor
+        self.cursorMotion = cursorMotion
         self.ligatures = ligatures
         self.showScrollbar = showScrollbar
         self.doubleWidthIcons = doubleWidthIcons

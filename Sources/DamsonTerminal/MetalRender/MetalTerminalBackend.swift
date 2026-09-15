@@ -463,7 +463,8 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                                          scrollbackCount: grid.scrollback.count,
                                          evicted: grid.linesEvictedFromTop)
         cursorMotion.retarget(row: grid.scrollback.count + grid.cursorRow, col: grid.cursorCol,
-                              screen: screen, animated: config.smoothCursor && Motion.enabled)
+                              screen: screen,
+                              animated: config.cursorMotion.animates && Motion.enabled)
         if cursorMotion.animating { ensureRenderLoop() }
     }
 
@@ -1030,10 +1031,15 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// Returns nil when there's no block cursor to draw (other shapes use the
     /// CALayer overlay; blink-off / IME / hidden / off-screen → nothing).
     private func cursorDrawData(grid: Grid, state: RenderState)
-        -> (bg: BgInstance, glyph: GlyphInstance?, glyphIsColor: Bool)? {
-        guard grid.cursorVisible, grid.cursorShape == .block, state.markedText.isEmpty
-        else { return nil }
+        -> (bg: BgInstance?, ghosts: [BgInstance], glyph: GlyphInstance?, glyphIsColor: Bool)? {
+        guard grid.cursorVisible, state.markedText.isEmpty else { return nil }
         if state.cursorBlinkEnabled && !state.cursorBlinkVisible { return nil }
+        // The trail is drawn for every shape — the bar and underline keep their CALayer head
+        // and get their smear from here — so only the head below is block-only.
+        let ghosts = cursorGhosts(grid: grid)
+        guard grid.cursorShape == .block else {
+            return ghosts.isEmpty ? nil : (nil, ghosts, nil, false)
+        }
 
         let row = grid.scrollback.count + grid.cursorRow
         let col = grid.cursorCol
@@ -1055,7 +1061,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let y1 = moving ? y0 + metrics.height
                         : snap(inset.height + CGFloat(row + 1) * metrics.height) - scrollY
         // Off-screen (scrolled into history) → nothing to draw.
-        guard y1 > 0, y0 < metalView.bounds.height else { return nil }
+        guard y1 > 0, y0 < metalView.bounds.height else {
+            return ghosts.isEmpty ? nil : (nil, ghosts, nil, false)
+        }
         let origin = SIMD2<Float>(Float(x0), Float(y0))
         let size = SIMD2<Float>(Float(x1 - x0), Float(y1 - y0))
         let bg = BgInstance(origin: origin, size: size, color: rgba(config.cursorColor))
@@ -1063,10 +1071,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         // Mid-flight the box straddles two cells, so there is no one glyph to invert: the
         // destination character would ride along under the cursor, arriving before it does.
         // The box slides bare and the inverted glyph appears when it lands.
-        guard !moving, col < r.count else { return (bg, nil, false) }
+        guard !moving, col < r.count else { return (bg, ghosts, nil, false) }
         let cell = r[col]
         guard cell.char != " ", var region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide)
-        else { return (bg, nil, false) }
+        else { return (bg, ghosts, nil, false) }
         var gOrigin = origin, gSize = size
         if region.overflowCells > 0, region.overflowLeftAnchored {
             // Same per-instance policy as the base frame: natural size spilling right
@@ -1093,7 +1101,58 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let glyph = GlyphInstance(origin: gOrigin, size: gSize,
                                   uvOrigin: region.uv.origin, uvSize: region.uv.size,
                                   color: rgba(config.theme.background))
-        return (bg, glyph, region.isColor)
+        return (bg, ghosts, glyph, region.isColor)
+    }
+
+    /// The fading copies drawn along the path the cursor is travelling, in the cursor's own
+    /// shape: a block leaves blocks, a bar leaves bars. Empty unless the trail style is on
+    /// and a move is in flight, so this costs nothing in every other frame.
+    private func cursorGhosts(grid: Grid) -> [BgInstance] {
+        let count = config.cursorMotion.trailGhosts
+        guard count > 0, cursorMotion.animating else { return [] }
+        let path = cursorMotion.trail(count: count)
+        guard !path.isEmpty else { return [] }
+
+        let wide = grid.cursorCol + 1 < grid.cols && grid.cursorRow < grid.rows
+            && grid.cursorCol + 1 < grid.row(grid.cursorRow).count
+            && grid.row(grid.cursorRow)[grid.cursorCol + 1].isContinuation
+        let base = rgba(config.cursorColor)
+        var out: [BgInstance] = []
+        out.reserveCapacity(path.count)
+        for (i, p) in path.enumerated() {
+            // Linear fade from the head backwards; the last ghost is nearly gone, so the
+            // smear ends softly instead of stopping at a visible edge.
+            let fade = Float(1 - Double(i + 1) / Double(path.count + 1)) * Self.trailPeakAlpha
+            let rect = cursorShapeRect(row: p.row, col: p.col, shape: grid.cursorShape, wide: wide)
+            guard rect.maxY > 0, rect.minY < metalView.bounds.height else { continue }
+            out.append(BgInstance(origin: SIMD2<Float>(Float(rect.minX), Float(rect.minY)),
+                                  size: SIMD2<Float>(Float(rect.width), Float(rect.height)),
+                                  color: SIMD4<Float>(base.x, base.y, base.z, base.w * fade)))
+        }
+        return out
+    }
+
+    /// Strongest ghost's alpha. High enough to read against the text it passes over, low
+    /// enough that the trail never competes with the cursor itself.
+    private static let trailPeakAlpha: Float = 0.38
+
+    /// The rect the cursor covers at a (possibly fractional) position, in the shape the grid
+    /// asks for. Shared by the trail and the bar/underline overlay so the two cannot drift.
+    func cursorShapeRect(row: Double, col: Double, shape: Grid.CursorShape,
+                         wide: Bool) -> NSRect {
+        let cw = max(metrics.width, 1), ch = max(metrics.height, 1)
+        let cell = coordMap().cellRectInView(row: row, col: col)
+        let w = wide ? cw * 2 : cw
+        switch shape {
+        case .block:
+            return NSRect(x: cell.minX, y: cell.minY, width: w, height: ch)
+        case .underline:
+            let t = max(1.5, ch * 0.1)
+            return NSRect(x: cell.minX, y: cell.maxY - t, width: w, height: t)
+        case .bar:
+            let t = max(1.5, cw * 0.15)
+            return NSRect(x: cell.minX, y: cell.minY, width: t, height: ch)
+        }
     }
 
     /// Cheap signature of the render state that affects the base frame (cursor
@@ -1264,11 +1323,21 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         // them inline via setVertexBytes (the ≤4KB fast path) instead of allocating a
         // fresh MTLBuffer per frame — this pass runs even on frame-cache hits (a blinking
         // block cursor at 120Hz), so the old makeBuffer churned ~120 tiny allocs/sec.
-        var bg = cur.bg
         enc.setRenderPipelineState(md.bgPipeline)
         enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-        enc.setVertexBytes(&bg, length: MemoryLayout<BgInstance>.stride, index: 1)
-        enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
+        // The trail first, so the cursor itself sits on top of its own smear. Still the
+        // inline ≤4KB path: five ghosts are 160 bytes.
+        if !cur.ghosts.isEmpty {
+            var ghosts = cur.ghosts
+            enc.setVertexBytes(&ghosts,
+                               length: MemoryLayout<BgInstance>.stride * ghosts.count, index: 1)
+            enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                               instanceCount: ghosts.count)
+        }
+        if var bg = cur.bg {
+            enc.setVertexBytes(&bg, length: MemoryLayout<BgInstance>.stride, index: 1)
+            enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
+        }
 
         guard var g = cur.glyph,
               let tex = cur.glyphIsColor ? atlas?.colorTexture : atlas?.texture else { return }
@@ -1285,31 +1354,27 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let blinkOff = state.cursorBlinkEnabled && !state.cursorBlinkVisible
         guard grid.cursorVisible, shape != .block, state.markedText.isEmpty, !blinkOff,
               let host = metalView.superview else { return nil }
-        let map = coordMap()
-        let row = grid.scrollback.count + grid.cursorRow
         // The bar and underline are a CALayer the host repositions every frame of the render
         // loop (onScrollGeometryChanged), so feeding it the eased position is all they need.
-        let cell = cursorMotion.animating
-            ? map.cellRectInView(row: cursorMotion.drawn.row, col: cursorMotion.drawn.col)
-            : map.cellRectInView(row: row, col: grid.cursorCol)
+        let drawnRow = cursorMotion.animating
+            ? cursorMotion.drawn.row : Double(grid.scrollback.count + grid.cursorRow)
+        let drawnCol = cursorMotion.animating ? cursorMotion.drawn.col : Double(grid.cursorCol)
+        let cell = coordMap().cellRectInView(row: drawnRow, col: drawnCol)
         guard metalView.bounds.intersects(cell) else { return nil }
 
-        let cw = max(metrics.width, 1), ch = max(metrics.height, 1)
-        var cursorW = cw
+        var wide = false
         if grid.cursorCol + 1 < grid.cols && grid.cursorRow < grid.rows {
             let r = grid.row(grid.cursorRow)
-            if grid.cursorCol + 1 < r.count && r[grid.cursorCol + 1].isContinuation { cursorW = cw * 2 }
+            if grid.cursorCol + 1 < r.count && r[grid.cursorCol + 1].isContinuation { wide = true }
         }
 
         // Strip in flipped view coords, then convert to the host's (non-flipped) layer.
+        // Same helper the trail uses, so the smear can never be a different shape or
+        // thickness from the cursor leaving it.
         let stripInView: NSRect
         switch shape {
-        case .underline:
-            let t = max(1.5, ch * 0.1)
-            stripInView = NSRect(x: cell.minX, y: cell.maxY - t, width: cursorW, height: t)
-        case .bar:
-            let t = max(1.5, cw * 0.15)
-            stripInView = NSRect(x: cell.minX, y: cell.minY, width: t, height: ch)
+        case .underline, .bar:
+            stripInView = cursorShapeRect(row: drawnRow, col: drawnCol, shape: shape, wide: wide)
         case .block:
             return nil
         }

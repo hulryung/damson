@@ -169,6 +169,49 @@ final class CursorMotionTests: XCTestCase {
         XCTAssertTrue(m.animating)
     }
 
+    // MARK: - Trail
+
+    /// A cursor sitting still has no smear — and nothing to keep the display link alive for.
+    func testAnIdleCursorHasNoTrail() {
+        var m = CursorMotion()
+        m.retarget(row: 2, col: 2, screen: screen, animated: true)
+        XCTAssertTrue(m.trail(count: 5).isEmpty)
+    }
+
+    /// Each ghost is further back than the one in front of it, and none of them run past the
+    /// ends of the move — a trail that overshoots reads as a second cursor.
+    func testGhostsLagBehindTheHeadInOrderAndStayOnThePath() {
+        var m = CursorMotion()
+        m.retarget(row: 0, col: 0, screen: screen, animated: true)
+        m.retarget(row: 0, col: 40, screen: screen, animated: true)
+        for _ in 0..<5 { _ = m.step(dt: 1.0 / 120) }
+
+        let ghosts = m.trail(count: 5)
+        XCTAssertEqual(ghosts.count, 5)
+        var previous = m.drawn.col
+        for g in ghosts {
+            XCTAssertLessThanOrEqual(g.col, previous, "a ghost passed the one ahead of it")
+            XCTAssertGreaterThanOrEqual(g.col, 0)
+            XCTAssertLessThanOrEqual(g.col, 40)
+            previous = g.col
+        }
+    }
+
+    /// As the cursor lands, the tail catches up: a smear left hanging behind the settled
+    /// cursor would look like a stuck second cursor until the next keystroke.
+    func testTheTailCollapsesIntoTheHeadOnArrival() {
+        var m = CursorMotion()
+        m.retarget(row: 0, col: 0, screen: screen, animated: true)
+        m.retarget(row: 0, col: 40, screen: screen, animated: true)
+        while !m.step(dt: 1.0 / 120) {
+            let ghosts = m.trail(count: 5)
+            if let last = ghosts.last, m.drawn.col > 39 {
+                XCTAssertGreaterThan(last.col, 30, "the tail is still at the far end on arrival")
+            }
+        }
+        XCTAssertTrue(m.trail(count: 5).isEmpty, "settled: no trail left behind")
+    }
+
     /// Stepping an idle motion is a no-op that reports "settled", so the caller stops the link.
     func testSteppingWhenIdleIsSettled() {
         var m = CursorMotion()

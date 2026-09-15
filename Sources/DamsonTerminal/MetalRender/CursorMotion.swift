@@ -82,6 +82,29 @@ struct CursorMotion {
         animating = false
     }
 
+    /// Where the cursor has just been, nearest first — the smear drawn behind it.
+    ///
+    /// Sampled from this move's own progress rather than a buffer of past frames: a history
+    /// buffer drifts out of step with the head whenever frames are dropped, and it has to be
+    /// cleared on every teleport or the trail stretches across the screen. Sampling the path
+    /// cannot do either, and the tail collapses into the head on arrival for free.
+    func trail(count: Int, lag: Double = 0.14) -> [Anchor] {
+        guard animating, count > 0, lag > 0 else { return [] }
+        // The lag shrinks with the distance left to cover. Under a constant lag the easing's
+        // own deceleration strands the tail: measured, the head had all but arrived (column
+        // 39 of 40) while the oldest ghost was still at column 24, and the whole smear then
+        // vanished at once when the move settled. Folding in the remaining progress pulls
+        // the tail into the head as it lands, so the trail ends by disappearing INTO the
+        // cursor rather than being switched off behind it.
+        let reach = lag * (1 - progress)
+        return (1...count).map { i in
+            let p = max(0, progress - Double(i) * reach)
+            let e = 1 - pow(1 - p, 3)
+            return Anchor(row: origin.row + (target.row - origin.row) * e,
+                          col: origin.col + (target.col - origin.col) * e)
+        }
+    }
+
     /// Advance an in-flight move by `dt` seconds, frame-rate independently. Returns true once
     /// settled, which is the caller's signal to stop the display link. A no-op returns true.
     @discardableResult
