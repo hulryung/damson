@@ -11,6 +11,11 @@ struct CoordinateMap {
 
     /// Cell rect in the (flipped) content-view coordinate space.
     func cellRectInView(row: Int, col: Int) -> NSRect {
+        cellRectInView(row: Double(row), col: Double(col))
+    }
+
+    /// The same, for a position between cells — what a smoothly moving cursor draws at.
+    func cellRectInView(row: Double, col: Double) -> NSRect {
         let x = inset.width + CGFloat(col) * cellW
         let y = inset.height + CGFloat(row) * cellH - scrollY
         return NSRect(x: x, y: y, width: cellW, height: cellH)

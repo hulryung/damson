@@ -255,6 +255,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         if !started {
             // macOS < 14: no display link → settle the ease immediately and render once synchronously.
             if scroll.animating { _ = scroll.step(dt: 10) }   // large dt → converge to target instantly
+            if cursorMotion.animating { _ = cursorMotion.step(dt: 10) }
             scrollRenderPending = false
             redrawLast()
             onScrollGeometryChanged?()
@@ -268,10 +269,14 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     private func renderLoopTick(dt: CFTimeInterval) -> Bool {
         let easing = scroll.animating
         if easing { _ = scroll.step(dt: CGFloat(dt)) }
+        // The cursor rides the same loop as the scroll ease rather than a link of its own:
+        // both move the same frame, and one link means one render per vsync, not two.
+        let cursorMoving = cursorMotion.animating
+        if cursorMoving { _ = cursorMotion.step(dt: Double(dt)) }
 
-        if fpsLogEnabled { measureFrame(dt: dt, rendered: easing || scrollRenderPending) }
+        if fpsLogEnabled { measureFrame(dt: dt, rendered: easing || cursorMoving || scrollRenderPending) }
 
-        if easing || scrollRenderPending {
+        if easing || cursorMoving || scrollRenderPending {
             scrollRenderPending = false
             renderLoopIdleTicks = 0
             // Already aligned to vsync → render immediately, no throttle.
@@ -284,7 +289,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             renderLoopIdleTicks += 1
         }
         // Keep going while an ease is in flight. Otherwise stop once the idle grace period passes (gesture + momentum ended).
-        if scroll.animating { return false }
+        if scroll.animating || cursorMotion.animating { return false }
         return renderLoopIdleTicks > renderLoopMaxIdleTicks
     }
 
@@ -443,6 +448,25 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         return max(0, min(1, p))
     }
 
+    // MARK: - Smooth cursor
+
+    /// Where the cursor is drawn, eased toward the cell the grid reports. Pass-4 state only:
+    /// `FrameKey` excludes the cursor, so sliding it never invalidates the cached base frame.
+    private var cursorMotion = CursorMotion()
+
+    /// Point the motion at this frame's cursor cell, and keep the render loop alive while it
+    /// travels. Called on every render, including the loop's own frames — the guard inside
+    /// `retarget` is what keeps a blink tick from restarting a move.
+    private func aimCursor(at grid: Grid, config: DamsonConfig) {
+        let screen = CursorMotion.Screen(altScreen: grid.isAltScreenActive,
+                                         cols: grid.cols, rows: grid.rows,
+                                         scrollbackCount: grid.scrollback.count,
+                                         evicted: grid.linesEvictedFromTop)
+        cursorMotion.retarget(row: grid.scrollback.count + grid.cursorRow, col: grid.cursorCol,
+                              screen: screen, animated: config.smoothCursor && Motion.enabled)
+        if cursorMotion.animating { ensureRenderLoop() }
+    }
+
     /// Protocol entry point — aperiodic paths like typing / grid changes. Throttled.
     func render(grid: Grid, config: DamsonConfig, state: RenderState, metrics: CellMetrics) {
         render(grid: grid, config: config, state: state, metrics: metrics, throttled: true)
@@ -454,6 +478,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         self.metrics = metrics
         self.lastGrid = grid
         self.lastState = state
+        aimCursor(at: grid, config: config)
         self.lastTotalRows = grid.scrollback.count + grid.rows
         // Keep the scroll clamp current as content grows/shrinks (re-clamps if the
         // viewport now extends past the new bottom). Includes the follow anchor —
@@ -1015,17 +1040,30 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let r = grid.row(grid.cursorRow)
         let wide = col + 1 < r.count && r[col + 1].isContinuation
         let wcells = wide ? 2 : 1
-        let x0 = snap(inset.width + CGFloat(col) * metrics.width)
-        let x1 = snap(inset.width + CGFloat(col + wcells) * metrics.width)
-        let y0 = snap(inset.height + CGFloat(row) * metrics.height) - scrollY
-        let y1 = snap(inset.height + CGFloat(row + 1) * metrics.height) - scrollY
+        // While the cursor is travelling it sits between cells, so its rect comes from the
+        // eased position and is NOT snapped to the pixel grid — snapping would quantise the
+        // slide into cell-sized hops, which is the jump this is meant to replace.
+        let moving = cursorMotion.animating
+        let drawnRow = moving ? cursorMotion.drawn.row : Double(row)
+        let drawnCol = moving ? cursorMotion.drawn.col : Double(col)
+        let x0 = moving ? inset.width + CGFloat(drawnCol) * metrics.width
+                        : snap(inset.width + CGFloat(col) * metrics.width)
+        let x1 = moving ? x0 + CGFloat(wcells) * metrics.width
+                        : snap(inset.width + CGFloat(col + wcells) * metrics.width)
+        let y0 = moving ? inset.height + CGFloat(drawnRow) * metrics.height - scrollY
+                        : snap(inset.height + CGFloat(row) * metrics.height) - scrollY
+        let y1 = moving ? y0 + metrics.height
+                        : snap(inset.height + CGFloat(row + 1) * metrics.height) - scrollY
         // Off-screen (scrolled into history) → nothing to draw.
         guard y1 > 0, y0 < metalView.bounds.height else { return nil }
         let origin = SIMD2<Float>(Float(x0), Float(y0))
         let size = SIMD2<Float>(Float(x1 - x0), Float(y1 - y0))
         let bg = BgInstance(origin: origin, size: size, color: rgba(config.cursorColor))
 
-        guard col < r.count else { return (bg, nil, false) }
+        // Mid-flight the box straddles two cells, so there is no one glyph to invert: the
+        // destination character would ride along under the cursor, arriving before it does.
+        // The box slides bare and the inverted glyph appears when it lands.
+        guard !moving, col < r.count else { return (bg, nil, false) }
         let cell = r[col]
         guard cell.char != " ", var region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide)
         else { return (bg, nil, false) }
@@ -1249,7 +1287,11 @@ final class MetalTerminalBackend: TerminalRenderBackend {
               let host = metalView.superview else { return nil }
         let map = coordMap()
         let row = grid.scrollback.count + grid.cursorRow
-        let cell = map.cellRectInView(row: row, col: grid.cursorCol)
+        // The bar and underline are a CALayer the host repositions every frame of the render
+        // loop (onScrollGeometryChanged), so feeding it the eased position is all they need.
+        let cell = cursorMotion.animating
+            ? map.cellRectInView(row: cursorMotion.drawn.row, col: cursorMotion.drawn.col)
+            : map.cellRectInView(row: row, col: grid.cursorCol)
         guard metalView.bounds.intersects(cell) else { return nil }
 
         let cw = max(metrics.width, 1), ch = max(metrics.height, 1)

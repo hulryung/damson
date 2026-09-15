@@ -17,6 +17,7 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.cursorBlink") private var cursorBlink: Bool = false
     @AppStorage("damson.animations") private var animations: Bool = true
     @AppStorage("damson.cursorShape") private var cursorShapeRaw: String = Grid.CursorShape.block.rawValue
+    @AppStorage("damson.smoothCursor") private var smoothCursor: Bool = false
     @AppStorage("damson.ligatures") private var ligatures: Bool = false
     @AppStorage("damson.doubleWidthIcons") private var doubleWidthIcons: Bool = true
     @AppStorage("damson.ambiguousWide") private var ambiguousWide: Bool = false
@@ -96,6 +97,7 @@ struct DamsonSettingsView: View {
         .onChange(of: cursorBlink) { _ in postChanged() }
         .onChange(of: animations) { _ in postChanged() }
         .onChange(of: cursorShapeRaw) { _ in postChanged() }
+        .onChange(of: smoothCursor) { _ in postChanged() }
         .onChange(of: ligatures) { _ in postChanged() }
         .onChange(of: doubleWidthIcons) { _ in postChanged() }
         .onChange(of: ambiguousWide) { _ in postChanged() }
@@ -330,6 +332,12 @@ struct DamsonSettingsView: View {
                     Text("Bar").tag(Grid.CursorShape.bar.rawValue)
                 }
                 Toggle("Blink", isOn: $cursorBlink)
+                Toggle("Smooth motion", isOn: $smoothCursor)
+                Text("The cursor slides to its new cell instead of jumping — about a tenth of "
+                     + "a second, on the GPU. Output that scrolls the screen still moves it "
+                     + "instantly; only moves within the screen slide.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 Toggle("Animations", isOn: $animations)
             }
             Section("IME Composition (Korean / Japanese / Chinese composition display)") {
@@ -969,6 +977,7 @@ extension DamsonConfig {
            let shape = Grid.CursorShape(rawValue: raw) {
             config.cursorShape = shape
         }
+        config.smoothCursor = d.object(forKey: "damson.smoothCursor") as? Bool ?? false
         if let themeName = d.string(forKey: "damson.theme") {
             if themeName == DamsonTheme.customName {
                 config.theme = CustomTheme.load().toTheme()
