@@ -283,6 +283,10 @@ public final class DamsonSession: ObservableObject {
     public static let tmuxControlModeDetectedNotification =
         Notification.Name("DamsonSessionTmuxControlModeDetected")
 
+    /// The version XTVERSION reports after the name ("damson 0.8.5"). Set once by the app at
+    /// launch; nil reports the name alone.
+    public static var terminalVersion: String?
+
     /// True while this session's stream is a tmux control-mode stream (post-DCS-takeover):
     /// bytes route to `onTmuxControlData` instead of the VT parser/grid.
     public private(set) var inTmuxControlMode = false
@@ -451,9 +455,9 @@ public final class DamsonSession: ObservableObject {
         // Common default handling: when the first param is unspecified (-1) or 0, treat it as 1.
         let p1 = (params.first ?? -1) <= 0 ? 1 : params[0]
 
-        // Dispatch by category. Each CSI final byte belongs to exactly one group,
-        // so the order between handlers doesn't matter; each returns whether it
-        // consumed the byte.
+        // Dispatch by category. Each CSI final byte belongs to exactly one group — except
+        // `q`, which DECSCUSR (state) and XTVERSION (report) tell apart by marker — so the
+        // order between handlers doesn't matter; each returns whether it consumed the byte.
         if applyCursorCSI(finalByte, p1: p1, params: params) { return }
         if applyEditCSI(finalByte, p1: p1, params: params) { return }
         if applyStateCSI(finalByte, params: params, intermediates: intermediates, privateMarker: privateMarker) { return }
@@ -546,21 +550,37 @@ public final class DamsonSession: ObservableObject {
                 grid.setScrollRegion(top: top - 1, bottom: bot - 1)
             }
         case 0x71:                          // q — DECSCUSR (intermediate=SP)
-            if privateMarker == nil && intermediates == [0x20] {
-                let shape: Grid.CursorShape
-                switch params.first ?? 0 {
-                case 1, 2: shape = .block
-                case 3, 4: shape = .underline
-                case 5, 6: shape = .bar
-                default: shape = config.cursorShape  // 0/unspecified = reset → user default
-                }
-                grid.setCursorShape(shape)
+            // Any other `q` is not ours: `CSI > q` is XTVERSION, answered in applyReportCSI.
+            guard privateMarker == nil && intermediates == [0x20] else { return false }
+            let shape: Grid.CursorShape
+            switch params.first ?? 0 {
+            case 1, 2: shape = .block
+            case 3, 4: shape = .underline
+            case 5, 6: shape = .bar
+            default: shape = config.cursorShape  // 0/unspecified = reset → user default
             }
+            grid.setCursorShape(shape)
         case 0x67:                          // g — TBC (tab clear)
             if privateMarker == nil { applyTabClear(params) }
         default: return false
         }
         return true
+    }
+
+    /// DECRQM's answer for one mode: 1 set, 2 reset, 0 not recognized. Only modes whose
+    /// state damson actually keeps are reported — a wrong answer is worse than 0.
+    private func modeState(_ mode: Int, isPrivate: Bool) -> Int {
+        func report(_ on: Bool) -> Int { on ? 1 : 2 }
+        guard isPrivate else { return mode == 4 ? report(grid.insertMode) : 0 }   // IRM
+        switch mode {
+        case 25: return report(grid.cursorVisible)
+        case 47, 1047, 1049: return report(grid.isAltScreenActive)
+        case 1000, 1002, 1003: return report(mouseReportingMode == mode)
+        case 1006: return report(mouseSGREncoding)
+        case 2004: return report(bracketedPasteEnabled)
+        case 2026: return report(grid.inSyncOutputMode)
+        default: return 0
+        }
     }
 
     /// TBC (`CSI g`): 0 clears the tab stop at the cursor, 3 clears every stop.
@@ -572,11 +592,29 @@ public final class DamsonSession: ObservableObject {
         }
     }
 
-    /// CSIs that write a reply back to the program: device attributes (DA1/DA2)
-    /// and device status report (DSR — operating status / cursor position).
+    /// CSIs that write a reply back to the program: device attributes (DA1/DA2), device
+    /// status report (DSR — operating status / cursor position), terminal name (XTVERSION)
+    /// and mode state (DECRQM).
+    ///
+    /// Programs decide what to use from these answers. Claude Code asks XTVERSION, then
+    /// DECRQM 2026, and draws with synchronized output only if both are answered; left
+    /// unanswered, its frames reach the screen torn and the bottom of the screen flickers
+    /// under scrolling output.
     private func applyReportCSI(_ finalByte: UInt8, params: [Int], intermediates: [UInt8],
                                 privateMarker: UInt8?) -> Bool {
         switch finalByte {
+        case 0x71:                          // q — XTVERSION (`CSI > q`) → DCS > | name ST
+            guard privateMarker == 0x3E, intermediates.isEmpty, (params.first ?? 0) <= 0 else {
+                return false
+            }
+            let name = Self.terminalVersion.map { "damson \($0)" } ?? "damson"
+            pty.write(Data("\u{1B}P>|\(name)\u{1B}\\".utf8))
+        case 0x70:                          // p — DECRQM (`CSI ? Ps $ p`, `CSI Ps $ p`)
+            guard intermediates == [0x24], privateMarker == nil || privateMarker == 0x3F,
+                  let mode = params.first, mode >= 0 else { return false }
+            let isPrivate = privateMarker == 0x3F
+            let state = modeState(mode, isPrivate: isPrivate)
+            pty.write(Data("\u{1B}[\(isPrivate ? "?" : "")\(mode);\(state)$y".utf8))
         case 0x63:                          // c — DA1 / DA2
             if privateMarker == nil && intermediates.isEmpty {
                 // Primary DA → VT102 identification: ESC [ ? 6 c

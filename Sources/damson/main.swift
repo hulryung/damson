@@ -19,6 +19,9 @@ BrokenPipes.ignoreInThisProcess()
 // Required to fix the Korean IME first-jamo race (LaunchServices registration).
 AppBundleTrampoline.relaunchInAppBundleIfNeeded()
 
+// What panes' programs are told when they ask who the terminal is (XTVERSION).
+DamsonSession.terminalVersion = BuildInfo.shortVersion ?? BuildInfo.gitHash.map { "dev-\($0)" }
+
 /// One window + one pane tree (Standard/Auto mode). Multiple windows are grouped
 /// via native NSWindow tabs, and within each window Cmd+D / Cmd+Shift+D split panes.
 final class DamsonWindowController: NSWindowController, NSWindowDelegate, PaneTreeHosting, PaneCommandTarget {
