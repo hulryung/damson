@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import DamsonControl
 import DamsonAgents
+import DamsonKeeperCore
 import DamsonTerminal
 import SwiftUI
 

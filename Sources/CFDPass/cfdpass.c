@@ -6,9 +6,14 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+// How long cfd_send waits for the peer to make room: 200 rounds of at most 10 ms.
+#define CFD_SEND_ROUNDS 200
+#define CFD_SEND_ROUND_MS 10
 
 long cfd_send(int sock, int fd, const void *payload, size_t n) {
     if (n == 0) {
@@ -35,11 +40,21 @@ long cfd_send(int sock, int fd, const void *payload, size_t n) {
     cm->cmsg_len = CMSG_LEN(sizeof(int));
     memcpy(CMSG_DATA(cm), &fd, sizeof(int));
 
-    ssize_t r;
-    do {
-        r = sendmsg(sock, &msg, 0);
-    } while (r < 0 && errno == EINTR);
-    return r;
+    // A stream socket that has less room left than the control message does not block the
+    // way a plain write would: macOS refuses the fd outright with EMSGSIZE. Every caller
+    // sends a line just before the fd, and a line longer than the socket buffer is still
+    // being read when this runs, so the refusal only means "not yet". Wait for the reader
+    // to make room, but not forever — a peer that stopped reading is not coming back.
+    // (Our control message is 16 bytes, never too large for an empty buffer, so EMSGSIZE
+    // here is always this case.)
+    for (int round = 0;; round++) {
+        ssize_t r = sendmsg(sock, &msg, 0);
+        if (r >= 0) return r;
+        if (errno == EINTR) continue;
+        if ((errno != EMSGSIZE && errno != ENOBUFS) || round >= CFD_SEND_ROUNDS) return -1;
+        struct pollfd p = {.fd = sock, .events = POLLOUT, .revents = 0};
+        (void)poll(&p, 1, CFD_SEND_ROUND_MS);
+    }
 }
 
 long cfd_recv(int sock, int *out_fd, void *payload, size_t cap) {

@@ -193,8 +193,11 @@ public final class KeeperState {
                 var byte: UInt8 = 0x46   // "F"
                 let sent = withUnsafeBytes(of: &byte) { cfd_send(conn, h.fd, $0.baseAddress!, 1) }
                 guard sent > 0 else {
-                    log("cfd_send failed uuid=\(uuid) errno=\(errno)")
-                    continue
+                    // The client holds an `ok` grant and is waiting for this fd. Reading its
+                    // next line would leave each side waiting for the other, so hang up: the
+                    // client asks again on a new connection, and the session is still held.
+                    log("cfd_send failed uuid=\(uuid) errno=\(errno) — hanging up")
+                    return false
                 }
                 if let ackLine = keeperReadLine(fd: conn),
                    let ack = keeperDecode(KeeperClaimRequest.self, ackLine), ack.op == "ack" {

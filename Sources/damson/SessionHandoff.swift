@@ -1,6 +1,7 @@
 import AppKit
 import CFDPass
 import DamsonControl
+import DamsonKeeperCore
 import DamsonTerminal
 import Darwin
 
@@ -20,16 +21,6 @@ struct SessionHandoffRecord {
     let uuid: String
     let preamble: Data
     let cwd: String?
-}
-
-/// What the launch side gets back per claimed session.
-struct AdoptedSession {
-    let fd: Int32
-    let pid: pid_t
-    let startSec: UInt64
-    let startUsec: UInt64
-    /// Handoff tail + everything the child printed while the app was down.
-    let buffer: Data
 }
 
 enum SessionHandoff {
@@ -181,54 +172,10 @@ enum SessionHandoff {
     /// keeper holds that aren't in `wanted` are closed by the keeper at "end" (their leaves
     /// no longer exist in the saved layout).
     static func claim(generation: String, wanted: [String]) -> [String: AdoptedSession] {
-        let path = keeperSocketPath(generation: generation)
-        var sock: Int32 = -1
-        for attempt in 0..<3 {
-            if attempt > 0 { usleep(200_000) }
-            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-            guard fd >= 0 else { continue }
-            if bindOrConnectUnix(fd: fd, path: path, listen: false) == nil {
-                sock = fd
-                break
-            }
-            close(fd)
-        }
-        guard sock >= 0 else {
-            NSLog("damson: no keeper answering for generation %@", generation)
-            return [:]
-        }
-        defer { close(sock) }
-        disableSIGPIPE(sock)
-
-        guard keeperWriteLine(fd: sock, KeeperClaimHello(generation: generation)),
-              let invLine = keeperReadLine(fd: sock),
-              let inventory = keeperDecode(KeeperInventory.self, invLine), inventory.ok else {
-            return [:]
-        }
-        let alive = Set(inventory.sessions.filter(\.alive).map(\.uuid))
-
-        var out: [String: AdoptedSession] = [:]
-        for uuid in wanted where alive.contains(uuid) {
-            guard keeperWriteLine(fd: sock, KeeperClaimRequest(op: "claim", uuid: uuid)),
-                  let grantLine = keeperReadLine(fd: sock),
-                  let grant = keeperDecode(KeeperClaimGrant.self, grantLine), grant.ok else {
-                continue
-            }
-            var fd: Int32 = -1
-            var byte: UInt8 = 0
-            let r = cfd_recv(sock, &fd, &byte, 1)
-            guard r > 0, fd >= 0, let pid = grant.pid else {
-                if fd >= 0 { close(fd) }
-                continue
-            }
-            _ = keeperWriteLine(fd: sock, KeeperClaimRequest(op: "ack"))
-            out[uuid] = AdoptedSession(
-                fd: fd, pid: pid,
-                startSec: grant.startSec ?? 0, startUsec: grant.startUsec ?? 0,
-                buffer: grant.buffer.flatMap { Data(base64Encoded: $0) } ?? Data())
-        }
-        _ = keeperWriteLine(fd: sock, KeeperClaimRequest(op: "end"))
-        _ = keeperReadLine(fd: sock)   // best effort
+        let out = KeeperClaimClient.claim(
+            socketPath: keeperSocketPath(generation: generation),
+            generation: generation, wanted: wanted,
+            log: { NSLog("damson: %@", $0) })
         if !out.isEmpty {
             NSLog("damson: adopted %d surviving session(s)", out.count)
         }

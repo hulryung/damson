@@ -5,7 +5,9 @@
 
 /// Send one file descriptor over a SOCK_STREAM unix socket via SCM_RIGHTS,
 /// alongside `n` bytes of payload (must be >= 1 — ancillary data cannot travel
-/// on an empty message). Returns bytes sent, or -1 with errno set.
+/// on an empty message). Returns bytes sent, or -1 with errno set. While the
+/// peer's unread bytes leave no room for the fd, waits for it to read — up to
+/// about two seconds — instead of failing at once as the kernel does.
 long cfd_send(int sock, int fd, const void *payload, size_t n);
 
 /// Receive up to `cap` payload bytes and at most one fd. On return, *out_fd is

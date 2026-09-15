@@ -98,6 +98,7 @@ let package = Package(
                 "DamsonTabGroups",
                 "DamsonCrew",
                 "DamsonComputer",
+                "DamsonKeeperCore",
                 "CFDPass",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
@@ -129,7 +130,8 @@ let package = Package(
         ),
         // The keeper's behaviour, split from its process setup so it can be tested: this
         // process holds every surviving session's PTY master across an app restart, so a
-        // trap in it is every shell losing its terminal at once.
+        // trap in it is every shell losing its terminal at once. The app's side of the claim
+        // lives here too, so the two halves of the conversation are tested against each other.
         // Foundation/Darwin ONLY — must never link AppKit (it would register with
         // LaunchServices and outlive the app as a ghost "app").
         .target(
@@ -169,7 +171,7 @@ let package = Package(
         ),
         .testTarget(
             name: "DamsonKeeperCoreTests",
-            dependencies: ["DamsonKeeperCore", "DamsonControl"],
+            dependencies: ["DamsonKeeperCore", "DamsonControl", "CFDPass"],
             path: "Tests/DamsonKeeperCoreTests"
         ),
     ]

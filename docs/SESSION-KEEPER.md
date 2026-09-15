@@ -49,6 +49,22 @@ fd copy at ack (so the app's close is once again the LAST close), closes whateve
 claimed, and exits. Unclaimed for 15 minutes, or SIGTERM (logout): close everything —
 children get standard logout HUP — and exit.
 
+The claim runs on the main thread before any window exists, so the app side
+(`KeeperClaimClient`) can never wait forever: every read and write has a 5 s timeout, and
+the fd after a grant gets 500 ms. When any turn goes wrong the app hangs up and asks again
+on a new connection. That is safe because the keeper keeps any session it has not seen
+acked. Each session gets 3 tries before its leaf falls back to a fresh shell. The keeper
+hangs up too if it cannot send a granted fd, instead of waiting for a line the app will
+never send.
+
+An fd needs room in the socket. macOS refuses SCM_RIGHTS outright (EMSGSIZE, no
+blocking) while the peer's unread bytes fill the 8 KB stream buffer. Grant and hold lines
+carry buffered output, so they often exceed that, and the fd follows while the peer is
+still reading. `cfd_send` waits up to ~2 s for room instead of failing. Before it did,
+the 0.8.3 launch that found this had 3 of 17 fds refused. Each time the app waited
+forever for the fd with an `ok` grant in hand, and every session it had already claimed
+was lost at the force quit.
+
 Each adopted leaf builds `PTYHost.adopt(fd:pid:startSec:startUsec:replay:)` +
 `DamsonSession(config:restoredScrollback:backend:)`. Replay = preamble + tail + keeper
 buffer, delivered through `onData` before the read loop starts, so bytes parse in exact
@@ -67,6 +83,8 @@ a full repaint of alt-screen programs.
 - Child dies while held → EOF marks it dead; its leaf falls back to a fresh shell with
   restored scrollback (and the "session restored" separator).
 - Generation mismatch (stale keeper, another instance) → claim refused → fresh-spawn path.
+- Keeper stops answering mid-claim → the app keeps what it claimed so far; the rest fall
+  back to fresh shells and the keeper closes them at its unclaimed timeout.
 - Crash (no handoff ran) → nothing held → plain restore, as before this feature.
 
 ## Limits
