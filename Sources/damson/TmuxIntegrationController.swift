@@ -244,6 +244,11 @@ final class TmuxIntegrationController {
         // Inherit the user's font/theme/etc.; the spawn argv is irrelevant (tmux owns the
         // pane process, so TmuxPaneBackend.spawn is a no-op).
         let session = DamsonSession(config: .fromUserDefaults(), backend: backend)
+        // A pane tmux just split off shows up here rather than through PaneTreeView.split;
+        // give it the zoom of the window's active pane, as a local split would.
+        if let active = windowActivePane[win].flatMap({ sessions[$0] }) {
+            session.setFontZoom(active.fontZoom)
+        }
         sessions[pane] = session
         backends[pane] = backend
         paneLeaves[pane] = PaneNode.leaf(session)

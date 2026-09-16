@@ -65,6 +65,23 @@ public final class DamsonSession: ObservableObject {
     /// so stable across eviction). The source for ⌘↑/⌘↓ prompt jumps. Accumulated only when
     /// shell integration (OSC 133 emit) is enabled.
     public private(set) var promptMarks: [UInt64] = []
+
+    /// Font zoom multiplier (⌘= / ⌘- / ⌘0); 1.0 is the configured size. Session state rather
+    /// than surface state on purpose: a settings hot-reload replaces `config` wholesale, a
+    /// new tab or split copies the focused pane's zoom onto its fresh session before any
+    /// surface exists, and restoration saves it beside the cwd. A surface observes
+    /// `$fontZoom` and derives its render font from `config.fontSize` × this value.
+    @Published public private(set) var fontZoom: CGFloat = 1.0
+    public static let fontZoomRange: ClosedRange<CGFloat> = 0.5...4.0
+
+    /// Set the zoom, clamped to `fontZoomRange`. Publishes only on an actual change, so
+    /// copying 1.0 onto a fresh session is free and a clamped no-op does not redraw.
+    public func setFontZoom(_ multiplier: CGFloat) {
+        let clamped = min(max(multiplier, Self.fontZoomRange.lowerBound),
+                          Self.fontZoomRange.upperBound)
+        if clamped != fontZoom { fontZoom = clamped }
+    }
+
     public var onBell: (() -> Void)?
     public var onExit: ((Int32) -> Void)?
     public var onURLClick: ((URL) -> Void)?

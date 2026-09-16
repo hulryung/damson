@@ -156,6 +156,9 @@ final class PaneTreeView: NSView {
             config = c
         }
         let newSession = DamsonSession(config: config)
+        // The new pane sits beside the one it was split from, so it shows the same zoom —
+        // before its surface exists, so it never flashes at the base size first.
+        newSession.setFontZoom(activeSession.fontZoom)
         let newLeaf = PaneNode.leaf(newSession)
         let oldKind = activeLeaf.kind
         // Replace activeLeaf's kind with a split. The activeLeaf instance stays the same (preserving the parent link).
@@ -211,7 +214,9 @@ final class PaneTreeView: NSView {
             } else {
                 var config = DamsonConfig.fromUserDefaults()
                 if let cwd = activeSession?.currentDirectory { config.cwd = cwd }
-                leaves.append(PaneNode.leaf(DamsonSession(config: config)))
+                let session = DamsonSession(config: config)
+                if let activeSession { session.setFontZoom(activeSession.fontZoom) }
+                leaves.append(PaneNode.leaf(session))
             }
         }
         // Terminate sessions for panes the template doesn't keep.

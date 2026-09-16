@@ -488,6 +488,10 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
             config = c
         }
         let session = DamsonSession(config: config)
+        // Same zoom as the pane the user is looking at — whatever the tab runs. Unlike the
+        // cwd this is not a policy choice: a ⌘T next to a zoomed pane that came up small
+        // read as a bug, never as "back to the default".
+        if let active = activeSession { session.setFontZoom(active.fontZoom) }
         addTab(tree: PaneTreeView(rootSession: session), transition: .create)
         return session
     }

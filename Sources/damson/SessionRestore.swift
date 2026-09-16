@@ -28,7 +28,7 @@ import DamsonTerminal
 /// every window's layout on a downgrade, not just the new part.
 indirect enum RestorablePane: Codable {
     case leaf(cwd: String?, scrollbackID: String?, sessionID: String?, preamble: String?,
-              paneID: String? = nil, argv: [String]? = nil)
+              paneID: String? = nil, argv: [String]? = nil, fontZoom: Double? = nil)
     case split(direction: String, ratio: Double, first: RestorablePane, second: RestorablePane)
 }
 
@@ -211,18 +211,22 @@ extension PaneNode {
             // saved as a shell the first time the user changed a preference.
             let argv = session.launchArgv
             let savedArgv = argv == DamsonConfig.fromUserDefaults().argv ? nil : argv
+            // The zoom the user set with ⌘=/⌘- is part of how the pane looked; a restart
+            // that brought the layout back at the base size lost it. Nil at 1.0 keeps an
+            // unzoomed pane's blob identical to before.
+            let zoom = session.fontZoom == 1.0 ? nil : Double(session.fontZoom)
             if let rec = handoff[ObjectIdentifier(session)] {
                 let sbID = SessionRestore.writeScrollback(
                     grid: session.grid, includeVisible: !session.grid.isAltScreenActive)
                 return .leaf(cwd: rec.cwd, scrollbackID: sbID,
                              sessionID: rec.uuid, preamble: rec.preamble.base64EncodedString(),
-                             paneID: paneID, argv: savedArgv)
+                             paneID: paneID, argv: savedArgv, fontZoom: zoom)
             }
             let sbID = SessionRestore.scrollbackRestoreEnabled
                 ? SessionRestore.writeScrollback(grid: session.grid) : nil
             return .leaf(cwd: session.currentWorkingDirectory, scrollbackID: sbID,
                          sessionID: nil, preamble: nil,
-                         paneID: paneID, argv: savedArgv)
+                         paneID: paneID, argv: savedArgv, fontZoom: zoom)
         case .split(let dir, let first, let second, let ratio):
             return .split(
                 direction: dir == .horizontal ? "horizontal" : "vertical",
@@ -257,7 +261,7 @@ extension PaneNode {
                      adopt: (String) -> AdoptedSession? = { _ in nil }) -> PaneNode {
         switch restorable {
         case .leaf(let cwd, let scrollbackID, let sessionID, let preamble,
-                   let paneID, let savedArgv):
+                   let paneID, let savedArgv, let fontZoom):
             var config = DamsonConfig.fromUserDefaults()
             // If the saved cwd can still be entered, use it; otherwise fall back to
             // fromUserDefaults' default (home). Restoring is not the place to fail: a
@@ -279,6 +283,9 @@ extension PaneNode {
                 if let paneID, let uuid = UUID(uuidString: paneID) {
                     PaneRegistry.shared.adopt(session, as: uuid)
                 }
+                // Before the leaf makes the surface, so the pane renders zoomed from its
+                // first frame (setFontZoom clamps whatever an edited blob says).
+                if let fontZoom { session.setFontZoom(CGFloat(fontZoom)) }
                 return PaneNode.leaf(session)
             }
             if let sessionID, let adopted = adopt(sessionID) {

@@ -150,6 +150,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     private var gridSubscription: AnyCancellable?
     private var configSubscription: AnyCancellable?
     private var clearSelectionSubscription: AnyCancellable?
+    private var zoomSubscription: AnyCancellable?
     private var lastReportedSize: (cols: Int, rows: Int)?
     private var renderScheduled = false
     /// Whether the DEC 2026 sync output flush safety timer is already scheduled.
@@ -244,8 +245,9 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     /// observer (and its captured closure) registered on the default center forever.
     private var notificationObservers: [NSObjectProtocol] = []
 
-    /// The currently applied font zoom multiplier. 1.0 is the default. Changed via Cmd+= / Cmd+- / Cmd+0.
-    private var fontSizeMultiplier: CGFloat = 1.0
+    /// The font zoom multiplier in effect. Owned by the session (`DamsonSession.fontZoom`)
+    /// so a new tab or split can copy it before this view exists; this view only renders it.
+    private var fontSizeMultiplier: CGFloat { session.fontZoom }
 
     /// The active find overlay + current query + match positions.
     private var findOverlay: FindOverlayView?
@@ -368,6 +370,22 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             .sink { [weak self] in
                 self?.clearSelectionIfNeeded()
             }
+
+        // Zoom lives on the session. Delivered synchronously (zoom changes come from the
+        // main thread) so ⌘= keeps its immediate redraw. @Published emits on willSet, so the
+        // closure gets the value the session is ABOUT to hold — never read session.fontZoom
+        // in here.
+        zoomSubscription = session.$fontZoom
+            .dropFirst() // the initial value is applied just below
+            .sink { [weak self] zoom in self?.applyZoom(zoom) }
+        // A session that already carries a zoom — copied from the focused pane by a new tab
+        // or split, or restored — renders at that size from its first frame. Nothing has
+        // been laid out yet, so the render font can simply be swapped; the first layout
+        // pass measures cells from it.
+        if session.fontZoom != 1.0 {
+            let size = max(6, session.config.fontSize * session.fontZoom)
+            backend.setRenderFont(fontWithNerdFallback(family: session.config.fontFamily, size: size))
+        }
 
         // BEL (\a) — visual flash + system beep. session.onBell may be called
         // off-main, so hop to main.
@@ -1886,15 +1904,15 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
 
     @objc public func zoomIn(_ sender: Any?) {
-        setZoom(fontSizeMultiplier * 1.1)
+        session.setFontZoom(fontSizeMultiplier * 1.1)
     }
 
     @objc public func zoomOut(_ sender: Any?) {
-        setZoom(fontSizeMultiplier / 1.1)
+        session.setFontZoom(fontSizeMultiplier / 1.1)
     }
 
     @objc public func resetZoom(_ sender: Any?) {
-        setZoom(1.0)
+        session.setFontZoom(1.0)
     }
 
     /// ⌘↑ — scroll to the nearest prompt (OSC 133;A mark) above the current screen.
@@ -1921,10 +1939,12 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         backend.setScrollY(max(0, CGFloat(t) * cellH), animated: true)
     }
 
-    private func setZoom(_ multiplier: CGFloat) {
-        fontSizeMultiplier = max(0.5, min(4.0, multiplier))
+    /// Render at `multiplier` × the configured size. Runs from the `$fontZoom` subscription
+    /// (the session has already clamped the value); `multiplier` is passed in because the
+    /// session's stored value is not yet updated when the publisher fires.
+    private func applyZoom(_ multiplier: CGFloat) {
         let baseSize = session.config.fontSize
-        let newSize = max(6, baseSize * fontSizeMultiplier)
+        let newSize = max(6, baseSize * multiplier)
         // Use a font with the cascade for zoom too — keep Nerd glyph fallback even on Menlo, etc.
         let font = fontWithNerdFallback(family: session.config.fontFamily, size: newSize)
         backend.setRenderFont(font)
@@ -1956,7 +1976,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         scrollViewportToBottom()
     }
 
-    /// Debounce state for zoom mashing — see setZoom. While true,
+    /// Debounce state for zoom mashing — see applyZoom. While true,
     /// reportSizeIfChanged reflows the grid without notifying the PTY.
     private var inZoomBurst = false
     private var zoomBurstTimer: Timer?
