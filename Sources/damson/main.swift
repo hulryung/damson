@@ -1173,6 +1173,10 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         win.titlebarAppearsTransparent = true
         win.styleMask = [.titled, .closable, .resizable]
         win.setContentSize(NSSize(width: 540, height: 600))
+        // Remember the size the user dragged it to; the line above is only the first-run
+        // default. The autosave name must come after setContentSize, or the restored frame
+        // is overwritten by the default.
+        win.setFrameAutosaveName("DamsonSettingsWindow")
         win.isReleasedWhenClosed = false
         settingsWindow = win
         win.makeKeyAndOrderFront(nil)

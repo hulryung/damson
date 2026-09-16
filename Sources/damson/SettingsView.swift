@@ -88,7 +88,10 @@ struct DamsonSettingsView: View {
             advancedTab.tabItem { Label("Advanced", systemImage: "gearshape") }
         }
         .padding(.top, 14)
-        .frame(width: 540, height: 600)
+        // Minimum only: a fixed frame here would pin the hosting view's min and max size
+        // to the same value, and the window's `.resizable` would do nothing. Every tab is
+        // a grouped Form, which scrolls, so the content copes with any size above this.
+        .frame(minWidth: 480, minHeight: 420)
         .onChange(of: fontSize) { _ in postChanged() }
         .onChange(of: fontFamily) { _ in postChanged() }
         .onChange(of: scrollbackLines) { _ in postChanged() }
