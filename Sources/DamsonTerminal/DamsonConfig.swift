@@ -44,9 +44,10 @@ public struct DamsonConfig {
     public var showScrollbar: Bool
     /// Render oversized Nerd Font icons (powerline prompts etc.) at natural size
     /// across two cells, centered on their grid slot, instead of shrinking them
-    /// into one cell. Default ON. Only affects non-Mono / Propo font variants —
-    /// Mono variants size icons to one cell already, so nothing overflows. The
-    /// trade-off is icons may overlap immediately-adjacent text. [[ScreenEffect]]-free.
+    /// into one cell. No longer read: an oversized icon now draws at its font's own
+    /// size whenever both neighboring cells are blank and shrinks only when they are
+    /// occupied, per instance, so the choice this made is decided where the overlap
+    /// would happen. Kept so downstream embedders still compile.
     public var doubleWidthIcons: Bool
     /// Allocate 2 grid cells to EAW-Ambiguous symbols CJK fonts design full-width
     /// (①…⑳, Ⓐⓐ, ※★→ …) so they render at their designed size even in consecutive

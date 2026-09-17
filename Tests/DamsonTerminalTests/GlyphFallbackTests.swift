@@ -273,7 +273,6 @@ extension GlyphFallbackTests {
         }
         XCTAssertEqual(natural.width, Int(ceil(cellW * 2 * 2)), "natural variant spans 2 cells")
         XCTAssertEqual(natural.overflowCells, 1, "flags the extra cell for the renderer")
-        XCTAssertTrue(natural.overflowLeftAnchored, "spills rightward only")
 
         // Fitted variant: shrink-to-fit, exactly the 1-cell box, ink in the center.
         guard let bmp = r.raster("④", bold: false, wide: false, forceFit: true) else {
@@ -307,12 +306,12 @@ extension GlyphFallbackTests {
             throw XCTSkip("Terminess Nerd Font Propo not installed")
         }
         let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
-        // doubleWidth off → the shrink-to-one-cell path (this test's subject).
-        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2,
-                                iconDoubleWidth: false)
+        // forceFit → the shrink-to-one-cell variant the renderer requests when the
+        // icon's neighbors are occupied (this test's subject).
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
         // Gear / database / git branch — common prompt icons, all 1-cell in the grid.
         for ch in ["\u{F013}", "\u{F1C0}", "\u{E725}"] as [Character] {
-            let bmp = try XCTUnwrap(r.raster(ch, bold: false, wide: Cell.isWide(ch)),
+            let bmp = try XCTUnwrap(r.raster(ch, bold: false, wide: Cell.isWide(ch), forceFit: true),
                                     "\(ch) must render")
             var minX = bmp.width, maxX = -1
             for y in 0..<bmp.height {
@@ -342,8 +341,7 @@ extension GlyphFallbackTests {
             throw XCTSkip("Terminess Nerd Font Propo not installed")
         }
         let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
-        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2,
-                                iconDoubleWidth: true)
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
         let bmp = try XCTUnwrap(r.raster("\u{F1C0}", bold: false, wide: false),  // database
                                 "icon must render")
         // Rendered into a 2-cell box, flagged for centered overflow.

@@ -174,13 +174,31 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// `config.ligatures` is on.
     private var lineShaper: LineShaper?
 
+    /// Whether an oversized glyph at `col` (spanning `wcells`) may draw at its natural
+    /// size into the cell after it. The rule kitty, WezTerm and Ghostty share: the next
+    /// cell must be a blank on this row — at the row's end there is nothing to spill
+    /// into. Plus Ghostty's refinement for private-use icons: one that directly follows
+    /// another icon stays in its own cell, so a run of icons lines up column by column
+    /// instead of each pushing into the next; Powerline shapes are exempt because they
+    /// tile edge to edge and never take the box anyway. The cell to the LEFT is not
+    /// consulted — the box never extends that way.
+    static func mayOverflowRight(_ cells: [Cell], col: Int, wcells: Int) -> Bool {
+        let next = col + wcells
+        guard next < cells.count, cells[next].char == " " else { return false }
+        let ch = cells[col].char
+        if GlyphRasterizer.isPrivateUse(ch), col > 0 {
+            let prev = cells[col - 1].char
+            if GlyphRasterizer.isPrivateUse(prev), !GlyphRasterizer.isPowerline(prev) { return false }
+        }
+        return true
+    }
+
     private func ensureAtlas() {
         let scale = metalView.metalLayer.contentsScale
-        let sig = "\(renderFont.fontName)|\(renderFont.pointSize)|\(metrics.width)|\(metrics.height)|\(scale)|\(config.doubleWidthIcons)"
+        let sig = "\(renderFont.fontName)|\(renderFont.pointSize)|\(metrics.width)|\(metrics.height)|\(scale)"
         if sig != atlasSignature || atlas == nil {
             atlas = GlyphAtlas(device: md.device, font: renderFont,
-                               cellW: metrics.width, cellH: metrics.height, scale: scale,
-                               iconDoubleWidth: config.doubleWidthIcons)
+                               cellW: metrics.width, cellH: metrics.height, scale: scale)
             let bold = NSFontManager.shared.convert(renderFont, toHaveTrait: .boldFontMask)
             lineShaper = LineShaper(baseFont: renderFont, boldFont: bold)
             atlasSignature = sig
@@ -765,29 +783,21 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                             uvOrigin: region.uv.origin, uvSize: region.uv.size, color: fgRGBAColor))
                     }
                 } else if cell.char != " ", var region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide) {
-                    // Oversized glyphs (bitmap wider than the grid slot):
-                    //  • left-anchored (full-width designs like D2Coding's ①): draw at
-                    //    natural size spilling RIGHT — but only when that neighbor is
-                    //    blank; otherwise swap to the shrink-fitted variant.
-                    //  • centered (double-width Nerd icons): widen symmetrically,
-                    //    mirroring the ligature-pad path.
-                    var gOrigin = origin, gSize = size
-                    if region.overflowCells > 0, region.overflowLeftAnchored {
-                        let nextCol = col + wcells
-                        let nextBlank = nextCol >= cells.count || cells[nextCol].char == " "
-                        if nextBlank {
+                    // Oversized glyphs (bitmap wider than the grid slot — double-width
+                    // Nerd icons, full-width designs like D2Coding's ①): draw at natural
+                    // size into a box that extends RIGHT into the next cell, but only
+                    // when `mayOverflowRight` grants it; otherwise swap to the shrink-
+                    // fitted variant. The quad stays anchored at the glyph's own cell.
+                    let gOrigin = origin
+                    var gSize = size
+                    if region.overflowCells > 0 {
+                        if Self.mayOverflowRight(cells, col: col, wcells: wcells) {
                             let gx1 = snap(inset.width + (CGFloat(col + wcells) + region.overflowCells) * metrics.width)
                             gSize = SIMD2<Float>(Float(CGFloat(gx1) - CGFloat(gOrigin.x)), Float(y1 - y0))
                         } else if let fitted = atlas?.region(for: cell.char, bold: cell.attrs.bold,
                                                              wide: wide, fitted: true) {
                             region = fitted   // 1-cell shrink; quad stays the slot size
                         }
-                    } else if region.overflowCells > 0 {
-                        let half = region.overflowCells * metrics.width / 2
-                        let gx0 = snap(inset.width + CGFloat(col) * metrics.width - half)
-                        let gx1 = snap(inset.width + CGFloat(col + wcells) * metrics.width + half)
-                        gOrigin = SIMD2<Float>(Float(gx0), Float(y0))
-                        gSize = SIMD2<Float>(Float(gx1 - gx0), Float(y1 - y0))
                     }
                     var inst = GlyphInstance(origin: gOrigin, size: gSize,
                                              uvOrigin: region.uv.origin, uvSize: region.uv.size,
@@ -1075,26 +1085,19 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let cell = r[col]
         guard cell.char != " ", var region = atlas?.region(for: cell.char, bold: cell.attrs.bold, wide: wide)
         else { return (bg, ghosts, nil, false) }
-        var gOrigin = origin, gSize = size
-        if region.overflowCells > 0, region.overflowLeftAnchored {
+        let gOrigin = origin
+        var gSize = size
+        if region.overflowCells > 0 {
             // Same per-instance policy as the base frame: natural size spilling right
-            // when the neighbor is blank, else the shrink-fitted variant (so the cursor
-            // overlay re-tints exactly the sprite the base frame drew).
-            let nextCol = col + wcells
-            let nextBlank = nextCol >= r.count || r[nextCol].char == " "
-            if nextBlank {
+            // when `mayOverflowRight` grants it, else the shrink-fitted variant (so the
+            // cursor overlay re-tints exactly the sprite the base frame drew).
+            if Self.mayOverflowRight(r, col: col, wcells: wcells) {
                 let gx1 = snap(inset.width + (CGFloat(col + wcells) + region.overflowCells) * metrics.width)
                 gSize = SIMD2<Float>(Float(CGFloat(gx1) - CGFloat(gOrigin.x)), Float(y1 - y0))
             } else if let fitted = atlas?.region(for: cell.char, bold: cell.attrs.bold,
                                                  wide: wide, fitted: true) {
                 region = fitted
             }
-        } else if region.overflowCells > 0 {
-            let half = region.overflowCells * metrics.width / 2
-            let gx0 = snap(inset.width + CGFloat(col) * metrics.width - half)
-            let gx1 = snap(inset.width + CGFloat(col + wcells) * metrics.width + half)
-            gOrigin = SIMD2<Float>(Float(gx0), Float(y0))
-            gSize = SIMD2<Float>(Float(gx1 - gx0), Float(y1 - y0))
         }
         // Inverted glyph color = the terminal background (matches the old baked
         // fgRGBA(isCursor:) path). Color emoji ignore the tint (drawn as-is).

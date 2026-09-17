@@ -34,27 +34,24 @@ final class GlyphRasterizer {
         /// fill the cell edge-to-edge). Used for fallback faces and, when
         /// double-width is off, for oversized Nerd icons.
         case fitOneCell
-        /// Render the icon at natural size into a 2-cell box, centered, and flag
-        /// the bitmap (`overflowCells`) so the quad is drawn 2 cells wide centered
-        /// on the 1-cell grid slot — keeps non-Mono Nerd icons big.
+        /// Render the icon at natural size into a 2-cell box, centered in it, and
+        /// flag the bitmap (`overflowCells`) so the quad spans the icon's cell and
+        /// the one after it — keeps non-Mono Nerd icons big, the way kitty and
+        /// Ghostty place them.
         case doubleWidthIcon
     }
 
     private let font: NSFont
     private let boldFont: NSFont
-    /// Render oversized Nerd Font (PUA) icons double-width instead of shrinking
-    /// them into one cell. Non-Mono / Propo variants draw icons wider than a
-    /// cell; doubling keeps them at natural size (overflowing into neighbors).
-    private let iconDoubleWidth: Bool
     /// CJK-only fallback face (e.g. D2CodingLigature Nerd Font Mono); nil if none
+    /// installed. Used solely for East-Asian glyphs the base font lacks.
+    private let cjkFont: NSFont?
+    private let boldCJKFont: NSFont?
     /// Nerd Font for private-use icons the base font lacks; nil when the base is a
     /// Nerd Font already (it carries the whole set) or none is installed. Mirrors the
     /// `fontWithNerdFallback` cascade, which the direct cmap lookup here never sees.
     private let nerdFont: NSFont?
     private let boldNerdFont: NSFont?
-    /// installed. Used solely for East-Asian glyphs the base font lacks.
-    private let cjkFont: NSFont?
-    private let boldCJKFont: NSFont?
     /// Color-emoji fallback face (Apple Color Emoji), sized to fit a cell.
     private let emojiFont: NSFont?
     private let cellW: CGFloat
@@ -72,29 +69,26 @@ final class GlyphRasterizer {
         /// false = R8 coverage mask (modulated by fg); true = premultiplied BGRA
         /// color (emoji), drawn as-is ignoring fg.
         var isColor: Bool = false
-        /// Extra cells the render quad should span beyond the glyph's grid width.
-        /// Centered (split evenly on both sides) for double-width Nerd icons; when
-        /// `overflowLeftAnchored` is set, the whole overflow extends to the RIGHT
-        /// (full-width-designed glyphs anchored at their own cell's left edge).
+        /// Extra cells the render quad should span beyond the glyph's grid width,
+        /// always to the RIGHT: the box is the glyph's own cell plus the cells after
+        /// it, which is where the Nerd Fonts convention ("icon, then a space") and
+        /// full-width symbol designs both put the spill. The renderer grants the box
+        /// only when those cells are blank (see `MetalTerminalBackend.mayOverflowRight`)
+        /// and otherwise draws the `forceFit` variant.
         var overflowCells: CGFloat = 0
-        /// See `overflowCells` — true for natural-size full-width designs whose ink
-        /// starts at the cell's left edge and spills only rightward.
-        var overflowLeftAnchored: Bool = false
     }
 
-    init(font: NSFont, cellW: CGFloat, cellH: CGFloat, scale: CGFloat,
-         iconDoubleWidth: Bool = true) {
+    init(font: NSFont, cellW: CGFloat, cellH: CGFloat, scale: CGFloat) {
+        self.font = font
+        self.boldFont = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+        let cjk = cjkFallbackFont(size: font.pointSize)
+        self.cjkFont = cjk
+        self.boldCJKFont = cjk.map { NSFontManager.shared.convert($0, toHaveTrait: .boldFontMask) }
         let nerd: NSFont? = isNerdFont(font.familyName ?? font.fontName)
             ? nil
             : anyInstalledNerdFont().flatMap { NSFont(name: $0, size: font.pointSize) }
         self.nerdFont = nerd
         self.boldNerdFont = nerd.map { NSFontManager.shared.convert($0, toHaveTrait: .boldFontMask) }
-        self.font = font
-        self.iconDoubleWidth = iconDoubleWidth
-        self.boldFont = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
-        let cjk = cjkFallbackFont(size: font.pointSize)
-        self.cjkFont = cjk
-        self.boldCJKFont = cjk.map { NSFontManager.shared.convert($0, toHaveTrait: .boldFontMask) }
         // Size the emoji face to fit the cell box (emoji glyphs are ~1em square).
         self.emojiFont = NSFont(name: "Apple Color Emoji", size: min(cellH, cellW * 2))
         self.cellW = cellW
@@ -128,13 +122,17 @@ final class GlyphRasterizer {
         }
         // Private-use icons (Nerd Font symbols) get the overflow check even on
         // the base font: non-Mono variants ("Nerd Font" / "… Propo") give them
-        // wider-than-cell advances while the grid assigns 1 cell. Without it the
-        // icon's right half is clipped at the bitmap edge. By default the icon is
-        // rendered double-width (natural size, overflowing into neighbors);
-        // powerline shapes and double-width-off fall back to fit-one-cell.
+        // wider-than-cell advances while the grid assigns 1 cell, and so does a
+        // Nerd face standing in for a half-width base (Sarasa, D2Coding). Without
+        // it the icon's right half is clipped at the bitmap edge. The icon renders
+        // at the size its font designed — double-width, overflowing into the
+        // neighbors — and the renderer asks for the shrink-to-one-cell variant
+        // (`forceFit`) only for an instance whose neighbors are occupied, the same
+        // per-instance rule full-width symbols get. Powerline shapes always fit
+        // one cell, edge to edge, because they tile.
         let baseFit: OverflowFit
         if Self.isPrivateUse(ch) {
-            baseFit = (iconDoubleWidth && !Self.isPowerline(ch)) ? .doubleWidthIcon : .fitOneCell
+            baseFit = (forceFit || Self.isPowerline(ch)) ? .fitOneCell : .doubleWidthIcon
         } else {
             // The base font gets the ink-overflow check too (it reroutes only when ink
             // actually escapes the cell box): Korean coding fonts (D2Coding) design
@@ -169,7 +167,6 @@ final class GlyphRasterizer {
                    let wideFit = fitFactor(ch, in: face, wide: true), wideFit >= 0.9,
                    var bmp = draw(ch, in: face, wide: true) {
                     bmp.overflowCells = 1
-                    bmp.overflowLeftAnchored = true
                     return bmp
                 }
             }
@@ -225,7 +222,7 @@ final class GlyphRasterizer {
     /// Private Use Area codepoints — Nerd Font / powerline icon space. The grid
     /// always treats these as 1 cell, but only Mono font variants constrain
     /// their ink to one cell.
-    private static func isPrivateUse(_ ch: Character) -> Bool {
+    static func isPrivateUse(_ ch: Character) -> Bool {
         guard ch.unicodeScalars.count == 1, let u = ch.unicodeScalars.first else { return false }
         switch u.value {
         case 0xE000...0xF8FF, 0xF0000...0xFFFFD, 0x100000...0x10FFFD: return true
@@ -236,7 +233,7 @@ final class GlyphRasterizer {
     /// Powerline separators/shapes (U+E0B0–U+E0D7): designed to butt flush
     /// against neighboring cells — when fitted, they must FILL the cell box
     /// edge-to-edge or segmented prompt bars show seams.
-    private static func isPowerline(_ ch: Character) -> Bool {
+    static func isPowerline(_ ch: Character) -> Bool {
         guard ch.unicodeScalars.count == 1, let u = ch.unicodeScalars.first else { return false }
         return (0xE0B0...0xE0D7).contains(u.value)
     }
@@ -531,9 +528,9 @@ final class GlyphRasterizer {
                     return drawFitted(ch, in: f, wide: wide, fillCell: Self.isPowerline(ch))
                 case .doubleWidthIcon:
                     // Natural size into a 2-cell box (drawFitted upscales nothing,
-                    // so an icon ≤2 cells keeps its size), centered. The grid slot
-                    // is 1 cell (wide=false), so the quad overflows 0.5 cell each
-                    // side → overflowCells = 1.
+                    // so an icon ≤2 cells keeps its size), centered in the box. The
+                    // grid slot is 1 cell (wide=false); the box extends one cell to
+                    // the right → overflowCells = 1.
                     guard var bmp = drawFitted(ch, in: f, wide: true, fillCell: false)
                     else { return nil }
                     bmp.overflowCells = wide ? 0 : 1

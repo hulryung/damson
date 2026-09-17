@@ -27,9 +27,6 @@ final class GlyphAtlas {
         /// Cells the render quad spans beyond the grid slot (see
         /// `GlyphRasterizer.Bitmap.overflowCells`). 0 for ordinary glyphs.
         var overflowCells: CGFloat = 0
-        /// Overflow extends rightward from the cell's left edge (full-width designs)
-        /// instead of centered (Nerd icons). See `GlyphRasterizer.Bitmap`.
-        var overflowLeftAnchored: Bool = false
     }
 
     /// nil value = rasterized but nothing to draw (blank). Cached to avoid retry.
@@ -61,8 +58,7 @@ final class GlyphAtlas {
         var size: SIMD2<Float>
     }
 
-    init?(device: MTLDevice, font: NSFont, cellW: CGFloat, cellH: CGFloat, scale: CGFloat,
-          iconDoubleWidth: Bool = true) {
+    init?(device: MTLDevice, font: NSFont, cellW: CGFloat, cellH: CGFloat, scale: CGFloat) {
         let side = 2048
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r8Unorm, width: side, height: side, mipmapped: false)
@@ -74,8 +70,7 @@ final class GlyphAtlas {
         self.width = side
         self.height = side
         self.shelfHeight = max(1, Int(ceil(cellH * max(scale, 1))))
-        self.rasterizer = GlyphRasterizer(font: font, cellW: cellW, cellH: cellH, scale: scale,
-                                          iconDoubleWidth: iconDoubleWidth)
+        self.rasterizer = GlyphRasterizer(font: font, cellW: cellW, cellH: cellH, scale: scale)
     }
 
     /// Region for a glyph, rasterizing+packing on first use. nil = draw nothing.
@@ -89,10 +84,8 @@ final class GlyphAtlas {
             return nil
         }
         let result: Region? = bmp.isColor
-            ? packColor(bmp).map { Region(uv: $0, isColor: true, overflowCells: bmp.overflowCells,
-                                          overflowLeftAnchored: bmp.overflowLeftAnchored) }
-            : packMask(bmp).map { Region(uv: $0, isColor: false, overflowCells: bmp.overflowCells,
-                                         overflowLeftAnchored: bmp.overflowLeftAnchored) }
+            ? packColor(bmp).map { Region(uv: $0, isColor: true, overflowCells: bmp.overflowCells) }
+            : packMask(bmp).map { Region(uv: $0, isColor: false, overflowCells: bmp.overflowCells) }
         regions[key] = .some(result)
         return result
     }
