@@ -165,6 +165,77 @@ final class GlyphFallbackTests: XCTestCase {
     }
 }
 
+// MARK: - Nerd Font tier (issue #41: non-Nerd base + Symbols Nerd Font installed)
+
+extension GlyphFallbackTests {
+    /// Whether `f`'s own cmap covers `ch` (the same direct query the rasterizer uses).
+    private func has(_ ch: Character, _ f: NSFont) -> Bool {
+        let utf16 = Array(String(ch).utf16)
+        var g = [CGGlyph](repeating: 0, count: utf16.count)
+        return utf16.withUnsafeBufferPointer {
+            CTFontGetGlyphsForCharacters(f as CTFont, $0.baseAddress!, &g, utf16.count)
+        }
+    }
+
+    /// The configuration the cascade comment promises but the Metal path never saw: a
+    /// coding font that is not a Nerd Font (Sarasa Mono K carries only the Powerline
+    /// shapes) plus an installed Nerd Font. BMP private-use icons the base lacks must
+    /// come from that Nerd Font — CoreText's own recommendation for them is LastResort,
+    /// which drew a bordered box where the prompt icon should be.
+    func testBMPIconsResolveToInstalledNerdFontWhenBaseIsNotNerd() throws {
+        let size: CGFloat = 17
+        guard let base = font("Sarasa Mono K", size) else { throw XCTSkip("Sarasa Mono K not installed") }
+        guard let nerdName = anyInstalledNerdFont(), let nerd = font(nerdName, size) else {
+            throw XCTSkip("no Nerd Font installed")
+        }
+        // Devicons, Font Awesome (home), Octicons, Seti, the Apple logo — all BMP PUA.
+        let icons: [Character] = ["\u{E70E}", "\u{F015}", "\u{F418}", "\u{E5FF}", "\u{F179}"]
+        for ch in icons {
+            try XCTSkipIf(has(ch, base), "base font unexpectedly has \(ch); tier not exercised")
+            try XCTSkipIf(!has(ch, nerd), "\(nerdName) lacks \(ch)")
+        }
+        let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
+        for ch in icons {
+            let face = try XCTUnwrap(r.resolvedFace(for: ch, bold: false), "\(ch) must resolve to a face")
+            XCTAssertEqual(face.fontName, nerd.fontName,
+                "\(ch) (U+\(String(ch.unicodeScalars.first!.value, radix: 16, uppercase: true))) " +
+                "must come from the installed Nerd Font, not \(face.fontName)")
+            let bmp = try XCTUnwrap(r.raster(ch, bold: false, wide: false), "\(ch) must render")
+            XCTAssertTrue(bmp.bytes.contains { $0 != 0 }, "\(ch) bitmap must have ink")
+        }
+    }
+
+    /// Powerline shapes the base font already carries keep coming from the base font, so
+    /// segmented prompts show no seam change; Hangul still goes to the pinned CJK face,
+    /// never to the Nerd face (a Mono Nerd face would squash it to half a cell).
+    func testNerdTierDoesNotStealBaseOrCJKGlyphs() throws {
+        let size: CGFloat = 17
+        guard let base = font("Sarasa Mono K", size) else { throw XCTSkip("Sarasa Mono K not installed") }
+        try XCTSkipIf(anyInstalledNerdFont() == nil, "no Nerd Font installed")
+        try XCTSkipIf(!has("\u{E0B0}", base), "base font lacks the Powerline arrow")
+        let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
+        XCTAssertEqual(r.resolvedFace(for: "\u{E0B0}", bold: false)?.fontName, base.fontName,
+                       "a Powerline glyph the base has stays on the base font")
+        // Sarasa Mono K has Hangul itself; the point is that the Nerd face is never picked.
+        let han = try XCTUnwrap(r.resolvedFace(for: "한", bold: false))
+        XCTAssertFalse(isNerdFont(han.familyName ?? han.fontName), "Hangul must not resolve to the Nerd face")
+    }
+
+    /// A Nerd Font base is unaffected: its own icons resolve to itself.
+    func testNerdFontBaseKeepsItsOwnIcons() throws {
+        let size: CGFloat = 17
+        guard let base = font("JetBrainsMono Nerd Font Mono", size) else {
+            throw XCTSkip("JetBrainsMono Nerd Font Mono not installed")
+        }
+        try XCTSkipIf(!has("\u{E70E}", base), "base font lacks the Devicons glyph")
+        let cellW = ("M" as NSString).size(withAttributes: [.font: base]).width
+        let r = GlyphRasterizer(font: base, cellW: cellW, cellH: cellW * 2, scale: 2)
+        XCTAssertEqual(r.resolvedFace(for: "\u{E70E}", bold: false)?.fontName, base.fontName)
+    }
+}
+
 // MARK: - Symbol fallback (circled digits etc. — field report: ④ rendered blank)
 
 extension GlyphFallbackTests {

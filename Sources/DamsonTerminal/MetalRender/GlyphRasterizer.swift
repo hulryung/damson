@@ -6,12 +6,16 @@ import CoreText
 /// crispness.
 ///
 /// **Fallback policy.** The configured base font draws everything it can. What it
-/// lacks falls through, in order, to: (1) the pinned CJK face (`cjkFallbackFont`,
-/// D2Coding family) — tried for ANY missing character, not just East-Asian, so
-/// symbols that Korean coding fonts carry (circled digits ①–⑳ etc.) render
-/// deterministically the same on every machine; (2) the system-recommended font
-/// for that character (`CTFontCreateForString` — Apple Symbols, Hiragino, …).
-/// Both fallback tiers scale the glyph down to fit the cell when its ink
+/// lacks falls through, in order, to: (1) for private-use icons only, the installed
+/// Nerd Font (`anyInstalledNerdFont`, the same face the legacy cascade lists) when the
+/// base is not itself a Nerd Font — CoreText's own recommendation for a BMP PUA
+/// codepoint is LastResort, so without this tier a Starship or Powerlevel10k prompt on a
+/// plain coding font drew bordered boxes for every icon; (2) the pinned CJK face
+/// (`cjkFallbackFont`, D2Coding family) — tried for ANY missing character, not just
+/// East-Asian, so symbols that Korean coding fonts carry (circled digits ①–⑳ etc.)
+/// render deterministically the same on every machine; (3) the system-recommended
+/// font for that character (`CTFontCreateForString` — Apple Symbols, Hiragino, …).
+/// Every fallback tier scales the glyph down to fit the cell when its ink
 /// overflows (ambiguous-width symbols like ④ drawn into a 1-cell box, which the
 /// CJK face renders full-width). Glyph lookup is a direct per-font cmap query
 /// (`CTFontGetGlyphsForCharacters`), which does NOT honor `NSFont.cascadeList`;
@@ -43,6 +47,11 @@ final class GlyphRasterizer {
     /// cell; doubling keeps them at natural size (overflowing into neighbors).
     private let iconDoubleWidth: Bool
     /// CJK-only fallback face (e.g. D2CodingLigature Nerd Font Mono); nil if none
+    /// Nerd Font for private-use icons the base font lacks; nil when the base is a
+    /// Nerd Font already (it carries the whole set) or none is installed. Mirrors the
+    /// `fontWithNerdFallback` cascade, which the direct cmap lookup here never sees.
+    private let nerdFont: NSFont?
+    private let boldNerdFont: NSFont?
     /// installed. Used solely for East-Asian glyphs the base font lacks.
     private let cjkFont: NSFont?
     private let boldCJKFont: NSFont?
@@ -75,6 +84,11 @@ final class GlyphRasterizer {
 
     init(font: NSFont, cellW: CGFloat, cellH: CGFloat, scale: CGFloat,
          iconDoubleWidth: Bool = true) {
+        let nerd: NSFont? = isNerdFont(font.familyName ?? font.fontName)
+            ? nil
+            : anyInstalledNerdFont().flatMap { NSFont(name: $0, size: font.pointSize) }
+        self.nerdFont = nerd
+        self.boldNerdFont = nerd.map { NSFontManager.shared.convert($0, toHaveTrait: .boldFontMask) }
         self.font = font
         self.iconDoubleWidth = iconDoubleWidth
         self.boldFont = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
@@ -98,9 +112,10 @@ final class GlyphRasterizer {
     /// unrenderable glyphs.
     ///
     /// Tiers: (1) emoji-presentation chars → Apple Color Emoji as a **color** BGRA
-    /// bitmap; (2) base font mask; (3) pinned CJK face for anything the base
-    /// lacks (Hangul, and symbols like ④ that coding fonts carry); (4) the
-    /// system-recommended font, fit-scaled into the cell. See the type doc.
+    /// bitmap; (2) base font mask; (3) the installed Nerd Font, for private-use
+    /// icons only; (4) pinned CJK face for anything the base lacks (Hangul, and
+    /// symbols like ④ that coding fonts carry); (5) the system-recommended font,
+    /// fit-scaled into the cell. See the type doc.
     /// `forceFit`: request the shrink-to-one-cell variant of a glyph whose natural-size
     /// (left-anchored, 2-cell) variant would spill into an occupied right neighbor — the
     /// renderer picks per instance (blank neighbor → natural, occupied → fitted).
@@ -159,18 +174,52 @@ final class GlyphRasterizer {
                 }
             }
         }
-        if let bmp = draw(ch, in: bold ? boldFont : font, wide: wide, overflow: baseFit) {
-            return bmp
+        for (face, fit) in faceChain(for: ch, bold: bold, baseFit: baseFit) {
+            if let bmp = draw(ch, in: face, wide: wide, overflow: fit) { return bmp }
+        }
+        // System fallback: whatever CoreText recommends for this character.
+        return drawSystemFallback(ch, bold: bold, wide: wide)
+    }
+
+    /// The faces `raster` tries for `ch`, in order, each with its overflow handling,
+    /// before asking CoreText. One list for drawing and for `resolvedFace`, so the
+    /// policy cannot drift between what is tested and what is drawn.
+    private func faceChain(for ch: Character, bold: Bool,
+                           baseFit: OverflowFit) -> [(NSFont, OverflowFit)] {
+        var chain: [(NSFont, OverflowFit)] = [(bold ? boldFont : font, baseFit)]
+        // Icons the base lacks come from the Nerd Font with the same overflow handling
+        // the base's own icons get (double-width or fit-one-cell, powerline fills the
+        // cell), so a prompt looks the same whichever face supplied each glyph. PUA
+        // only: letting the Nerd face answer for Hangul would squash it to half a cell.
+        if Self.isPrivateUse(ch), let nerd = bold ? boldNerdFont : nerdFont {
+            chain.append((nerd, baseFit))
         }
         // Pinned fallback face — deterministic across machines. Its metrics don't
         // match the base cell, so overflowing ink (full-width ① in a 1-cell
         // ambiguous-width box) is shrink-to-fit instead of clipped.
-        if let cjk = bold ? boldCJKFont : cjkFont,
-           let bmp = draw(ch, in: cjk, wide: wide, overflow: .fitOneCell) {
-            return bmp
+        if let cjk = bold ? boldCJKFont : cjkFont { chain.append((cjk, .fitOneCell)) }
+        return chain
+    }
+
+    /// The face `raster` will draw `ch` with: the first in `faceChain` whose own cmap
+    /// covers it, else CoreText's recommendation (nil when that is the base face —
+    /// no new coverage). A glyph the chosen face has but draws blank still falls
+    /// through in `raster`; this answers the policy question, which is what tests ask.
+    func resolvedFace(for ch: Character, bold: Bool) -> NSFont? {
+        for (face, _) in faceChain(for: ch, bold: bold, baseFit: .none) where hasGlyph(ch, in: face) {
+            return face
         }
-        // System fallback: whatever CoreText recommends for this character.
-        return drawSystemFallback(ch, bold: bold, wide: wide)
+        return systemResolvedFont(for: ch, bold: bold)
+    }
+
+    /// Direct per-font cmap coverage for `ch` (the same query `draw` starts with).
+    private func hasGlyph(_ ch: Character, in f: NSFont) -> Bool {
+        let utf16 = Array(String(ch).precomposedStringWithCanonicalMapping.utf16)
+        guard !utf16.isEmpty else { return false }
+        var glyphs = [CGGlyph](repeating: 0, count: utf16.count)
+        return utf16.withUnsafeBufferPointer { buf in
+            CTFontGetGlyphsForCharacters(f as CTFont, buf.baseAddress!, &glyphs, utf16.count)
+        }
     }
 
     /// Private Use Area codepoints — Nerd Font / powerline icon space. The grid
