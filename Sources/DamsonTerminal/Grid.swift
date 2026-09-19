@@ -113,9 +113,10 @@ public final class Grid {
 
     /// Whether we're inside 2026 sync output mode right now (transient — set by
     /// `\e[?2026h`, cleared by `\e[?2026l`). Active while TUIs like Claude Code send
-    /// redraw bursts. scrollUp during it (line-feed hitting bottom at the end of the
-    /// screen) doesn't push to scrollback — prevents the regression where old lines of
-    /// a redraw burst pile up in scrollback and the user sees leftover boxes when scrolling.
+    /// redraw bursts; the host holds the frame until ESU so a half-applied grid is
+    /// never presented. It does NOT affect scrollback: `scrollUp` pushes during a sync
+    /// frame like any other (see the note there — suppressing it threw away the TUI's
+    /// history).
     public var inSyncOutputMode: Bool = false
 
     /// Primary buffer snapshot kept on alt screen entry. Tracks resizes that arrive while in alt.
