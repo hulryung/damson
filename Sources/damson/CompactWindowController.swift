@@ -955,17 +955,9 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         // clobber to undo and so nothing has moved first responder off the outgoing tab.
         tree.setActive(restoreTarget)
         tree.focusActiveLeaf()
-        // Every pane in the incoming tab must repaint its current grid — not just the
-        // focused one. Output that arrived while the tab was backgrounded couldn't be
-        // drawn (the surfaces were off-window, so Metal had no drawable), and only the
-        // active pane gets focused above. Lay out the re-added tree first so the Metal
-        // drawables are sized to the content area, then force every leaf to repaint.
+        // Lay the re-added tree out first, so the Metal drawables are sized to the content
+        // area before anything paints into them.
         contentContainer.layoutSubtreeIfNeeded()
-        tree.repaintAllLeaves()
-        if index < tabs.count {
-            window?.title = displayTitle(tabs[index])
-        }
-        refreshTabBar()
 
         // The incoming tree may carry a leftover from-state if a prior create/switch
         // animation on this same view was superseded. Remove any in-flight switch animation
@@ -982,6 +974,26 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         tree.layer?.opacity = 1
         tree.swipeTranslationX = 0
         CATransaction.commit()
+
+        // Park the incoming tree at the slide's entry offset BEFORE the repaint below, which
+        // presents Metal frames outside the CA transaction and so would otherwise put one
+        // fully-painted frame of this tab on screen at its final position — the single-frame
+        // flash of the destination tab seen just before the slide. See `parkIncomingForSwitch`.
+        if let out = switchOutgoing, out.tree !== tree {
+            tabTransitions.parkIncomingForSwitch(incoming: tree, outgoing: out.tree,
+                                                 fromIndex: out.fromIndex, toIndex: index,
+                                                 towardRight: out.towardRight, reentry: reentry)
+        }
+
+        // Every pane in the incoming tab must repaint its current grid — not just the
+        // focused one. Output that arrived while the tab was backgrounded couldn't be
+        // drawn (the surfaces were off-window, so Metal had no drawable), and only the
+        // active pane gets focused above.
+        tree.repaintAllLeaves()
+        if index < tabs.count {
+            window?.title = displayTitle(tabs[index])
+        }
+        refreshTabBar()
 
         if case .create = transition, Motion.enabled {
             tabTransitions.animateTabCreate(tree)

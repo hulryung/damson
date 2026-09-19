@@ -165,6 +165,67 @@ final class TabTransitionCoordinator {
         var outgoingOpacity: Float?
     }
 
+    /// Where the incoming tree starts its entry slide, in points along x. The single source
+    /// of truth for that offset: `parkIncomingForSwitch` puts the layer there and
+    /// `animateTabSwitch` animates away from it, and the two must not drift apart.
+    ///
+    /// The captured in-flight position is a valid continuation only when it lies on the side
+    /// the incoming tab enters from. The reentry exists for REVERSALS (⌘→ then ⌘← mid-slide),
+    /// where the tab currently exiting left comes back from the left — position and direction
+    /// agree. But a same-direction chain can re-target that same exiting tree — with two tabs,
+    /// ⌘→ ⌘→ wraps B→A while A is still sliding out LEFT — and continuing from there brings
+    /// the tab in from the wrong side: the key said "next" and the content arrives like
+    /// "previous". Wrong-side capture → discard it and enter from the proper edge.
+    private func incomingEntryX(fromIndex: Int, toIndex: Int, towardRight: Bool?,
+                                reentry: SwitchReentry, style: TabTransitionStyle) -> CGFloat {
+        let goingRight = towardRight ?? (toIndex > fromIndex)
+        // `slide` is a full-width page swipe; `crossfade` a gentle 24pt push.
+        let edge: CGFloat = style == .slide ? host.contentContainer.bounds.width : 24
+        let start = goingRight ? edge : -edge
+        let continueX = reentry.incomingX.flatMap { (goingRight ? $0 > 0 : $0 < 0) ? $0 : nil }
+        return continueX ?? start
+    }
+
+    /// Move the incoming tree to its entry offset NOW, before the caller does anything that
+    /// makes it paint.
+    ///
+    /// `animateTabSwitch` runs at the END of `selectTab`, and it leaves the layer's MODEL
+    /// transform at identity — the entry offset lives only in the explicit animation, which
+    /// takes effect when the CA transaction commits at the end of the runloop turn. In
+    /// between, `selectTab` calls `repaintAllLeaves()`, and a terminal surface is a
+    /// CAMetalLayer: its `present` is not part of the CA transaction, it reaches the screen
+    /// as soon as the GPU is done, and `nextDrawable()` blocks the main thread meanwhile. So
+    /// the compositor got one frame of the incoming tab, fully painted, at its FINAL
+    /// full-window position — a single-frame flash of tab B before B slid in. Too brief to
+    /// catch in a screen recording, plainly visible to the eye.
+    ///
+    /// Parking the MODEL transform first means that frame is presented off-screen instead.
+    /// `animateTabSwitch` returns the model to identity as it adds the animation, in one
+    /// transaction, so nothing jumps.
+    ///
+    /// Guarded by the same condition `animateTabSwitch` guards on: if it would bail, park
+    /// nothing, or the tab would be left sitting off-screen with no animation to bring it back.
+    func parkIncomingForSwitch(incoming tree: PaneTreeView, outgoing: PaneTreeView,
+                               fromIndex: Int, toIndex: Int, towardRight: Bool?,
+                               reentry: SwitchReentry) {
+        guard let layer = tree.layer, outgoing.layer != nil else { return }
+        host.contentContainer.layoutSubtreeIfNeeded()   // entry offset reads the container width
+        let x = incomingEntryX(fromIndex: fromIndex, toIndex: toIndex, towardRight: towardRight,
+                               reentry: reentry, style: TabTransitionStyle.current)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = CATransform3DMakeTranslation(x, 0, 0)
+        CATransaction.commit()
+        // …and push it to the render server NOW. `commit()` alone would not: `selectTab` has
+        // already touched layers this turn, so this explicit transaction is nested inside the
+        // turn's implicit one and its commit only unwinds the stack — the layer tree reaches
+        // the compositor when that implicit transaction commits, at the END of the turn. The
+        // Metal presents we are racing happen BEFORE that, in `repaintAllLeaves()`, so without
+        // the flush the compositor would still pair the new frames with the old (identity)
+        // transform and the flash would survive the parking.
+        CATransaction.flush()
+    }
+
     func animateTabSwitch(incoming tree: PaneTreeView, outgoing: PaneTreeView,
                           fromIndex: Int, toIndex: Int, towardRight: Bool?,
                           reentry: SwitchReentry) {
@@ -180,7 +241,6 @@ final class TabTransitionCoordinator {
         // off-screen start and restarting. Clear the stale animations so the new translations
         // don't stack with them (which would break the "glued" invariant). Bump the generation
         // so the previous switch's completion bails.
-        let incomingReentryX = reentry.incomingX
         let outgoingReentryX = reentry.outgoingX
         let incomingReentryOpacity = reentry.incomingOpacity
         let outgoingReentryOpacity = reentry.outgoingOpacity
@@ -194,34 +254,25 @@ final class TabTransitionCoordinator {
         // The caller overrides this when the index sign isn't the intent — next/previous
         // wrapping past either end, where the tab one step to the "right" is index 0.
         let goingRight = towardRight ?? (toIndex > fromIndex)
-
-        // The captured in-flight position is a valid continuation only when it lies on
-        // the side the incoming tab enters from. The reentry exists for REVERSALS (⌘→
-        // then ⌘← mid-slide), where the tab currently exiting left comes back from the
-        // left — position and direction agree. But a same-direction chain can re-target
-        // that same exiting tree — with two tabs, ⌘→ ⌘→ wraps B→A while A is still
-        // sliding out LEFT — and continuing from there brings the tab in from the wrong
-        // side: the key said "next" and the content arrives like "previous". Wrong-side
-        // capture → discard it and enter from the proper edge; the outgoing side needs
-        // no such gate, since any current position is a legitimate start for an exit.
-        let incomingContinueX = incomingReentryX
-            .flatMap { (goingRight ? $0 > 0 : $0 < 0) ? $0 : nil }
         let width = host.contentContainer.bounds.width
         let style = TabTransitionStyle.current
+        // Where the incoming tree enters from — the same value `parkIncomingForSwitch`
+        // already moved it to, reentry gate included.
+        let incomingStart = incomingEntryX(fromIndex: fromIndex, toIndex: toIndex,
+                                           towardRight: towardRight, reentry: reentry,
+                                           style: style)
 
-        // Per-style offsets + fade + duration. `slide` = full-width page swipe
+        // Per-style fade + exit offset + duration. `slide` = full-width page swipe
         // (no fade), with a longer duration so the moving content is legible —
         // a full-width slide at the default 0.16s reads as an instant cut.
         // `crossfade` = the gentle 24pt slide + opacity; `none` handled upstream.
         let fade: Bool
-        let incomingStart: CGFloat   // incoming layer's start x (ends at 0)
         let outgoingEnd: CGFloat     // outgoing overlay's end x (starts at 0)
         let dur: TimeInterval
         let timing: CAMediaTimingFunction
         switch style {
         case .slide:
             fade = false
-            incomingStart = goingRight ? width : -width
             outgoingEnd = goingRight ? -width : width
             // Spring settle (built below). Paint the container so the few points the spring
             // briefly overshoots past the edge match the terminal bg instead of flashing the
@@ -233,11 +284,20 @@ final class TabTransitionCoordinator {
         case .crossfade, .none:
             fade = true
             let delta: CGFloat = 24
-            incomingStart = goingRight ? delta : -delta
             outgoingEnd = goingRight ? -delta : delta
             dur = Motion.duration
             timing = Motion.timing
         }
+
+        // Hand the model back to identity. `parkIncomingForSwitch` left it at the entry
+        // offset so the pre-animation repaint presented off-screen; the explicit animation
+        // added below starts from that same offset, and it is added in this transaction, so
+        // the hand-back is never seen. Without it the layer would settle off-screen the
+        // moment the animation is removed.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        incomingLayer.transform = CATransform3DIdentity
+        CATransaction.commit()
 
         // Models stay at their final values; the explicit animations drive the
         // presentation. The outgoing's end state (off-screen/faded) is pinned by
@@ -269,7 +329,7 @@ final class TabTransitionCoordinator {
         }
 
         // Incoming: slide from off-screen (or its current on-screen x if reversing mid-slide) to 0.
-        let iSlide = tabSlideTranslation(style: style, from: incomingContinueX ?? incomingStart, to: 0)
+        let iSlide = tabSlideTranslation(style: style, from: incomingStart, to: 0)
         var inAnims = [iSlide]
         if fade {
             let iFade = CABasicAnimation(keyPath: "opacity")
