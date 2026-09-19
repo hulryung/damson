@@ -211,3 +211,23 @@ public extension TerminalRenderBackend {
     func scrollbarDragMoved(to point: NSPoint) {}
     func scrollbarDragEnded() {}
 }
+
+extension CellMetrics {
+    /// A measured row height rounded to whole device pixels.
+    ///
+    /// Font families do not all measure integral: Menlo does at every size, Sarasa
+    /// Mono K at 14pt measures 17.980103pt — 35.96px at 2×. A fractional row height
+    /// puts consecutive rows on alternating pixel boundaries, so the renderer draws
+    /// one row's cell 36px tall and the next one's 35px. A box-drawing rule is a
+    /// ~1px stroke inside that cell, so it lands differently on the two, and as a
+    /// TUI's output scrolls the same rule crosses both and visibly thins and
+    /// thickens — parts of a box appearing to flicker away line by line.
+    ///
+    /// Whole pixels per row also make a followed TUI's rest position
+    /// (`scrollback.count * cellH + inset`) a whole number of pixels, so the whole
+    /// grid sits on the pixel grid without anything being re-snapped at draw time.
+    public static func deviceAlignedHeight(_ measured: CGFloat, scale: CGFloat) -> CGFloat {
+        let s = max(scale, 1)
+        return max((max(measured, 1) * s).rounded() / s, 1)
+    }
+}

@@ -25,6 +25,24 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// Read-only mirror of `scroll.current` (content px from top, 0 = top), kept
     /// so the many existing `scrollY` reads (coord map, instance positions) work.
     private var scrollY: CGFloat { scroll.current }
+    /// `scrollY` rounded to the device-pixel grid — the offset every DRAWN position
+    /// is taken against.
+    ///
+    /// Row quads are placed at `snap(content) - offset`: the snap puts each row on a
+    /// whole device pixel (and keeps adjacent rows sharing an exact edge), but an
+    /// unrounded offset takes them straight back off it. It is fractional in ordinary
+    /// use — a followed TUI rests at `scrollback.count * cellH + inset`, and for a font
+    /// whose cell height is not a whole number of device pixels (Sarasa Mono K 14 →
+    /// 35.96px at 2×) that is a DIFFERENT fraction for every line that scrolls off. The
+    /// ~1px strokes of box-drawing glyphs then resample across two pixel rows and lose
+    /// about a tenth of their peak coverage, so a TUI's box rules thin out and flicker
+    /// line by line while the screen scrolls — some rules of one frame crisp, others soft.
+    ///
+    /// Rounding costs no smoothness: a device pixel is the finest step the display can
+    /// show, and docs/SMOOTH-SCROLL.md asks for pixel / half-pixel units, not sub-pixel.
+    /// The host-facing `scrollYPixels` stays unrounded so follow/anchor arithmetic — which
+    /// compares against exact content heights — is untouched.
+    private var drawScrollY: CGFloat { snap(scroll.current) }
     /// Transient display link for smooth programmatic eases (macOS 14+).
     private lazy var animLink = AnimationLink(view: metalView)
     /// Cached from the last render so `contentHeight` is correct between frames.
@@ -239,7 +257,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     }
 
     private func coordMap() -> CoordinateMap {
-        CoordinateMap(cellW: metrics.width, cellH: metrics.height, inset: inset, scrollY: scrollY)
+        CoordinateMap(cellW: metrics.width, cellH: metrics.height, inset: inset, scrollY: drawScrollY)
     }
 
     /// Snap a point value to the nearest device pixel, so adjacent cell quads
@@ -553,7 +571,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let scale = metalView.metalLayer.contentsScale
         let key = FrameKey(
             version: grid.version, cols: grid.cols, rows: grid.rows,
-            scrollbackCount: grid.scrollback.count, scrollY: scrollY,
+            scrollbackCount: grid.scrollback.count, scrollY: drawScrollY,
             boundsW: metalView.bounds.width, boundsH: metalView.bounds.height,
             scale: scale, opacity: opacity, atlasSig: atlasSignature,
             stateKey: baseStateKey(state))
@@ -699,8 +717,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         let cellH = max(metrics.height, 1)
         let totalRows = grid.scrollback.count + grid.rows
         let h = metalView.bounds.height
-        let first = max(0, Int(floor((scrollY - inset.height) / cellH)))
-        let last = min(totalRows - 1, Int(ceil((scrollY + h - inset.height) / cellH)))
+        let sy = drawScrollY
+        let first = max(0, Int(floor((sy - inset.height) / cellH)))
+        let last = min(totalRows - 1, Int(ceil((sy + h - inset.height) / cellH)))
         guard first <= last else { return ([], [], [], []) }
 
         var bg: [BgInstance] = []
@@ -751,12 +770,11 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                 // background fills caused by fractional cell width.
                 let x0 = snap(inset.width + CGFloat(col) * metrics.width)
                 let x1 = snap(inset.width + CGFloat(col + wcells) * metrics.width)
-                // Snap only the content position (adjacent rows share the same snap
-                // input → no seam); subtract scrollY outside the snap to keep it
-                // sub-pixel → scrolling is smooth with no 1px quantization.
-                // (docs/SMOOTH-SCROLL.md: scrollYPixels need not be an integer.)
-                let y0 = snap(inset.height + CGFloat(row) * metrics.height) - scrollY
-                let y1 = snap(inset.height + CGFloat(row + 1) * metrics.height) - scrollY
+                // Snap the content position (adjacent rows share the same snap input
+                // → no seam) and take it against the pixel-rounded scroll offset, so
+                // the drawn edge lands on a device pixel too — see `drawScrollY`.
+                let y0 = snap(inset.height + CGFloat(row) * metrics.height) - sy
+                let y1 = snap(inset.height + CGFloat(row + 1) * metrics.height) - sy
                 let origin = SIMD2<Float>(Float(x0), Float(y0))
                 let size = SIMD2<Float>(Float(x1 - x0), Float(y1 - y0))
 
@@ -872,8 +890,8 @@ final class MetalTerminalBackend: TerminalRenderBackend {
             let wide = Cell.isWide(a.cell.char)
             let x0 = snap(inset.width + CGFloat(pos.col) * metrics.width)
             let x1 = snap(inset.width + CGFloat(pos.col + (wide ? 2 : 1)) * metrics.width)
-            let y0 = snap(inset.height + CGFloat(pos.row) * metrics.height) - scrollY
-            let y1 = snap(inset.height + CGFloat(pos.row + 1) * metrics.height) - scrollY
+            let y0 = snap(inset.height + CGFloat(pos.row) * metrics.height) - drawScrollY
+            let y1 = snap(inset.height + CGFloat(pos.row + 1) * metrics.height) - drawScrollY
             guard let region = atlas?.region(for: a.cell.char, bold: a.cell.attrs.bold, wide: wide)
             else { continue }
             let fg = a.cell.attrs.resolvedColors(theme: config.theme).fg
@@ -1066,10 +1084,10 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                         : snap(inset.width + CGFloat(col) * metrics.width)
         let x1 = moving ? x0 + CGFloat(wcells) * metrics.width
                         : snap(inset.width + CGFloat(col + wcells) * metrics.width)
-        let y0 = moving ? inset.height + CGFloat(drawnRow) * metrics.height - scrollY
-                        : snap(inset.height + CGFloat(row) * metrics.height) - scrollY
+        let y0 = moving ? inset.height + CGFloat(drawnRow) * metrics.height - drawScrollY
+                        : snap(inset.height + CGFloat(row) * metrics.height) - drawScrollY
         let y1 = moving ? y0 + metrics.height
-                        : snap(inset.height + CGFloat(row + 1) * metrics.height) - scrollY
+                        : snap(inset.height + CGFloat(row + 1) * metrics.height) - drawScrollY
         // Off-screen (scrolled into history) → nothing to draw.
         guard y1 > 0, y0 < metalView.bounds.height else {
             return ghosts.isEmpty ? nil : (nil, ghosts, nil, false)
@@ -1770,7 +1788,8 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     /// view to `cols`×`rows`, set the grid, and render from the top via the same
     /// offscreen path the live capture uses.
     func renderToCGImage(grid: Grid, config: DamsonConfig, state: RenderState,
-                         metrics: CellMetrics, cols: Int, rows: Int, scale: CGFloat) -> CGImage? {
+                         metrics: CellMetrics, cols: Int, rows: Int, scale: CGFloat,
+                         scrollY: CGFloat = 0) -> CGImage? {
         self.config = config
         self.metrics = metrics
         let wPts = inset.width * 2 + CGFloat(cols) * metrics.width
@@ -1779,6 +1798,9 @@ final class MetalTerminalBackend: TerminalRenderBackend {
         self.lastGrid = grid
         self.lastState = state
         self.lastTotalRows = grid.scrollback.count + grid.rows
+        scroll.minY = 0
+        scroll.maxY = max(scrollY, scrollCeiling)
+        scroll.jump(to: scrollY)
         return offscreenImage(scale: scale, grid: grid, state: state)
     }
     #endif

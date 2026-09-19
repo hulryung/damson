@@ -494,6 +494,17 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// The row height is quantised to whole DEVICE pixels (`measuredCellSize`), so it
+    /// depends on the backing scale — dragging the window between a Retina and a 1×
+    /// display changes it. AppKit reports that here and does not necessarily follow
+    /// with a `layout()`, so re-measure from this side too; without it the grid would
+    /// keep the old display's rounding (and the half-pixel row drift it was meant to
+    /// remove) until the next resize.
+    public override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        reportSizeIfChanged()
+    }
+
     public override func layout() {
         super.layout()
         backend.contentView.frame = bounds
@@ -610,7 +621,19 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         let glyphSize = ("M" as NSString).size(withAttributes: [.font: font])
         // NSLayoutManager().defaultLineHeight can differ slightly from the line
         // height NSTextView actually uses, causing rows to be over-reported. Measure from the actual layout result.
-        return (max(glyphSize.width, 1), max(measuredLineHeight(font: font), 1))
+        //
+        // Then quantise that height to WHOLE DEVICE PIXELS. Most families measure
+        // integral already (Menlo is at every size), but plenty don't — Sarasa Mono K
+        // at 14pt measures 17.980103pt, i.e. 35.96px at 2×. A fractional row height
+        // puts consecutive rows on alternating pixel boundaries, so the renderer draws
+        // one row's cell 36px tall and the next one's 35px: a box rule's ~1px stroke
+        // lands differently from row to row, and as a TUI's output scrolls the same
+        // rule crosses both — it visibly thins and thickens, reading as parts of the
+        // box flickering away. One whole pixel per row also makes every followed-TUI
+        // rest position (`scrollback.count * cellH + inset`) a whole number of pixels.
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let cellH = CellMetrics.deviceAlignedHeight(measuredLineHeight(font: font), scale: scale)
+        return (max(glyphSize.width, 1), cellH)
     }
 
     /// The drawable terminal area in points (insets/scroller/tab-bar accounted) —
