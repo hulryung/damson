@@ -63,7 +63,18 @@ struct RestorableState: Codable {
 // MARK: - Save/load
 
 enum SessionRestore {
-    private static let key = "damson.restorableState"
+    /// A dev build keys its layout separately from the release build's.
+    ///
+    /// `dist/Damson.app` is built with the SAME bundle id as `/Applications/Damson.app`,
+    /// deliberately: a dev instance then exercises the user's real preferences (font,
+    /// theme, keybindings), which is most of the point of dogfooding one. But the same
+    /// bundle id is also the same `UserDefaults` domain, and this key is not a
+    /// preference — it is one instance's window/tab layout. Sharing it meant a dev
+    /// instance opened showing the tabs of the release instance the user actually works
+    /// in, and, worse, wrote its own single test window over their layout when it quit,
+    /// losing their real session on the next launch.
+    private static let key = BuildInfo.isDevBuild
+        ? "damson.restorableState.dev" : "damson.restorableState"
 
     static func save(_ state: RestorableState) {
         guard let data = try? JSONEncoder().encode(state) else { return }
