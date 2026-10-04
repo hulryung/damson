@@ -125,7 +125,12 @@ public enum SelectionLogic {
     private static func match(rule: SmartRule, chars: [Character], index: Int) -> Range<Int>? {
         switch rule {
         case .url:
-            return urlRegex.flatMap { regexTokenRange(chars, index, regex: $0) }
+            // Same ending as the clickable link: sentence punctuation after the URL
+            // ("…/account: 설명") is not selected with it.
+            guard let r = urlRegex.flatMap({ regexTokenRange(chars, index, regex: $0) })
+            else { return nil }
+            let kept = r.lowerBound + MultiRowURLDetector.urlLength(chars[r])
+            return index < kept ? r.lowerBound..<kept : nil
         case .email:
             return emailRegex.flatMap { regexTokenRange(chars, index, regex: $0) }
         case .path:

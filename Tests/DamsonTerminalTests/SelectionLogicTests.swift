@@ -118,6 +118,15 @@ final class SelectionLogicTests: XCTestCase {
         XCTAssertEqual(r.map { String(Array(text)[$0]) }, "https://developer.apple.com/account")
     }
 
+    func testSmartURLDropsTrailingSentencePunctuation() {
+        for text in ["https://example.com/a: 설명", "https://example.com/a, next",
+                     "http://localhost:8080/a; x"] {
+            let r = SelectionLogic.smartTokenRange(in: text, at: 10)
+            let got = r.map { String(Array(text)[$0]) }
+            XCTAssertEqual(got, String(text.prefix(while: { $0 != " " }).dropLast()), text)
+        }
+    }
+
     func testSmartEmail() {
         let text = "mail to alice@example.com please"
         let idx = text.distance(from: text.startIndex,

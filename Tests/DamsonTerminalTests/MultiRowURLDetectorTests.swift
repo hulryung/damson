@@ -62,6 +62,39 @@ final class MultiRowURLDetectorTests: XCTestCase {
         XCTAssertNil(probe(rows: ["https://example.com/x입니다"], at: (0, 22)))
     }
 
+    // MARK: - Brackets and sentence punctuation
+
+    private func link(_ text: String, probing needle: String = "example") -> String? {
+        let col = text.distance(from: text.startIndex, to: text.range(of: needle)!.lowerBound)
+        return probe(rows: [text], cols: 80, at: (0, col))?.url.absoluteString
+    }
+
+    func testTrailingColonIsNotPartOfTheLink() {
+        XCTAssertEqual(link("https://example.com/a: 설명"), "https://example.com/a")
+        XCTAssertEqual(link("https://example.com/a:설명"), "https://example.com/a")
+        XCTAssertEqual(link("see https://example.com/a; and"), "https://example.com/a")
+    }
+
+    func testColonInsideTheURLSurvives() {
+        XCTAssertEqual(link("http://localhost:8080/x: ok", probing: "localhost"),
+                       "http://localhost:8080/x")
+        XCTAssertEqual(link("https://example.com/wiki/Category:Foo x"),
+                       "https://example.com/wiki/Category:Foo")
+    }
+
+    func testBracketsEndTheLink() {
+        XCTAssertEqual(link("https://example.com/a(note) x"), "https://example.com/a")
+        XCTAssertEqual(link("https://example.com/a(참고)"), "https://example.com/a")
+        XCTAssertEqual(link("링크(https://example.com/a):"), "https://example.com/a")
+        XCTAssertEqual(link("[https://example.com/a]: x"), "https://example.com/a")
+        XCTAssertEqual(link("https://example.com/a':x"), "https://example.com/a")
+    }
+
+    func testClickOnTheCutOffTailIsNotALink() {
+        // col 22 is inside "(note)".
+        XCTAssertNil(probe(rows: ["https://example.com/a(note) x"], cols: 80, at: (0, 23)))
+    }
+
     // MARK: - Soft wrap
 
     func testSoftWrappedURLJoinsBothRows() {
