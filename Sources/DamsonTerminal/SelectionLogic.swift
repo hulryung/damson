@@ -115,15 +115,22 @@ public enum SelectionLogic {
 
     // Compiled once — these patterns are compile-time constants (double-click / hover is
     // user-driven, but there's no reason to recompile the regex on every gesture).
+    // Hangul ends the token (same ranges as `MultiRowURLDetector.isHangul`): Korean glues
+    // particles onto a URL with no space, and double-click must not select them with it.
     private static let urlRegex = try? NSRegularExpression(
-        pattern: #"(https?|file)://[^\s'"()<>\[\]{}]+"#)
+        pattern: #"(https?|file)://[^\s'"()<>\[\]{}\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uD7B0-\uD7FF]+"#)
     private static let emailRegex = try? NSRegularExpression(
         pattern: #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#)
 
     private static func match(rule: SmartRule, chars: [Character], index: Int) -> Range<Int>? {
         switch rule {
         case .url:
-            return urlRegex.flatMap { regexTokenRange(chars, index, regex: $0) }
+            // Same ending as the clickable link: sentence punctuation after the URL
+            // ("…/account: 설명") is not selected with it.
+            guard let r = urlRegex.flatMap({ regexTokenRange(chars, index, regex: $0) })
+            else { return nil }
+            let kept = r.lowerBound + MultiRowURLDetector.urlLength(chars[r])
+            return index < kept ? r.lowerBound..<kept : nil
         case .email:
             return emailRegex.flatMap { regexTokenRange(chars, index, regex: $0) }
         case .path:

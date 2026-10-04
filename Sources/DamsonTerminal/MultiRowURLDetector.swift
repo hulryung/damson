@@ -105,15 +105,33 @@ enum MultiRowURLDetector {
 
         // 4. Detect and pick the match containing the probe.
         guard let detector = linkDetector else { return nil }
+        // Hangul ends a URL. Korean glues particles onto the word before them with no
+        // space — "https://developer.apple.com/account에 가서" — and NSDataDetector takes
+        // the particle as path, yielding a percent-encoded link to a page that does not
+        // exist. Blank each Hangul character before detecting: one Character for one, so
+        // `pos` still lines up, and the detector then trims a trailing "." or ")" the way
+        // it does before any other space.
+        text = String(text.map { isHangul($0) ? " " : $0 })
         // NSRange is UTF-16-based; our index is in Characters. Map through the string.
         let chars = Array(text)
         for m in detector.matches(in: text, options: [],
                                   range: NSRange(text.startIndex..<text.endIndex, in: text)) {
-            guard let r = Range(m.range, in: text), let url = m.url else { continue }
+            guard let r = Range(m.range, in: text), var url = m.url else { continue }
             let mStart = text.distance(from: text.startIndex, to: r.lowerBound)
-            let mEnd = text.distance(from: text.startIndex, to: r.upperBound)
+            var mEnd = text.distance(from: text.startIndex, to: r.upperBound)
+            // The detector is generous about where prose ends: it keeps a trailing ":",
+            // runs through "]" ("[url]: note" → "url%5D:") and takes "(note)" as path.
+            // Cut the match back to where the URL plausibly stops.
+            let kept = mStart + urlLength(chars[mStart..<mEnd])
+            if kept < mEnd {
+                let cut = String(chars[mStart..<kept])
+                guard let again = detector.firstMatch(
+                    in: cut, options: [], range: NSRange(cut.startIndex..<cut.endIndex, in: cut)),
+                      let cutURL = again.url else { continue }
+                url = cutURL
+                mEnd = kept
+            }
             guard mStart <= charIndex, charIndex < mEnd else { continue }
-            _ = chars
             // 5. Map the match back to per-row column segments.
             var segments: [(row: Int, cols: Range<Int>)] = []
             var i = mStart
@@ -130,6 +148,34 @@ enum MultiRowURLDetector {
             return Match(url: url, segments: segments)
         }
         return nil
+    }
+
+    /// Hangul syllables and jamo (conjoining, compatibility, extended A/B). A URL written
+    /// with Korean in it is percent-encoded on the wire and almost always in a terminal
+    /// too; raw Hangul right after one is prose.
+    static func isHangul(_ ch: Character) -> Bool {
+        guard let v = ch.unicodeScalars.first?.value else { return false }
+        return (0xAC00...0xD7A3).contains(v) || (0x1100...0x11FF).contains(v)
+            || (0x3130...0x318F).contains(v) || (0xA960...0xA97F).contains(v)
+            || (0xD7B0...0xD7FF).contains(v)
+    }
+
+    /// How many leading characters of a detected URL are the URL, the rest being prose
+    /// that ran into it. Two rules, shared with smart selection:
+    ///
+    /// - a bracket or quote ends it — `( ) [ ] { } < > " '`. "url(참고)", "[url]: note".
+    ///   A URL that really contains one carries it percent-encoded nearly everywhere it
+    ///   is printed; the exception, a Wikipedia-style `Foo_(bar)`, loses its tail.
+    /// - sentence punctuation left at the end is dropped — `: ; , . ! ?`. "url: 설명".
+    ///   Only at the end: a colon inside is a port or a path (`:8080`, `Category:Foo`).
+    static func urlLength(_ chars: ArraySlice<Character>) -> Int {
+        var n = 0
+        for ch in chars {
+            if "()[]{}<>\"'".contains(ch) { break }
+            n += 1
+        }
+        while n > 0, ":;,.!?".contains(chars[chars.startIndex + n - 1]) { n -= 1 }
+        return n
     }
 
     /// Should `lower` be treated as a continuation of `upper`?
