@@ -105,15 +105,20 @@ enum MultiRowURLDetector {
 
         // 4. Detect and pick the match containing the probe.
         guard let detector = linkDetector else { return nil }
+        // Hangul ends a URL. Korean glues particles onto the word before them with no
+        // space — "https://developer.apple.com/account에 가서" — and NSDataDetector takes
+        // the particle as path, yielding a percent-encoded link to a page that does not
+        // exist. Blank each Hangul character before detecting: one Character for one, so
+        // `pos` still lines up, and the detector then trims a trailing "." or ")" the way
+        // it does before any other space.
+        text = String(text.map { isHangul($0) ? " " : $0 })
         // NSRange is UTF-16-based; our index is in Characters. Map through the string.
-        let chars = Array(text)
         for m in detector.matches(in: text, options: [],
                                   range: NSRange(text.startIndex..<text.endIndex, in: text)) {
             guard let r = Range(m.range, in: text), let url = m.url else { continue }
             let mStart = text.distance(from: text.startIndex, to: r.lowerBound)
             let mEnd = text.distance(from: text.startIndex, to: r.upperBound)
             guard mStart <= charIndex, charIndex < mEnd else { continue }
-            _ = chars
             // 5. Map the match back to per-row column segments.
             var segments: [(row: Int, cols: Range<Int>)] = []
             var i = mStart
@@ -130,6 +135,16 @@ enum MultiRowURLDetector {
             return Match(url: url, segments: segments)
         }
         return nil
+    }
+
+    /// Hangul syllables and jamo (conjoining, compatibility, extended A/B). A URL written
+    /// with Korean in it is percent-encoded on the wire and almost always in a terminal
+    /// too; raw Hangul right after one is prose.
+    static func isHangul(_ ch: Character) -> Bool {
+        guard let v = ch.unicodeScalars.first?.value else { return false }
+        return (0xAC00...0xD7A3).contains(v) || (0x1100...0x11FF).contains(v)
+            || (0x3130...0x318F).contains(v) || (0xA960...0xA97F).contains(v)
+            || (0xD7B0...0xD7FF).contains(v)
     }
 
     /// Should `lower` be treated as a continuation of `upper`?

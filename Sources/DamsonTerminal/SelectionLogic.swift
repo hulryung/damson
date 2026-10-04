@@ -115,8 +115,10 @@ public enum SelectionLogic {
 
     // Compiled once — these patterns are compile-time constants (double-click / hover is
     // user-driven, but there's no reason to recompile the regex on every gesture).
+    // Hangul ends the token (same ranges as `MultiRowURLDetector.isHangul`): Korean glues
+    // particles onto a URL with no space, and double-click must not select them with it.
     private static let urlRegex = try? NSRegularExpression(
-        pattern: #"(https?|file)://[^\s'"()<>\[\]{}]+"#)
+        pattern: #"(https?|file)://[^\s'"()<>\[\]{}\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uD7B0-\uD7FF]+"#)
     private static let emailRegex = try? NSRegularExpression(
         pattern: #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#)
 

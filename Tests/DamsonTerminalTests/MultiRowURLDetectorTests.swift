@@ -34,6 +34,34 @@ final class MultiRowURLDetectorTests: XCTestCase {
         XCTAssertNil(probe(rows: ["plain text no link here"], at: (0, 5)))
     }
 
+    // MARK: - Hangul glued to the URL
+
+    /// Korean attaches particles to the preceding word with no space, so prose reads
+    /// "https://developer.apple.com/account에 가서…". The particle is not part of the URL.
+    func testHangulParticleAfterURLIsNotPartOfTheLink() {
+        let m = probe(rows: ["https://developer.apple.com/account에 이런식으로"], at: (0, 10))
+        XCTAssertEqual(m?.url.absoluteString, "https://developer.apple.com/account")
+        XCTAssertEqual(m?.segments[0].cols, 0..<35)
+    }
+
+    func testHangulAfterURLLeavesTrailingPunctuationOut() {
+        let m = probe(rows: ["(https://example.com/a.b)를 참고, https://example.com/x.에서"],
+                      at: (0, 5))
+        XCTAssertEqual(m?.url.absoluteString, "https://example.com/a.b")
+        let m2 = probe(rows: ["(https://example.com/a.b)를 참고, https://example.com/x.에서"],
+                       cols: 60, at: (0, 40))
+        XCTAssertEqual(m2?.url.absoluteString, "https://example.com/x")
+    }
+
+    func testHangulDirectlyBeforeURLDoesNotHideIt() {
+        let m = probe(rows: ["주소는https://example.com/x입니다"], at: (0, 10))
+        XCTAssertEqual(m?.url.absoluteString, "https://example.com/x")
+    }
+
+    func testClickOnTheHangulItselfIsNotALink() {
+        XCTAssertNil(probe(rows: ["https://example.com/x입니다"], at: (0, 22)))
+    }
+
     // MARK: - Soft wrap
 
     func testSoftWrappedURLJoinsBothRows() {
