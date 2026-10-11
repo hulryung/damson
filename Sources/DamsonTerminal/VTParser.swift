@@ -7,6 +7,8 @@ import Foundation
 ///   - escape: immediately after ESC
 ///   - csi: after ESC '[', collecting parameters/intermediates/final byte
 ///   - osc: after ESC ']', collecting a string until BEL or ST (ESC '\\')
+///   - dcsPassthrough: after ESC P (unrecognized DCS) or ESC X / ESC ^ / ESC _
+///     (SOS / PM / APC), swallowing the string until ST so it never renders as text
 ///
 /// Emits semantic events (text/control/CSI/OSC) to the delegate. Interpreting
 /// CSI/OSC (SGR colors, cursor movement, title, etc.) is the consumer's job.
@@ -204,6 +206,12 @@ public final class VTParser {
             enterEscape() // re-enter
         case 0x50: // 'P' — DCS
             state = .dcsParam
+        case 0x58, 0x5E, 0x5F: // 'X' SOS, '^' PM, '_' APC — string controls we don't render
+            // Swallow the payload up to ST, exactly like an unrecognized DCS. Without this
+            // the introducer is treated as a plain ESC final byte and the whole string
+            // lands in the grid as text — e.g. Claude Code's Kitty-graphics capability
+            // probe `ESC _ G i=31,s=1,v=1,a=q,t=d,f=24;AAAA ESC \\` printed "Gi=31,s=1,…".
+            state = .dcsPassthrough
         case 0x5B: // '['
             state = .csi
         case 0x5D: // ']'

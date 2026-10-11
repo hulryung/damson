@@ -321,4 +321,26 @@ extension VTParserTests {
         let events = parse("\u{1B}P12\nrest")
         XCTAssertEqual(events, [.execute(0x0A), .text("rest")])
     }
+
+// MARK: - APC / PM / SOS string controls
+
+    /// `ESC _` (APC) is used by the Kitty graphics protocol. Claude Code probes support
+    /// with `ESC _ G i=31,s=1,v=1,a=q,t=d,f=24;AAAA ESC \\` at startup; the payload must be
+    /// swallowed, never shown as "Gi=31,s=1,…" text.
+    func testAPCIsSwallowedToST() {
+        let events = parse("a\u{1B}_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\u{1B}\\b")
+        XCTAssertEqual(events, [.text("a"), .text("b")])
+    }
+
+    func testPMAndSOSAreSwallowedToST() {
+        XCTAssertEqual(parse("x\u{1B}^hidden\u{1B}\\y"), [.text("x"), .text("y")])
+        XCTAssertEqual(parse("x\u{1B}Xhidden\u{1B}\\y"), [.text("x"), .text("y")])
+    }
+
+    /// Same false-start hardening as DCS: a C0 control inside an APC payload aborts the
+    /// swallow so a torn sequence cannot eat the rest of the screen.
+    func testFalseAPCAbortsOnC0Control() {
+        let events = parse("\u{1B}_junk\nrest")
+        XCTAssertEqual(events, [.execute(0x0A), .text("rest")])
+    }
 }
