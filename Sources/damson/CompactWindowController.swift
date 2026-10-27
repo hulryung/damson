@@ -265,6 +265,15 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
 
     /// Serialize the current window's tab/pane layout + cwd. `handoff` marks the sessions
     /// just released to the keeper so their leaves carry adoption ids (see toRestorable).
+    func workbenchTitle(for session: DamsonSession) -> String? {
+        tabs.first { $0.tree.root.leaves().contains { $0.session === session } }.map { displayTitle($0) }
+    }
+
+    func workspaceWindow() -> RestorableWindow {
+        RestorableWindow(tabs: tabs.map { $0.tree.root.workspaceLayout() }, selectedTab: currentIndex,
+                         tabTitles: tabs.map { $0.customTitle }, tabGroups: groupLayout.restorable())
+    }
+
     func toRestorableWindow(handoff: [ObjectIdentifier: SessionHandoffRecord] = [:]) -> RestorableWindow {
         RestorableWindow(
             tabs: tabs.map { $0.tree.root.toRestorable(handoff: handoff) },

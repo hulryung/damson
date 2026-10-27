@@ -19,6 +19,11 @@ public final class DamsonSession: ObservableObject {
     @Published public private(set) var processExited: Bool = false
     /// Why the child never started, when it didn't. nil on the ordinary path.
     public private(set) var spawnFailure: String?
+    public private(set) var commandLifecycle = CommandLifecycle()
+    public private(set) var reportedAgentState: ReportedAgentState?
+    public private(set) var agentStateReportedAt: Date?
+    public static let commandCompleted = Notification.Name("DamsonCommandCompleted")
+
     public private(set) var exitCode: Int32?
 
     /// Semantic events emitted by VTParser (for debug/test hooks).
@@ -414,9 +419,26 @@ public final class DamsonSession: ObservableObject {
             //   end: URI empty
             let uri = oscParams.count >= 3 ? oscParams[2] : ""
             grid.setHyperlink(uri.isEmpty ? nil : uri)
+        case "777":
+            // Provider-neutral explicit hook, scoped to this PTY. Unknown values do
+            // not erase the last valid report; "clear" removes the provider report.
+            if oscParams.count == 4, oscParams[1] == "damson", oscParams[2] == "agent" {
+                if oscParams[3] == "clear" {
+                    reportedAgentState = nil
+                    agentStateReportedAt = nil
+                } else if let state = ReportedAgentState(rawValue: oscParams[3]) {
+                    reportedAgentState = state
+                    agentStateReportedAt = Date()
+                }
+            }
         case "133":
-            // OSC 133 ; A/B/C/D — FinalTerm semantic prompt. v1 uses only A (prompt start)
-            // to mark prompt lines. B/C/D are reserved for the future.
+            if oscParams.count >= 2 {
+                let line = grid.scrollbackPushCount + UInt64(max(0, grid.cursorRow))
+                if let result = commandLifecycle.receive(oscParams[1], status: oscParams.count > 2 ? oscParams[2] : nil, line: line) {
+                    NotificationCenter.default.post(name: Self.commandCompleted, object: self, userInfo: ["completion": result])
+                }
+            }
+            // OSC 133 prompt marks and command lifecycle. B needs no state change.
             if oscParams.count >= 2, oscParams[1] == "A" {
                 let absLine = grid.scrollbackPushCount + UInt64(max(0, grid.cursorRow))
                 if promptMarks.last != absLine {

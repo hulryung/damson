@@ -821,46 +821,106 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     // MARK: - Context menu (right-click)
 
     public override func menu(for event: NSEvent) -> NSMenu? {
+        // Make responder-chain pane actions apply to the pane that was clicked.
+        window?.makeFirstResponder(self)
         let menu = NSMenu()
-        let copyItem = NSMenuItem(
-            title: String(localized: "menu.copy", defaultValue: "Copy"),
-            action: #selector(copy(_:)), keyEquivalent: ""
-        )
-        copyItem.target = self
-        copyItem.isEnabled = (selectedText() != nil)
-        menu.addItem(copyItem)
+        menu.autoenablesItems = false
+        @discardableResult
+        func add(_ title: String, _ action: Selector, enabled: Bool = true,
+                 payload: Any? = nil, responderAction: Bool = false) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = responderAction ? (NSApp.target(forAction: action, to: nil, from: self) as AnyObject?) : self
+            item.isEnabled = enabled && (!responderAction || item.target != nil)
+            item.representedObject = payload
+            menu.addItem(item)
+            return item
+        }
 
-        let pasteItem = NSMenuItem(
-            title: String(localized: "menu.paste", defaultValue: "Paste"),
-            action: #selector(paste(_:)), keyEquivalent: ""
-        )
-        pasteItem.target = self
-        pasteItem.isEnabled = (NSPasteboard.general.string(forType: .string) != nil)
-        menu.addItem(pasteItem)
+        // Snapshot the clicked target: later output must not change the menu's destination.
+        if let url = urlInfoAtCell(convertEventToCell(event))?.url {
+            if url.isFileURL {
+                let local = ContextMenuFile.localURL(url)
+                add("Open File", #selector(openContextURL(_:)), enabled: local != nil, payload: local)
+                add("Reveal in Finder", #selector(revealContextFile(_:)), enabled: local != nil, payload: local)
+                add("Quick Look", #selector(previewContextFile(_:)), enabled: local != nil, payload: local)
+                var isDirectory: ObjCBool = false
+                let isFile = local.map { FileManager.default.fileExists(atPath: $0.path, isDirectory: &isDirectory) && !isDirectory.boolValue } ?? false
+                let editor = add("Open in Editor", #selector(editContextFile(_:)), enabled: isFile, payload: local)
+                let position = convertEventToCell(event)
+                let cells = cellsForTextViewRow(position.row)
+                let columns = cells.indices.filter { !cells[$0].isContinuation && !cells[$0].isWideSpacer }
+                editor.tag = FilePathDetector.token(at: position.col, chars: columns.map { cells[$0].char }, cols: columns)?.line ?? 0
+                let folder = local.map { isDirectory.boolValue ? $0 : $0.deletingLastPathComponent() }
+                add("New Terminal Here", #selector(newTerminalAtContextFolder(_:)), enabled: folder != nil, payload: folder)
+                add("Copy File Path", #selector(copyContextValue(_:)), payload: url.path)
+                add("Copy File URI", #selector(copyContextValue(_:)), payload: url.absoluteString)
+            } else {
+                add("Open Link", #selector(openContextURL(_:)), payload: url)
+                add("Copy Link Address", #selector(copyContextValue(_:)), payload: url.absoluteString)
+            }
+            menu.addItem(.separator())
+        }
 
+        add(String(localized: "menu.copy", defaultValue: "Copy"), #selector(copy(_:)),
+            enabled: selectedText() != nil)
+        add(String(localized: "menu.paste", defaultValue: "Paste"), #selector(paste(_:)),
+            enabled: !(NSPasteboard.general.string(forType: .string) ?? "").isEmpty)
+        add("Select All", #selector(selectAll(_:)))
+        add("Copy Last Command Output", #selector(copyLastCommandOutput(_:)),
+            enabled: !session.promptMarks.isEmpty)
         menu.addItem(.separator())
+        add(String(localized: "menu.find", defaultValue: "Find…"), #selector(performFindPanelAction(_:)))
+        add("Return to Prompt", #selector(returnToContextPrompt(_:)))
 
-        let findItem = NSMenuItem(
-            title: String(localized: "menu.find", defaultValue: "Find…"),
-            action: #selector(performFindPanelAction(_:)), keyEquivalent: ""
-        )
-        findItem.target = self
-        menu.addItem(findItem)
-
+        if let cwd = session.currentDirectory ?? session.currentWorkingDirectory,
+           let directory = ContextMenuFile.localURL(URL(fileURLWithPath: cwd)) {
+            menu.addItem(.separator())
+            add("Open Working Folder in Finder", #selector(openContextURL(_:)), payload: directory)
+            add("Copy Working Folder Path", #selector(copyContextValue(_:)), payload: directory.path)
+        }
         menu.addItem(.separator())
-
-        // Split — passed to the window controller via the responder chain (only handled in Compact mode).
-        let splitH = NSMenuItem(
-            title: String(localized: "menu.splitH", defaultValue: "Split Horizontally"),
-            action: NSSelectorFromString("splitPaneHorizontally:"), keyEquivalent: ""
-        )
-        menu.addItem(splitH)
-        let splitV = NSMenuItem(
-            title: String(localized: "menu.splitV", defaultValue: "Split Vertically"),
-            action: NSSelectorFromString("splitPaneVertically:"), keyEquivalent: ""
-        )
-        menu.addItem(splitV)
+        add(String(localized: "menu.splitH", defaultValue: "Split Horizontally"),
+            NSSelectorFromString("splitPaneHorizontally:"), responderAction: true)
+        add(String(localized: "menu.splitV", defaultValue: "Split Vertically"),
+            NSSelectorFromString("splitPaneVertically:"), responderAction: true)
         return menu
+    }
+
+    @objc private func previewContextFile(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        FileContextActions.shared.preview(url)
+    }
+
+    @objc private func editContextFile(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        FileContextActions.shared.edit(url, line: sender.tag)
+    }
+
+    @objc private func newTerminalAtContextFolder(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL, ContextMenuFile.localURL(url) != nil else { NSSound.beep(); return }
+        NotificationCenter.default.post(name: Notification.Name("DamsonOpenDirectory"), object: url)
+    }
+
+    @objc private func openContextURL(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        guard !url.isFileURL || ContextMenuFile.localURL(url) != nil else { NSSound.beep(); return }
+        if !NSWorkspace.shared.open(url) { NSSound.beep() }
+    }
+
+    @objc private func revealContextFile(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL,
+              let local = ContextMenuFile.localURL(url) else { NSSound.beep(); return }
+        NSWorkspace.shared.activateFileViewerSelecting([local])
+    }
+
+    @objc private func copyContextValue(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    @objc private func returnToContextPrompt(_ sender: Any?) {
+        snapToCursorOnUserInput()
     }
 
     public override func mouseDown(with event: NSEvent) {
@@ -1301,12 +1361,16 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     ) -> (url: URL, segments: [(row: Int, colRange: Range<Int>)])? {
         let cells = cellsForTextViewRow(pos.row)
         guard pos.col >= 0, pos.col < cells.count else { return nil }
-        if let uri = cells[pos.col].hyperlink, let url = URL(string: uri) {
+        if let uri = cells[pos.col].hyperlink,
+           let url = uri.lowercased().hasPrefix("file://") ? ContextMenuFile.parseURI(uri) : URL(string: uri) {
             var s = pos.col
             while s > 0 && cells[s - 1].hyperlink == uri { s -= 1 }
             var e = pos.col + 1
             while e < cells.count && cells[e].hyperlink == uri { e += 1 }
             return (url, [(pos.row, s..<e)])
+        }
+        if let file = ContextMenuFile.uri(at: pos.col, cells: cells) {
+            return (file.url, [(pos.row, file.cols)])
         }
         // Plain-text URL — may span multiple rows (soft wrap, or a TUI's own hard
         // wrap with indented continuations). EVERY row's segment is returned so the

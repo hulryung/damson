@@ -37,6 +37,10 @@ final class DamsonWindowController: NSWindowController, NSWindowDelegate, PaneTr
         return tree.root.leaves().first?.session
     }
 
+    func workspaceWindow() -> RestorableWindow {
+        RestorableWindow(tabs: [tree.root.workspaceLayout()], selectedTab: 0, tabTitles: [window?.title])
+    }
+
     init(session: DamsonSession) {
         self.tree = PaneTreeView(rootSession: session)
         let window = NSWindow(
@@ -237,7 +241,7 @@ final class DamsonWindowController: NSWindowController, NSWindowDelegate, PaneTr
     }
 }
 
-final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
     /// Live single-session controllers (Standard/Auto mode).
     fileprivate var controllers: [DamsonWindowController] = []
     /// Live multi-session controllers (Compact mode).
@@ -245,6 +249,11 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var controlSocketWatchdog: DispatchSourceTimer?
     private var settingsWindow: NSWindow?
     private var aboutWindow: NSWindow?
+    private let palette = CommandPalette()
+    private let commandNotifications = CommandNotifications()
+    private let quickHotkey = QuickTerminalHotkey()
+    private weak var quickController: CompactWindowController?
+
     /// IPC with damson-cli. Bound after the first window is created.
     private var controlSocket: ControlSocketServer?
     /// Active tmux -CC integrations (one per attach). Kept alive here so the client + host
@@ -266,6 +275,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var keepQuitRequested = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setupWorkbench()
         // Control macOS press-and-hold (the accent popup). When it's on, holding a key
         // makes the text input system intercept it as "waiting for an accent" and
         // suppresses key repeat (inconsistent per key — f/q/x etc. don't repeat at all).
@@ -841,7 +851,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                  // emit — so preferring it reports an intention as a fact.
                  cwd: session.currentWorkingDirectory ?? session.currentDirectory,
                  title: effectiveTitle(for: session),
-                 agent: crew?.badge(for: session)?.rawValue,
+                 agent: crew?.status(for: session),
                  group: groupName(for: session))
     }
 
@@ -1311,6 +1321,15 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Enable "Detach" only while the key window belongs to a tmux integration.
     @MainActor
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleCommandNotifications(_:)) {
+            item.state = UserDefaults.standard.bool(forKey: CommandNotifications.enabledKey) ? .on : .off
+        }
+        if item.action == #selector(toggleQuickTerminalEnabled(_:)) {
+            item.state = UserDefaults.standard.bool(forKey: QuickTerminalHotkey.enabledKey) ? .on : .off
+        }
+        if item.action == #selector(saveWorkspace(_:)) || item.action == #selector(showProjectSummary(_:)) {
+            return activeControlSession() != nil
+        }
         if item.action == #selector(detachTmux(_:)) {
             return tmuxController(for: NSApp.keyWindow) != nil
         }
@@ -1737,6 +1756,19 @@ private func buildToolsMenu(into mainMenu: NSMenu) {
     // Tools — integrations and utilities. Currently the tmux control-mode (-CC) entry points
     // (docs/TMUX-INTEGRATION.md); no default shortcuts, added directly rather than via the store.
     let toolsMenu = addSubmenu("Tools", to: mainMenu)
+    toolsMenu.addItem(menuItem("Command Palette…", #selector(DamsonAppDelegate.showCommandPalette(_:)), .commandPalette))
+    let features: [(String, Selector)] = [
+        ("Agent Activity…", #selector(DamsonAppDelegate.showAgentActivity(_:))),
+        ("Project Summary…", #selector(DamsonAppDelegate.showProjectSummary(_:))),
+        ("Save Workspace…", #selector(DamsonAppDelegate.saveWorkspace(_:))),
+        ("Open Workspace…", #selector(DamsonAppDelegate.openWorkspace(_:))),
+        ("Delete Workspace…", #selector(DamsonAppDelegate.deleteWorkspace(_:))),
+        ("Notify When Long Commands Finish", #selector(DamsonAppDelegate.toggleCommandNotifications(_:))),
+        ("Show/Hide Quick Terminal", #selector(DamsonAppDelegate.showQuickTerminal(_:))),
+        ("Enable Quick Terminal (⌃⌘`)", #selector(DamsonAppDelegate.toggleQuickTerminalEnabled(_:)))
+    ]
+    for (title, action) in features { toolsMenu.addItem(NSMenuItem(title: title, action: action, keyEquivalent: "")) }
+    toolsMenu.addItem(.separator())
     let attachItem = NSMenuItem(
         title: "Attach tmux (-CC)…",
         action: #selector(DamsonAppDelegate.attachTmux(_:)),
@@ -1786,3 +1818,167 @@ installMainMenu()
 
 app.activate(ignoringOtherApps: true)
 app.run()
+
+// MARK: - Workbench tools
+
+@MainActor
+extension DamsonAppDelegate {
+    private func setupWorkbench() {
+        NotificationCenter.default.addObserver(self, selector: #selector(openWorkbenchDirectory(_:)),
+                                               name: Notification.Name("DamsonOpenDirectory"), object: nil)
+        commandNotifications.reveal = { [weak self] session in self?.revealWorkbenchSession(session) }
+        commandNotifications.isFocused = { [weak self] session in self?.activeControlSession() === session }
+        quickHotkey.toggle = { [weak self] in self?.toggleQuickTerminal() }
+        if UserDefaults.standard.bool(forKey: QuickTerminalHotkey.enabledKey), !quickHotkey.enable() {
+            UserDefaults.standard.set(false, forKey: QuickTerminalHotkey.enabledKey)
+        }
+    }
+
+    @objc private func openWorkbenchDirectory(_ note: Notification) {
+        guard let url = note.object as? URL else { return }
+        var config = DamsonConfig.fromUserDefaults()
+        config.cwd = url.path
+        spawnCompactWindow(firstTab: config)
+    }
+
+    private func revealWorkbenchSession(_ session: DamsonSession) {
+        guard paneTargets.contains(where: { $0.revealPane(for: session) }) else { NSSound.beep(); return }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func paneEntries(agentsOnly: Bool = false) -> [CommandPalette.Entry] {
+        allSessions().compactMap { session -> CommandPalette.Entry? in
+            let cwd = session.currentDirectory ?? session.currentWorkingDirectory ?? "Unknown folder"
+            let title = compactControllers.compactMap { $0.workbenchTitle(for: session) }.first
+                ?? (session.title.isEmpty ? (cwd as NSString).lastPathComponent : session.title)
+            let badge = crew?.badge(for: session)
+            let program = session.launchArgv.first.map { ($0 as NSString).lastPathComponent } ?? "shell"
+            let isKnownAgent = ["claude", "codex", "grok", "cursor-agent", "gemini", "opencode"].contains(program)
+            if agentsOnly && session.reportedAgentState == nil && badge == nil && !isKnownAgent { return nil }
+            var detail = cwd
+            if agentsOnly {
+                if let state = session.reportedAgentState {
+                    let date = session.agentStateReportedAt.map { DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .medium) } ?? ""
+                    detail = "\(state.rawValue) · explicit hook at \(date) · \(cwd)"
+                } else if let badge {
+                    detail = "\(badge.describedAs) · Claude observation · \(cwd)"
+                } else { detail = "State unknown · no report from \(program) · \(cwd)" }
+            }
+            return CommandPalette.Entry(title: "\(agentsOnly ? program : "Pane"): \(title)", detail: detail, id: PaneRegistry.shared.id(for: session).uuidString) { [weak self, weak session] in
+                guard let session else { NSSound.beep(); return }
+                self?.revealWorkbenchSession(session)
+            }
+        }.sorted {
+            let left = $0.detail.hasPrefix("waiting"), right = $1.detail.hasPrefix("waiting")
+            if left != right { return left }
+            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+        }
+    }
+
+    @objc func showCommandPalette(_ sender: Any?) {
+        let commands = NSApp.mainMenu.map { CommandPalette.menuEntries($0, origin: NSApp.keyWindow) } ?? []
+        palette.present(title: "Command Palette", entries: paneEntries() + commands)
+    }
+
+    @objc func showAgentActivity(_ sender: Any?) {
+        let entries = paneEntries(agentsOnly: true)
+        palette.present(title: "Agent Activity — explicit reports, not inferred completion", entries: entries) { [weak self] in
+            self?.paneEntries(agentsOnly: true) ?? []
+        }
+    }
+
+    @objc func showProjectSummary(_ sender: Any?) {
+        guard let session = activeControlSession(), let cwd = session.currentDirectory ?? session.currentWorkingDirectory else {
+            NSSound.beep(); return
+        }
+        ProjectSummary.shared.show(folder: cwd, pid: session.foregroundProcessID)
+    }
+
+    @objc func toggleCommandNotifications(_ sender: Any?) { commandNotifications.toggle() }
+
+    @objc func toggleQuickTerminalEnabled(_ sender: Any?) {
+        if UserDefaults.standard.bool(forKey: QuickTerminalHotkey.enabledKey) {
+            quickHotkey.disable()
+            UserDefaults.standard.set(false, forKey: QuickTerminalHotkey.enabledKey)
+        } else if quickHotkey.enable() {
+            UserDefaults.standard.set(true, forKey: QuickTerminalHotkey.enabledKey)
+        } else {
+            showWorkbenchError("The quick-terminal shortcut is already in use or could not be registered.")
+        }
+    }
+
+    @objc func showQuickTerminal(_ sender: Any?) { toggleQuickTerminal() }
+
+    private func toggleQuickTerminal() {
+        if let controller = quickController, compactControllers.contains(where: { $0 === controller }), let window = controller.window {
+            if window.isKeyWindow { window.orderOut(nil) }
+            else { window.deminiaturize(nil); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+        } else {
+            let controller = spawnCompactWindow()
+            quickController = controller
+            controller.window?.title = "Quick Terminal"
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    @objc func saveWorkspace(_ sender: Any?) {
+        guard let layout = activeCompact()?.workspaceWindow() ?? activeSingleController()?.workspaceWindow() else { NSSound.beep(); return }
+        let alert = NSAlert()
+        alert.messageText = "Save Workspace"
+        alert.informativeText = "Save folders, tab names, and pane layout. Reopening starts fresh shells."
+        let name = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        name.placeholderString = "Workspace name"
+        alert.accessoryView = name
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = name
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let title = name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { showWorkbenchError("Enter a workspace name."); return }
+        do {
+            var presets = try WorkspacePresets.load()
+            guard !presets.contains(where: { $0.name.caseInsensitiveCompare(title) == .orderedSame }) else {
+                showWorkbenchError("A workspace with this name already exists. Choose another name or delete the old preset."); return
+            }
+            presets.append(WorkspacePreset(id: UUID(), name: title, window: layout))
+            try WorkspacePresets.save(presets)
+        } catch { showWorkbenchError(error.localizedDescription) }
+    }
+
+    @objc func openWorkspace(_ sender: Any?) { presentWorkspaces(deleting: false) }
+    @objc func deleteWorkspace(_ sender: Any?) { presentWorkspaces(deleting: true) }
+
+    private func presentWorkspaces(deleting: Bool) {
+        do {
+            let presets = try WorkspacePresets.load()
+            guard !presets.isEmpty else { showWorkbenchError("No saved workspaces yet. Use Tools → Save Workspace."); return }
+            let entries = presets.map { preset in
+                CommandPalette.Entry(title: preset.name, detail: deleting ? "Delete saved layout; running sessions are preserved" : "Open \(preset.window.tabs.count) tabs in a new window") { [weak self] in
+                    guard let self else { return }
+                    if deleting {
+                        let alert = NSAlert()
+                        alert.messageText = "Delete workspace “\(preset.name)”?"
+                        alert.addButton(withTitle: "Delete")
+                        alert.addButton(withTitle: "Cancel")
+                        guard alert.runModal() == .alertFirstButtonReturn else { return }
+                        do { try WorkspacePresets.save(WorkspacePresets.load().filter { $0.id != preset.id }) }
+                        catch { self.showWorkbenchError(error.localizedDescription) }
+                    } else {
+                        var layout = preset.window
+                        layout.tabs = layout.tabs.map(\.freshWorkspace)
+                        guard !layout.tabs.isEmpty else { self.showWorkbenchError("This workspace has no tabs."); return }
+                        self.spawnCompactWindow(restoring: layout)
+                    }
+                }
+            }
+            palette.present(title: deleting ? "Delete Workspace" : "Open Workspace", entries: entries)
+        } catch { showWorkbenchError(error.localizedDescription) }
+    }
+
+    private func showWorkbenchError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Damson"
+        alert.informativeText = message
+        alert.runModal()
+    }
+}

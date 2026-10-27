@@ -34,6 +34,20 @@ Damson starts from the opposite end: **it will never support any platform other 
 - **The GPU draws everything.** The Metal renderer handles truecolor, bold/underline/strikethrough/hyperlinks, double-width CJK, and color emoji (including ZWJ sequences and flags). Symbols your font lacks — like ④ — still show up through font fallback.
 - **The fundamentals of an all-day tool.** Tabs and split panes (split, rearrange, switch), a settings UI, session restore that brings everything back when you relaunch, Sparkle auto-updates, and a `damson-cli` for scripted control.
 
+Right-click inside a terminal for copy/paste, select all, copy last command output
+(requires shell integration), find, return to the prompt, working-folder actions,
+and pane splits. Right-click a link to open or copy its address. On an existing
+file path or local `file://` URI, choose **Reveal in Finder** to open its containing
+folder with the file selected, or open the file and copy its path/URI. Relative
+paths resolve against the terminal's working directory. Remote and missing file
+URIs can be copied, but cannot be opened through these file actions.
+
+The **Tools** menu adds a searchable command palette (`⌘⇧P`), named workspace
+presets, agent activity, project context, opt-in command-completion notifications,
+and a reusable quick terminal. File context menus include Quick Look and editor
+navigation. See [Workbench tools](docs/WORKBENCH.md) for usage, reporting hooks,
+and validation limits.
+
 ## Who it's for
 
 - **Developers who keep a terminal open all day on macOS.** If it's the window you stare at the longest, it should be the best-made window you own.
