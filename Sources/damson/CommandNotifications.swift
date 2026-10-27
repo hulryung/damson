@@ -26,7 +26,7 @@ final class CommandNotifications: NSObject, UNUserNotificationCenterDelegate {
             let content = UNMutableNotificationContent()
             let status = result.exitCode.map { $0 == 0 ? "Succeeded" : "Failed (exit \($0))" } ?? "Finished (status unknown)"
             content.title = "\(status) · \(Int(result.duration))s"
-            content.body = session.currentDirectory ?? "Damson terminal"
+            content.body = session.currentWorkingDirectory ?? session.currentDirectory ?? "Damson terminal"
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
         }
     }

@@ -32,7 +32,7 @@ extension PaneNode {
     func workspaceLayout() -> RestorablePane {
         switch kind {
         case .leaf(let session, _):
-            return .leaf(cwd: session.currentDirectory ?? session.currentWorkingDirectory,
+            return .leaf(cwd: session.currentWorkingDirectory ?? session.currentDirectory,
                          scrollbackID: nil, sessionID: nil, preamble: nil, fontZoom: Double(session.fontZoom))
         case .split(let direction, let first, let second, let ratio):
             return .split(direction: direction == .horizontal ? "horizontal" : "vertical", ratio: Double(ratio),

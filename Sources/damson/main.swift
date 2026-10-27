@@ -1848,7 +1848,7 @@ extension DamsonAppDelegate {
 
     private func paneEntries(agentsOnly: Bool = false) -> [CommandPalette.Entry] {
         allSessions().compactMap { session -> CommandPalette.Entry? in
-            let cwd = session.currentDirectory ?? session.currentWorkingDirectory ?? "Unknown folder"
+            let cwd = session.currentWorkingDirectory ?? session.currentDirectory ?? "Unknown folder"
             let title = compactControllers.compactMap { $0.workbenchTitle(for: session) }.first
                 ?? (session.title.isEmpty ? (cwd as NSString).lastPathComponent : session.title)
             let badge = crew?.badge(for: session)
@@ -1888,7 +1888,7 @@ extension DamsonAppDelegate {
     }
 
     @objc func showProjectSummary(_ sender: Any?) {
-        guard let session = activeControlSession(), let cwd = session.currentDirectory ?? session.currentWorkingDirectory else {
+        guard let session = activeControlSession(), let cwd = session.currentWorkingDirectory ?? session.currentDirectory else {
             NSSound.beep(); return
         }
         ProjectSummary.shared.show(folder: cwd, pid: session.foregroundProcessID)
