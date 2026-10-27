@@ -71,7 +71,18 @@ final class CrewController {
     /// The agent status of a pane right now, from the table the last sweep read. Used by
     /// the control socket so a script sees the same status the badge shows, without paying
     /// for a fresh directory scan per query.
+    func status(for session: DamsonSession) -> String? {
+        session.reportedAgentState?.rawValue ?? badge(for: session)?.rawValue
+    }
+
     func badge(for session: DamsonSession) -> AgentBadge? {
+        if let state = session.reportedAgentState {
+            switch state {
+            case .running: return .busy
+            case .waiting: return .waiting
+            case .completed, .failed, .unknown: return nil
+            }
+        }
         switch presence(of: session) {
         case .none:                 return nil
         case .starting:             return .starting
@@ -82,8 +93,9 @@ final class CrewController {
     /// What damson can say about this pane's agent. One decision, used by the badge, the
     /// control socket and the event stream alike, so the three cannot disagree about a pane.
     private func presence(of session: DamsonSession) -> AgentPresence {
-        AgentPresence.of(row: registry.session(forForegroundPID: session.foregroundProcessID),
-                         argv: session.launchArgv)
+        if let state = session.reportedAgentState { return .reported(state.rawValue) }
+        return AgentPresence.of(row: registry.session(forForegroundPID: session.foregroundProcessID),
+                                argv: session.launchArgv)
     }
 
     /// One sweep: re-read the session records, then relabel every pane in every window.
@@ -108,8 +120,8 @@ final class CrewController {
         var observed: [AgentObservation] = []
         for controller in windows() {
             controller.refreshAgentBadges { [paneID] session in
-                let row = registry.session(forForegroundPID: session.foregroundProcessID)
-                let presence = AgentPresence.of(row: row, argv: session.launchArgv)
+                let row = session.reportedAgentState == nil ? registry.session(forForegroundPID: session.foregroundProcessID) : nil
+                let presence = self.presence(of: session)
                 guard presence != .none else { return nil }
                 sawAny = true
                 // An id is minted here: a pane running an agent is exactly the pane a driver
@@ -121,17 +133,13 @@ final class CrewController {
                     observed.append(AgentObservation(
                         paneID: id.uuidString,
                         pid: row?.pid ?? session.foregroundProcessID,
-                        status: row?.status ?? AgentBadge.starting.rawValue,
+                        status: session.reportedAgentState?.rawValue ?? row?.status ?? AgentBadge.starting.rawValue,
                         waitingFor: row?.waitingFor,
                         cwd: row?.cwd ?? session.currentWorkingDirectory ?? session.currentDirectory))
                 }
                 // The badge vocabulary is closed; the event stream forwards the raw status
                 // so a driver isn't limited to what damson happens to draw.
-                switch presence {
-                case .none:                 return nil
-                case .starting:             return .starting
-                case .reported(let status): return AgentBadge(status: status)
-                }
+                return self.badge(for: session)
             }
         }
         broadcaster.publish(observed)

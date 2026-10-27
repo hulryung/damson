@@ -165,7 +165,7 @@ struct KeyChord: Codable, Equatable {
 /// (`viewAction != nil`) are dispatched by `DamsonSurfaceView`'s key hook instead.
 struct AppAction {
     enum ID: String, CaseIterable {
-        case settings, newWindow, newTab, closeTab, closeWindow
+        case commandPalette, settings, newWindow, newTab, closeTab, closeWindow
         case copy, paste, selectAll, copyLastCommandOutput, find, findNext, findPrevious
         case zoomIn, zoomOut, resetZoom, toggleFullScreen, togglePerfHUD, toggleAppleHUD
         case splitHorizontally, splitVertically
@@ -198,6 +198,7 @@ struct AppAction {
             AppAction(id: id, title: title, category: cat, defaultChord: chord, viewAction: view)
         }
         return [
+            a(.commandPalette, "Command Palette…", "Application", .c("p", cmdShift)),
             a(.settings, "Settings…", "Application", .c(",", cmd)),
             a(.quit, "Quit Damson", "Application", .c("q", cmd), view: .quit),
 

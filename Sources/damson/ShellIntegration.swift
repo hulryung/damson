@@ -56,15 +56,27 @@ enum ShellIntegration {
         # --- damson shell integration ---
         # On every prompt: report cwd via OSC 7 (new splits/tabs inherit cwd) + mark the
         # prompt line via OSC 133;A (⌘↑/⌘↓ prompt jump).
+        _damson_preexec() {
+          _damson_command_running=1
+          printf '\\033]133;C\\033\\\\'
+        }
         _damson_precmd() {
+          local _damson_status=$?
+          if [[ "${_damson_command_running:-0}" == 1 ]]; then
+            printf '\\033]133;D;%s\\033\\\\' "$_damson_status"
+            _damson_command_running=0
+          fi
           printf '\\033]7;file://%s%s\\033\\\\' "${HOST}" "${PWD}"
           printf '\\033]133;A\\033\\\\'
         }
         autoload -Uz add-zsh-hook 2>/dev/null
         if (( $+functions[add-zsh-hook] )); then
+          add-zsh-hook -d preexec _damson_preexec 2>/dev/null
+          add-zsh-hook preexec _damson_preexec
           add-zsh-hook -d precmd _damson_precmd 2>/dev/null
           add-zsh-hook precmd _damson_precmd
         else
+          preexec_functions+=(_damson_preexec)
           precmd_functions+=(_damson_precmd)
         fi
         _damson_precmd
