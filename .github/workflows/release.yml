@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14   # arm64. See RELEASE.md for universal builds.
+    runs-on: macos-15   # arm64. See RELEASE.md for universal builds.
     steps:
       - uses: actions/checkout@v4
         with:
