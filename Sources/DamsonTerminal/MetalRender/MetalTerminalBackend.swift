@@ -1422,6 +1422,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
     // MARK: - Scroll primitives
 
     var scrollYPixels: CGFloat { scrollY }
+    var scrollDestinationYPixels: CGFloat { scroll.destination }
     var contentHeight: CGFloat { CGFloat(lastTotalRows) * max(metrics.height, 1) + inset.height * 2 }
     var viewportHeight: CGFloat { metalView.bounds.height }
 
@@ -1527,6 +1528,7 @@ final class MetalTerminalBackend: TerminalRenderBackend {
                                       viewport: viewportHeight)
         if moved {
             // Request a vsync-aligned render instead of a synchronous one — uniform frame intervals make it smooth.
+            // (A mouse-wheel notch started an ease instead; the same loop steps it.)
             scrollRenderPending = true
             ensureRenderLoop()
             onUserScroll?()              // host updates followingBottom

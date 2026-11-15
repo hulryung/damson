@@ -102,15 +102,30 @@ struct ScrollModel {
     ///
     /// Past an edge, a **precise** (trackpad) gesture rubber-bands: `current` is
     /// allowed to overshoot [0, maxY] with diminishing resistance (the backend
-    /// springs it back when the gesture ends). A mouse wheel hard-stops at the edge.
+    /// springs it back when the gesture ends). A mouse wheel hard-stops at the edge,
+    /// and rather than moving `current` it eases there (see `step(dt:)`): `true`
+    /// then means an ease was started or retargeted.
     @discardableResult
     mutating func applyWheel(deltaY: CGFloat, precise: Bool, lineHeight: CGFloat,
                              viewport: CGFloat = 0) -> Bool {
-        animating = false
         // Trackpad (precise) is 1:1. For a mouse wheel (non-precise) deltaY is ≈1 per
         // notch, so multiplying by line height alone gives one line per notch — too
         // slow → ~3 lines per notch, per convention.
         let pixels = precise ? deltaY : deltaY * lineHeight * ScrollModel.mouseWheelLines
+        if !precise {
+            // A wheel notch is a discrete jump of several lines; applied in one frame it
+            // reads as a stutter. Ease toward it instead, and stack rapid notches on the
+            // in-flight destination so a fast spin keeps accelerating rather than each
+            // notch restarting from wherever the glide happens to be.
+            let base = animating ? target : clamp(current)
+            let dest = clamp(base - pixels)
+            guard dest != base || current != dest else { return false }
+            target = dest
+            animating = abs(target - current) >= settleEpsilon
+            if !animating { current = target }
+            return true
+        }
+        animating = false
         let raw = current - pixels
         let lo = max(0, minY)
         let hi = max(lo, maxY)
@@ -125,6 +140,11 @@ struct ScrollModel {
         current = next                  // may be out of [0, maxY] during a rubber-band
         return true
     }
+
+    /// Where the view is headed: the ease's destination while one is in flight,
+    /// otherwise `current`. Follow-bottom decisions read this so a wheel glide away
+    /// from the bottom counts as "left the bottom" from its first notch.
+    var destination: CGFloat { animating ? target : current }
 
     /// True while scrolled past an edge (rubber-band overshoot in effect); the
     /// backend springs `current` back to `clamp(current)` when this holds at
