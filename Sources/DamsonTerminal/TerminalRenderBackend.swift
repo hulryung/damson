@@ -151,6 +151,9 @@ public protocol TerminalRenderBackend: AnyObject {
 
     /// Current vertical scroll offset in content pixels (0 = top).
     var scrollYPixels: CGFloat { get }
+    /// Where scrolling is headed — differs from `scrollYPixels` only while an ease
+    /// (a mouse-wheel glide, snap-to-cursor) is in flight.
+    var scrollDestinationYPixels: CGFloat { get }
     /// Scroll to a content-pixel offset; `animated` drives the smooth snap.
     func setScrollY(_ y: CGFloat, animated: Bool)
     /// Jump to a content-pixel offset *without* presenting a frame, priming the

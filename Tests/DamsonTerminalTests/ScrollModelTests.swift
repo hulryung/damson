@@ -63,7 +63,58 @@ final class ScrollModelTests: XCTestCase {
         m.maxY = 1000
         m.jump(to: 500)
         m.applyWheel(deltaY: -3, precise: false, lineHeight: 16)
+        m.step(dt: 10)
         XCTAssertEqual(m.current, 500 + 3 * 16 * ScrollModel.mouseWheelLines)
+    }
+
+    /// A wheel notch glides instead of jumping: the first frame moves part of the
+    /// way, and the destination is known immediately (follow-bottom reads it).
+    func testMouseWheelNotchEasesInsteadOfJumping() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 500)
+        let moved = m.applyWheel(deltaY: -1, precise: false, lineHeight: 16)
+        let dest = 500 + 16 * ScrollModel.mouseWheelLines
+        XCTAssertTrue(moved)
+        XCTAssertTrue(m.animating)
+        XCTAssertEqual(m.current, 500, "no movement until the render loop steps")
+        XCTAssertEqual(m.destination, dest)
+        m.step(dt: 1.0 / 120)
+        XCTAssertGreaterThan(m.current, 500)
+        XCTAssertLessThan(m.current, dest)
+        while !m.step(dt: 1.0 / 120) {}
+        XCTAssertEqual(m.current, dest)
+    }
+
+    /// Rapid notches stack on the in-flight destination rather than restarting from
+    /// the mid-glide position, so a fast spin covers its full distance.
+    func testRapidNotchesAccumulate() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 100)
+        m.applyWheel(deltaY: -1, precise: false, lineHeight: 16)
+        m.step(dt: 1.0 / 120)
+        m.applyWheel(deltaY: -1, precise: false, lineHeight: 16)
+        XCTAssertEqual(m.destination, 100 + 2 * 16 * ScrollModel.mouseWheelLines)
+    }
+
+    /// Trackpad input takes over from a wheel glide mid-flight.
+    func testPreciseInputCancelsWheelEase() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 500)
+        m.applyWheel(deltaY: -1, precise: false, lineHeight: 16)
+        m.applyWheel(deltaY: -10, precise: true, lineHeight: 16)
+        XCTAssertFalse(m.animating)
+        XCTAssertEqual(m.current, 510)
+    }
+
+    func testWheelNotchAtEdgeIsNoOp() {
+        var m = ScrollModel()
+        m.maxY = 1000
+        m.jump(to: 1000)
+        XCTAssertFalse(m.applyWheel(deltaY: -1, precise: false, lineHeight: 16))
+        XCTAssertFalse(m.animating)
     }
 
     func testWheelClampsAtTop() {
@@ -112,6 +163,7 @@ final class ScrollModelTests: XCTestCase {
         m.minY = 20
         m.jump(to: 40)
         m.applyWheel(deltaY: 100, precise: false, lineHeight: 16)  // hard scroll up (mouse wheel)
+        m.step(dt: 10)
         XCTAssertEqual(m.current, 20, "hard stop at the floor, not 0")
     }
 
@@ -247,6 +299,7 @@ final class ScrollModelTests: XCTestCase {
         m.maxY = 500
         m.jump(to: 0)
         m.applyWheel(deltaY: 100, precise: false, lineHeight: 16, viewport: 800)
+        m.step(dt: 10)
         XCTAssertEqual(m.current, 0, "mouse wheel does not rubber-band")
         XCTAssertFalse(m.isOvershooting)
     }

@@ -538,7 +538,10 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         let yMax = max(0, docHeight - visHeight)
         // Clamp to the valid range: the Metal backend can report a rubber-band
         // overshoot past yMax, which must NOT flip follow-bottom off while tailing.
-        let curY = min(max(backend.scrollYPixels, 0), yMax)
+        // Judge the destination, not the mid-glide position: a wheel notch away from
+        // the bottom must drop follow-bottom at once, or output arriving during the
+        // glide re-pins to the bottom and cancels the scroll.
+        let curY = min(max(backend.scrollDestinationYPixels, 0), yMax)
         return abs(curY - yMax) <= tolerance
     }
 
