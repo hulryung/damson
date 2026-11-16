@@ -34,7 +34,7 @@ jobs:
   release:
     runs-on: macos-15   # arm64. See RELEASE.md for universal builds.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # full history → monotonic build number + committing appcast to main
 
