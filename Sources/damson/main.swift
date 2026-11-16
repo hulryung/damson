@@ -1846,32 +1846,26 @@ extension DamsonAppDelegate {
     }
 
     private func paneEntries(agentsOnly: Bool = false) -> [CommandPalette.Entry] {
-        allSessions().compactMap { session -> CommandPalette.Entry? in
+        let rows = allSessions().compactMap { session -> (rank: Int, entry: CommandPalette.Entry)? in
             let cwd = session.currentWorkingDirectory ?? session.currentDirectory ?? "Unknown folder"
             let title = compactControllers.compactMap { $0.workbenchTitle(for: session) }.first
                 ?? (session.title.isEmpty ? (cwd as NSString).lastPathComponent : session.title)
-            let badge = crew?.badge(for: session)
-            let program = session.launchArgv.first.map { ($0 as NSString).lastPathComponent } ?? "shell"
-            let isKnownAgent = ["claude", "codex", "grok", "cursor-agent", "gemini", "opencode"].contains(program)
-            if agentsOnly && session.reportedAgentState == nil && badge == nil && !isKnownAgent { return nil }
-            var detail = cwd
-            if agentsOnly {
-                if let state = session.reportedAgentState {
-                    let date = session.agentStateReportedAt.map { DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .medium) } ?? ""
-                    detail = "\(state.rawValue) · explicit hook at \(date) · \(cwd)"
-                } else if let badge {
-                    detail = "\(badge.describedAs) · Claude observation · \(cwd)"
-                } else { detail = "State unknown · no report from \(program) · \(cwd)" }
-            }
-            return CommandPalette.Entry(title: "\(agentsOnly ? program : "Pane"): \(title)", detail: detail, id: PaneRegistry.shared.id(for: session).uuidString) { [weak self, weak session] in
+            let report = session.agentReport
+            let activity = AgentActivity.classify(report: report?.state, reportedAt: report?.receivedAt,
+                                                  badge: crew?.badge(for: session), argv: session.launchArgv)
+            let listed = agentsOnly ? activity : nil
+            if agentsOnly && listed == nil { return nil }
+            let program = AgentActivity.program(argv: session.launchArgv)
+            let detail = listed?.detail(cwd: cwd) {
+                DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .medium)
+            } ?? cwd
+            let entry = CommandPalette.Entry(title: "\(agentsOnly ? program : "Pane"): \(title)", detail: detail, id: PaneRegistry.shared.id(for: session).uuidString) { [weak self, weak session] in
                 guard let session else { NSSound.beep(); return }
                 self?.revealWorkbenchSession(session)
             }
-        }.sorted {
-            let left = $0.detail.hasPrefix("waiting"), right = $1.detail.hasPrefix("waiting")
-            if left != right { return left }
-            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+            return (listed?.attentionRank ?? 0, entry)
         }
+        return AgentActivity.sorted(rows, rank: \.rank, title: \.entry.title).map(\.entry)
     }
 
     @objc func showCommandPalette(_ sender: Any?) {
@@ -1890,7 +1884,7 @@ extension DamsonAppDelegate {
         guard let session = activeControlSession(), let cwd = session.currentWorkingDirectory ?? session.currentDirectory else {
             NSSound.beep(); return
         }
-        ProjectSummary.shared.show(folder: cwd, pid: session.foregroundProcessID)
+        ProjectSummary.shared.show(folder: cwd) { [weak session] in session?.foregroundProcessID }
     }
 
     @objc func toggleCommandNotifications(_ sender: Any?) { commandNotifications.toggle() }

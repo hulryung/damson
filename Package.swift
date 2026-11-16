@@ -96,6 +96,13 @@ let package = Package(
             name: "DamsonSettings",
             path: "Sources/DamsonSettings"
         ),
+        // Project Summary's collection: bounded git/lsof runs and their parsing. Foundation
+        // only, so the failure cases (no git, timeouts, detached HEAD, listener ownership)
+        // are testable without the app.
+        .target(
+            name: "DamsonProjectInfo",
+            path: "Sources/DamsonProjectInfo"
+        ),
         .executableTarget(
             name: "damson",
             dependencies: [
@@ -104,6 +111,7 @@ let package = Package(
                 "DamsonAgents",
                 "DamsonTabGroups",
                 "DamsonSettings",
+                "DamsonProjectInfo",
                 "DamsonCrew",
                 "DamsonComputer",
                 "DamsonKeeperCore",
@@ -161,6 +169,11 @@ let package = Package(
             name: "DamsonSettingsTests",
             dependencies: ["DamsonSettings"],
             path: "Tests/DamsonSettingsTests"
+        ),
+        .testTarget(
+            name: "DamsonProjectInfoTests",
+            dependencies: ["DamsonProjectInfo"],
+            path: "Tests/DamsonProjectInfoTests"
         ),
         .testTarget(
             name: "DamsonTabGroupsTests",
