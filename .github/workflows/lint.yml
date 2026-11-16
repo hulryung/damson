@@ -8,17 +8,16 @@ name: lint
 # that, a failure reports only "Found N violations, 1 serious" and the file has
 # to be dug out of the annotations — which is how this workflow stayed red for
 # weeks: nobody could see what to fix at a glance.
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-
 #
 # It runs on Linux with SwiftLint's official image: linting builds nothing, and
 # macOS runners can queue past the 15-minute pickup limit, which fails the job
 # without ever linting. The version is pinned so a SwiftLint release can't turn
 # main red on its own; bump it deliberately.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 jobs:
   swiftlint:
