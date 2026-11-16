@@ -36,11 +36,6 @@ final class AgentWatcherTests: XCTestCase {
 
     /// Waiting for the delivery queue to drain, since delivery deliberately runs off the
     /// reading thread.
-    private func drainDelivery() {
-        let done = expectation(description: "delivery drained")
-        DispatchQueue(label: "damson-crew.delivery").async { done.fulfill() }
-        wait(for: [done], timeout: 2)
-    }
 
     /// A reconnect opens a new subscription that starts with its own snapshot. Carrying the
     /// old rows over would leave agents on the board that have since gone — and a
@@ -107,7 +102,7 @@ final class AgentWatcherTests: XCTestCase {
                       line("changed", "A", status: "waiting", waitingFor: "which auth flow?")]),
         ]) { change, _ in lock.lock(); seen.append(change); lock.unlock() }
         w.run(maxAttempts: 1)
-        drainDelivery()
+        w.waitForDelivery()
         lock.lock(); let got = seen; lock.unlock()
         guard case .needsAttention(let s)? = got.last else {
             return XCTFail("a blocked agent never reached the caller: \(got)")
