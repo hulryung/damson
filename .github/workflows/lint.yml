@@ -14,19 +14,25 @@ on:
     branches: [main]
   pull_request:
 
+#
+# It runs on Linux with SwiftLint's official image: linting builds nothing, and
+# macOS runners can queue past the 15-minute pickup limit, which fails the job
+# without ever linting. The version is pinned so a SwiftLint release can't turn
+# main red on its own; bump it deliberately.
+
 jobs:
   swiftlint:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      - name: Install SwiftLint
-        run: brew install swiftlint
 
       - name: SwiftLint
         run: |
           set +e
-          swiftlint lint --reporter json > /tmp/lint.json
+          # Mounted at /damson so report paths read /damson/Sources/..., which the
+          # summary below trims to repo-relative.
+          docker run --rm -v "$PWD:/damson" -w /damson ghcr.io/realm/swiftlint:0.65.1 \
+            swiftlint lint --reporter json > /tmp/lint.json
           status=$?
           set -e
           python3 - "$status" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
