@@ -38,6 +38,42 @@ public struct CommandLifecycle {
     }
 }
 
+/// When a finished command deserves a macOS notification. The app target only wires this
+/// to `UNUserNotificationCenter`, so the decision itself is testable here.
+public enum CommandNotificationPolicy {
+    public static let enabledKey = "damson.commandNotifications"
+    public static let thresholdKey = "damson.commandNotificationSeconds"
+    public static let defaultThreshold = 10
+    public static let thresholdRange = 1...86_400
+
+    /// Seconds a command must run before it notifies; unset or out-of-range values fall
+    /// back to (or clamp into) the supported range.
+    public static func threshold(_ defaults: UserDefaults = .standard) -> TimeInterval {
+        guard defaults.object(forKey: thresholdKey) != nil else { return TimeInterval(defaultThreshold) }
+        let value = defaults.integer(forKey: thresholdKey)
+        return TimeInterval(min(max(value, thresholdRange.lowerBound), thresholdRange.upperBound))
+    }
+
+    /// A pane the user is looking at — focused in the frontmost app — never notifies.
+    public static func shouldNotify(_ completion: CommandCompletion, enabled: Bool, threshold: TimeInterval,
+                                    appActive: Bool, paneFocused: Bool) -> Bool {
+        enabled && completion.duration >= threshold && !(appActive && paneFocused)
+    }
+
+    public static func title(for completion: CommandCompletion) -> String {
+        let status = completion.exitCode.map { $0 == 0 ? "Succeeded" : "Failed (exit \($0))" } ?? "Finished (status unknown)"
+        return "\(status) · \(formatDuration(completion.duration))"
+    }
+
+    /// `9s`, `2m 05s`, `1h 03m`.
+    public static func formatDuration(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded(.down))
+        if total < 60 { return "\(total)s" }
+        if total < 3600 { return String(format: "%dm %02ds", total / 60, total % 60) }
+        return String(format: "%dh %02dm", total / 3600, (total % 3600) / 60)
+    }
+}
+
 public enum ReportedAgentState: String, CaseIterable {
     case running, waiting, completed, failed, unknown
 }

@@ -11,6 +11,7 @@ enum FilePathDetector {
     struct Token: Equatable {
         var path: String        // the path token (without any :line suffix)
         var line: Int?          // trailing ":NN" line number, if present
+        var column: Int? = nil  // trailing ":NN:CC" column, if present
         var cols: Range<Int>    // columns the path token occupies (excludes :line)
     }
 
@@ -38,15 +39,18 @@ enum FilePathDetector {
         guard looksLikePath(token) else { return nil }
 
         // Optional ":NN" line number immediately after the token (also accepts ":NN:CC").
-        var line: Int?
-        if hi + 1 < chars.count, chars[hi + 1] == ":" {
-            var j = hi + 2
+        // Only ASCII digits: `isNumber` also accepts e.g. "½" and full-width digits.
+        func number(after colon: Int) -> (value: Int, end: Int)? {
+            guard colon < chars.count, chars[colon] == ":" else { return nil }
+            var j = colon + 1
             var digits = ""
-            while j < chars.count, chars[j].isNumber { digits.append(chars[j]); j += 1 }
-            if !digits.isEmpty { line = Int(digits) }
+            while j < chars.count, chars[j].isASCII, chars[j].isNumber { digits.append(chars[j]); j += 1 }
+            return Int(digits).map { ($0, j) }
         }
+        let line = number(after: hi + 1)
+        let column = line.flatMap { number(after: $0.end) }
 
-        return Token(path: token, line: line, cols: cols[lo]..<(cols[hi] + 1))
+        return Token(path: token, line: line?.value, column: column?.value, cols: cols[lo]..<(cols[hi] + 1))
     }
 
     /// A token is path-ish if it has a separator, a home/relative prefix, or a short extension.

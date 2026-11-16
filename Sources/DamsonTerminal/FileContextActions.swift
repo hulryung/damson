@@ -18,23 +18,35 @@ final class FileContextActions: NSObject, QLPreviewPanelDataSource {
         previewURL as NSURL?
     }
 
-    func edit(_ url: URL, line: Int) {
-        guard let local = ContextMenuFile.localURL(url) else { NSSound.beep(); return }
-        // VS Code's documented command-line entry point preserves :line navigation.
-        if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") {
-            let cli = app.appendingPathComponent("Contents/Resources/app/bin/code")
-            if FileManager.default.isExecutableFile(atPath: cli.path) {
-                let process = Process()
-                process.executableURL = cli
-                process.arguments = ["--goto", local.path + (line > 0 ? ":\(line)" : "")]
-                do { try process.run(); return } catch { NSSound.beep(); return }
-            }
+    /// Opens a text file in the file's default app when that is a known editor, else in the
+    /// first installed known editor (see `EditorLauncher`), else TextEdit without a line.
+    func edit(_ location: FileLocation) {
+        guard let local = ContextMenuFile.localURL(location.url) else { NSSound.beep(); return }
+        var target = location
+        target.url = local
+        let workspace = NSWorkspace.shared
+        let defaultApp = workspace.urlForApplication(toOpen: local).flatMap { Bundle(url: $0)?.bundleIdentifier }
+        if let command = EditorLauncher.choose(defaultAppBundleID: defaultApp, location: target,
+                                               appURL: { workspace.urlForApplication(withBundleIdentifier: $0) }) {
+            let process = Process()
+            process.executableURL = command.executable
+            process.arguments = command.arguments
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do { try process.run(); return } catch { NSSound.beep(); return }
         }
-        guard let editor = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.TextEdit") else {
+        guard let editor = workspace.urlForApplication(withBundleIdentifier: "com.apple.TextEdit") else {
             NSSound.beep(); return
         }
-        NSWorkspace.shared.open([local], withApplicationAt: editor, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+        workspace.open([local], withApplicationAt: editor, configuration: NSWorkspace.OpenConfiguration()) { _, error in
             if error != nil { DispatchQueue.main.async { NSSound.beep() } }
         }
     }
+}
+
+/// Menu-item payload: `representedObject` needs an object for a Swift struct to survive.
+final class ContextFileLocation: NSObject {
+    let location: FileLocation
+    init(_ location: FileLocation) { self.location = location }
 }

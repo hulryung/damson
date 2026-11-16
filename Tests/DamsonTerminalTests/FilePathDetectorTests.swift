@@ -47,4 +47,22 @@ final class FilePathDetectorTests: XCTestCase {
         XCTAssertEqual(tok("./build/run.sh", 2)?.path, "./build/run.sh")
         XCTAssertEqual(tok("~/notes.txt", 0)?.path, "~/notes.txt")
     }
+
+    func testLineAndColumnSuffix() {
+        let t = tok("error: Sources/Foo.swift:42:7: bad", 8)
+        XCTAssertEqual(t?.path, "Sources/Foo.swift")
+        XCTAssertEqual(t?.line, 42)
+        XCTAssertEqual(t?.column, 7)
+        XCTAssertEqual(tok("Sources/Foo.swift:42: bad", 0)?.line, 42)
+        XCTAssertNil(tok("Sources/Foo.swift:42: bad", 0)?.column)
+        XCTAssertNil(tok("Sources/Foo.swift: bad", 0)?.line)
+    }
+
+    func testNonASCIIDigitsAreNotALine() {
+        XCTAssertNil(tok("Sources/Foo.swift:４２", 0)?.line)
+    }
+
+    func testUnicodePath() {
+        XCTAssertEqual(tok("열기 문서/설명.md 끝", 4)?.path, "문서/설명.md")
+    }
 }

@@ -167,6 +167,10 @@ public enum SettingsCatalog {
                     keywords: ["double-click", "word", "선택"]),
         SettingItem("damson.scrollSpeed", "TUI scroll speed", .terminal, "Scroll", .double(1),
                     keywords: ["trackpad", "mouse", "tmux", "스크롤", "속도"]),
+        SettingItem("damson.commandNotifications", "Notify when long commands finish", .terminal,
+                    "Command Notifications", .bool(false), keywords: ["notification", "alert", "done", "exit", "알림"]),
+        SettingItem("damson.commandNotificationSeconds", "Minimum duration", .terminal,
+                    "Command Notifications", .int(10), keywords: ["threshold", "seconds", "long", "알림"]),
         SettingItem("damson.pressAndHold", "Press and hold for accents", .terminal, "Keyboard",
                     .bool(false), keywords: ["key repeat", "accent", "키 반복"]),
 
