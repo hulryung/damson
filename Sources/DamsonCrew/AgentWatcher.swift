@@ -33,6 +33,9 @@ public final class AgentWatcher {
     /// slow render must never happen between two reads.
     private let delivery = DispatchQueue(label: "damson-crew.delivery")
 
+    /// Block until every change queued so far has been delivered. For tests.
+    func waitForDelivery() { delivery.sync {} }
+
     /// How long an agent may stay in a working state before it is reported as quiet.
     /// 0 disables it.
     private let stallAfter: TimeInterval
