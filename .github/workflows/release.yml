@@ -16,6 +16,8 @@ name: release
 #   (legacy alternative: APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD)
 #   SPARKLE_PUBLIC_KEY            base64 EdDSA public key (sparkle-keygen.sh output)
 #   SPARKLE_PRIVATE_KEY           base64 EdDSA private key (keychain export → base64)
+#   HOMEBREW_TAP_DEPLOY_KEY       SSH private key; its public half is a read-write deploy
+#                                 key on hulryung/homebrew-tap (bumps Casks/damson.rb)
 
 on:
   push:
@@ -158,3 +160,34 @@ jobs:
             git commit -m "appcast $VERSION"
             git push origin main
           fi
+
+      # Last, so a tap failure never blocks the release or the appcast; the run still
+      # goes red so it gets noticed. Re-running is a no-op once the cask is current.
+      - name: Bump Homebrew cask
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          SHA="$(shasum -a 256 "dist/Damson-$VERSION.dmg" | cut -d' ' -f1)"
+          KEY="$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$TAP_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          TAP="$RUNNER_TEMP/homebrew-tap"
+          git clone --depth 1 git@github.com:hulryung/homebrew-tap.git "$TAP"
+          CASK="$TAP/Casks/damson.rb"
+          sed -i '' -E \
+            -e "s/^  version \".*\"/  version \"$VERSION\"/" \
+            -e "s/^  sha256 \"[0-9a-f]+\"/  sha256 \"$SHA\"/" "$CASK"
+          grep -q "^  version \"$VERSION\"" "$CASK"
+          grep -q "^  sha256 \"$SHA\"" "$CASK"
+          cd "$TAP"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "cask already at $VERSION — nothing to push"
+          else
+            git commit -am "damson $VERSION"
+            git push origin HEAD:main
+          fi
+          rm -f "$KEY"
