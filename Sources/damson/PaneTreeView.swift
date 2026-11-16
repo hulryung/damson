@@ -1436,10 +1436,16 @@ final class PaneTreeView: NSView {
         }
     }
 
-    /// Re-apply to every wrapper when the active-pane indicator setting changes (active state unchanged).
-    func refreshIndicators() {
+    /// Re-apply to every wrapper when a pane-chrome setting changes (active state unchanged),
+    /// and repaint the dividers, whose color/width are settings too. `animated` cross-fades
+    /// the dim — used when the window gains or loses key (the inactive-window dim).
+    func refreshIndicators(animated: Bool = false) {
         func walk(_ view: NSView) {
-            (view as? PaneLeafWrapper)?.applyIndicator()
+            if let wrapper = view as? PaneLeafWrapper {
+                wrapper.applyIndicator(animated: animated)
+            } else if view is DividerView {
+                view.needsDisplay = true
+            }
             for sub in view.subviews { walk(sub) }
         }
         walk(self)
@@ -1645,49 +1651,47 @@ private final class PaneLeafWrapper: NSView {
     /// `Motion.enabled`; the default instant path is the historical behaviour (and is what
     /// `rebuild()` / settings changes use, so the indicator never animates from a stale frame).
     func applyIndicator(animated: Bool = false) {
-        let mode = ActivePaneIndicator.current
-        let borderMode = (mode == .accentBorder || mode == .subtleBorder)
-
-        // Target visibility, expressed as layer opacity so it can cross-fade:
-        //  - dim scrim participates only in dimInactive mode, shown (0.4) on inactive panes.
-        //  - border shows on the active pane in the two border modes.
-        // A lone pane needs no focus hint — only show the border when the window is split.
-        let multiPane = owner?.hasMultiplePanes ?? false
-        let dimVisible = (mode == .dimInactive)
-        let dimTarget: Float = (dimVisible && !isActive) ? 0.4 : 0.0
-        let borderTarget: Float = (borderMode && isActive && multiPane) ? 1.0 : 0.0
-
-        // Border color/width are static per mode (only opacity animates the fade), so set
-        // them on BOTH panes in a border mode — the inactive one rests at opacity 0 and can
-        // then fade its border out when it loses focus.
-        if borderMode {
-            let color = (mode == .accentBorder) ? Self.accentBorderColor()
-                                                : Self.subtleBorderColor(leaf: leaf)
-            borderLayer.borderColor = color.cgColor
-            borderLayer.borderWidth = 1
+        // Everything about the look — which overlays take part, their colors, widths and
+        // resting opacities — comes from PaneIndicatorStyle (tested in DamsonTerminal).
+        // This only applies it to the layers.
+        let background: NSColor
+        if case .leaf(let session, _) = leaf.kind {
+            background = session.config.backgroundColor
         } else {
-            borderLayer.borderWidth = 0
+            background = .black
         }
+        let look = PaneIndicatorStyle.resolve(
+            PaneIndicatorSettings.current, isActive: isActive,
+            multiPane: owner?.hasMultiplePanes ?? false,
+            // No window yet (being built offscreen) → treat as key, so a fresh pane never
+            // starts dimmed and fades in.
+            windowIsKey: window?.isKeyWindow ?? true,
+            background: background, systemAccent: .controlAccentColor)
+
+        // Color and width are set on BOTH panes (only opacity animates the fade), so the
+        // inactive one rests at opacity 0 and can fade its border out when it loses focus.
+        borderLayer.borderColor = look.borderColor?.cgColor
+        borderLayer.borderWidth = look.borderWidth
+        dimLayer.backgroundColor = look.dimColor.cgColor
 
         guard animated, Motion.enabled else {
-            // Instant path — identical end state to the historical behaviour.
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            dimLayer.isHidden = !dimVisible
-            dimLayer.opacity = dimTarget
-            borderLayer.opacity = borderTarget
+            dimLayer.isHidden = !look.dimEnabled
+            dimLayer.opacity = look.dimOpacity
+            borderLayer.opacity = look.borderOpacity
             CATransaction.commit()
             return
         }
 
         // Animated cross-fade. Un-hiding can't animate, so make the scrim present instantly
         // (it was already un-hidden + at its resting opacity by the prior instant pass) and
-        // carry the transition on opacity. Border layers stay width 1 across a focus move
-        // (the mode is unchanged), so only opacity animates there too.
+        // carry the transition on opacity.
         let dimFrom = dimLayer.isHidden ? Float(0) : dimLayer.opacity
-        dimLayer.isHidden = !dimVisible
-        animateOpacity(dimLayer, from: dimFrom, to: dimTarget, key: "damson.indicator-dim")
-        animateOpacity(borderLayer, from: borderLayer.opacity, to: borderTarget, key: "damson.indicator-border")
+        dimLayer.isHidden = !look.dimEnabled
+        animateOpacity(dimLayer, from: dimFrom, to: look.dimOpacity, key: "damson.indicator-dim")
+        animateOpacity(borderLayer, from: borderLayer.opacity, to: look.borderOpacity,
+                       key: "damson.indicator-border")
     }
 
     /// Fade a layer's opacity `from`→`to` over Motion.duration/timing. Same explicit
@@ -1703,27 +1707,6 @@ private final class PaneLeafWrapper: NSView {
         fade.duration = Motion.duration
         fade.timingFunction = Motion.timing
         layer.add(fade, forKey: key)
-    }
-
-    /// A subtle border color shifted slightly from the background (dark theme → a bit lighter, light theme → a bit darker).
-    /// A muted accent for the active-pane border. The raw system accent is too vivid and
-    /// "pops", so blend it toward black and drop the alpha a little — still clearly the accent
-    /// hue, just calmer.
-    private static func accentBorderColor() -> NSColor {
-        let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .controlAccentColor
-        let darker = accent.blended(withFraction: 0.4, of: .black) ?? accent
-        return darker.withAlphaComponent(0.8)
-    }
-
-    private static func subtleBorderColor(leaf: PaneNode) -> NSColor {
-        guard case .leaf(let session, _) = leaf.kind else { return .clear }
-        let bg = (session.config.backgroundColor.usingColorSpace(.sRGB)) ?? .black
-        let lum = 0.299 * bg.redComponent + 0.587 * bg.greenComponent + 0.114 * bg.blueComponent
-        let target: CGFloat = lum < 0.5 ? 1.0 : 0.0
-        let t: CGFloat = 0.25
-        func mix(_ a: CGFloat) -> CGFloat { a + (target - a) * t }
-        return NSColor(srgbRed: mix(bg.redComponent), green: mix(bg.greenComponent),
-                       blue: mix(bg.blueComponent), alpha: 1.0)
     }
 
     /// True between a ⌃⌘ mouseDown that started a pane drag and its mouseUp — so the wrapper
@@ -2039,12 +2022,17 @@ private final class DividerView: NSView {
 
     /// Draw only a thin 1px separator line in the center of the wide hit zone (thin and subtle).
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.setFill()
+        // Color and width are settings (PaneIndicatorSettings). The line is centered on the
+        // pane boundary and overlays both panes' edges — no layout change — which is why its
+        // width is capped at the default padding.
+        let settings = PaneIndicatorSettings.current
+        PaneIndicatorStyle.dividerColor(settings).setFill()
+        let w = settings.dividerWidth
         switch orientation {
         case .vertical:
-            NSRect(x: bounds.midX - 0.5, y: 0, width: 1, height: bounds.height).fill()
+            NSRect(x: bounds.midX - w / 2, y: 0, width: w, height: bounds.height).fill()
         case .horizontal:
-            NSRect(x: 0, y: bounds.midY - 0.5, width: bounds.width, height: 1).fill()
+            NSRect(x: 0, y: bounds.midY - w / 2, width: bounds.width, height: w).fill()
         }
     }
 

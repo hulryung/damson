@@ -1,36 +1,29 @@
 import AppKit
+import DamsonTerminal
 
-/// How to indicate the active (focused) pane among split panes.
-/// Stored as a raw string in UserDefaults("damson.activePaneIndicator").
-/// Read by PaneLeafWrapper when it draws.
-enum ActivePaneIndicator: String, CaseIterable {
-    /// Distinguish the active pane by darkening only the inactive panes with a scrim. No border.
-    /// With a single pane there are no inactive panes, so nothing is drawn.
-    case dimInactive
+/// How to indicate the active (focused) pane among split panes. The mode and the rest of
+/// the pane-chrome settings, plus how they resolve to colors, live in DamsonTerminal's
+/// `PaneIndicatorStyle` so they can be tested; this file only adds the Settings labels.
+typealias ActivePaneIndicator = PaneIndicatorMode
 
-    /// An accent-colored (system accent) border on the active pane. **Default.**
-    case accentBorder
-
-    /// A subtle border on the active pane, shifted slightly from the background color.
-    case subtleBorder
-
-    /// No indicator.
-    case none
-
+extension PaneIndicatorMode {
     var displayName: String {
         switch self {
         case .dimInactive: return "Dim inactive (dim the inactive pane)"
         case .accentBorder: return "Accent border (highlighted border)"
         case .subtleBorder: return "Subtle border (faint border)"
+        case .dimAndBorder: return "Dim + accent border (both)"
         case .none: return "None (no indicator)"
         }
     }
+}
 
-    static var current: ActivePaneIndicator {
-        if let raw = UserDefaults.standard.string(forKey: "damson.activePaneIndicator"),
-           let v = ActivePaneIndicator(rawValue: raw) {
-            return v
+extension PaneDimTint {
+    var displayName: String {
+        switch self {
+        case .auto: return "Automatic (black on dark, background on light)"
+        case .black: return "Black"
+        case .background: return "Theme background"
         }
-        return .accentBorder
     }
 }

@@ -1176,17 +1176,16 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         let host = NSHostingController(rootView: view)
         let win = NSWindow(contentViewController: host)
         win.title = "Damson Settings"
-        // Hide the redundant title text — the tab bar already labels the window — and
-        // make the titlebar transparent so the tab strip reads as one cohesive top area
-        // rather than being crammed under a separate title row.
-        win.titleVisibility = .hidden
-        win.titlebarAppearsTransparent = true
-        win.styleMask = [.titled, .closable, .resizable]
-        win.setContentSize(NSSize(width: 540, height: 600))
+        // The sidebar's page title is the window title; a full-size content view lets the
+        // sidebar run up under the titlebar like System Settings.
+        win.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
+        win.toolbarStyle = .unified
+        win.setContentSize(NSSize(width: 780, height: 620))
         // Remember the size the user dragged it to; the line above is only the first-run
         // default. The autosave name must come after setContentSize, or the restored frame
-        // is overwritten by the default.
-        win.setFrameAutosaveName("DamsonSettingsWindow")
+        // is overwritten by the default. A new name for the sidebar layout: the old tabbed
+        // window's saved 540pt width would squeeze the sidebar and the page together.
+        win.setFrameAutosaveName("DamsonSettingsSidebarWindow")
         win.isReleasedWhenClosed = false
         settingsWindow = win
         win.makeKeyAndOrderFront(nil)

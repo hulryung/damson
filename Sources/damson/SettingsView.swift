@@ -1,5 +1,6 @@
 import AppKit
 import DamsonCrew
+import DamsonSettings
 import DamsonTerminal
 import SwiftUI
 
@@ -23,6 +24,18 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.showScrollbar") private var showScrollbar: Bool = false
     @AppStorage("damson.tabTransition") private var tabTransitionRaw: String = TabTransitionStyle.slide.rawValue
     @AppStorage("damson.activePaneIndicator") private var activePaneRaw: String = ActivePaneIndicator.accentBorder.rawValue
+    // Pane chrome. Keys and defaults mirror PaneIndicatorSettings (DamsonTerminal), which is
+    // what the panes actually read; @AppStorage needs literals, so they are repeated here.
+    @AppStorage("damson.paneDimStrength") private var paneDimStrength: Double = 0.4
+    @AppStorage("damson.paneDimTint") private var paneDimTintRaw: String = PaneDimTint.auto.rawValue
+    @AppStorage("damson.paneAccentColor") private var paneAccentHex: String = ""
+    @AppStorage("damson.paneBorderWidth") private var paneBorderWidth: Double = 1
+    @AppStorage("damson.dimInactiveWindows") private var dimInactiveWindows: Bool = false
+    @AppStorage("damson.paneDividerColor") private var paneDividerHex: String = ""
+    @AppStorage("damson.paneDividerWidth") private var paneDividerWidth: Double = 1
+    @State private var previewWindowInactive = false
+    @StateObject private var model = SettingsModel()
+    @State private var confirmResetAll = false
     @AppStorage("damson.focusFollowsMouse") private var focusFollowsMouse: Bool = true
     @AppStorage("damson.evenSplits") private var evenSplits: Bool = true
     @AppStorage("damson.newTabDirectory") private var newTabDirRaw: String = NewTabDirectory.home.rawValue
@@ -77,20 +90,23 @@ struct DamsonSettingsView: View {
     private let regularFonts = FontDiscovery.regularMonospaceFamilies()
 
     var body: some View {
-        TabView {
-            appearanceTab.tabItem { Label("Appearance", systemImage: "paintbrush") }
-            windowTab.tabItem { Label("Window", systemImage: "macwindow") }
-            effectsTab.tabItem { Label("Effects", systemImage: "sparkles") }
-            terminalTab.tabItem { Label("Terminal", systemImage: "terminal") }
-            KeysSettingsTab().tabItem { Label("Keys", systemImage: "keyboard") }
-            orchestrationTab.tabItem { Label("Agents", systemImage: "person.2") }
-            advancedTab.tabItem { Label("Advanced", systemImage: "gearshape") }
+        NavigationSplitView {
+            SettingsSidebar(model: model)
+        } detail: {
+            ScrollViewReader { proxy in
+                page(model.page)
+                    .navigationTitle(model.page.title)
+                    .onChange(of: model.highlightKey) { key in
+                        guard let key else { return }
+                        withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(key, anchor: .center) }
+                    }
+            }
         }
-        .padding(.top, 14)
+        .environmentObject(model)
         // Minimum only: a fixed frame here would pin the hosting view's min and max size
-        // to the same value, and the window's `.resizable` would do nothing. Every tab is
+        // to the same value, and the window's `.resizable` would do nothing. Every page is
         // a grouped Form, which scrolls, so the content copes with any size above this.
-        .frame(minWidth: 480, minHeight: 420)
+        .frame(minWidth: 680, minHeight: 440)
         .onChange(of: fontSize) { _ in postChanged() }
         .onChange(of: fontFamily) { _ in postChanged() }
         .onChange(of: scrollbackLines) { _ in postChanged() }
@@ -104,6 +120,13 @@ struct DamsonSettingsView: View {
         .onChange(of: ambiguousWide) { _ in postChanged() }
         .onChange(of: showScrollbar) { _ in postChanged() }
         .onChange(of: activePaneRaw) { _ in postChanged() }
+        .onChange(of: paneDimStrength) { _ in postChanged() }
+        .onChange(of: paneDimTintRaw) { _ in postChanged() }
+        .onChange(of: paneAccentHex) { _ in postChanged() }
+        .onChange(of: paneBorderWidth) { _ in postChanged() }
+        .onChange(of: dimInactiveWindows) { _ in postChanged() }
+        .onChange(of: paneDividerHex) { _ in postChanged() }
+        .onChange(of: paneDividerWidth) { _ in postChanged() }
         .onChange(of: backgroundOpacity) { _ in postChanged() }
         .onChange(of: paddingH) { _ in postChanged() }
         .onChange(of: paddingV) { _ in postChanged() }
@@ -127,11 +150,28 @@ struct DamsonSettingsView: View {
         }
     }
 
-    // MARK: - Tabs
+    // MARK: - Pages
 
-    private var appearanceTab: some View {
+    @ViewBuilder private func page(_ page: SettingsPage) -> some View {
+        switch page {
+        case .appearance: appearancePage
+        case .window: windowPage
+        case .panes: panesPage
+        case .effects: effectsPage
+        case .terminal: terminalPage
+        case .keys: KeysSettingsTab()
+        case .agents: agentsPage
+        case .advanced: advancedPage
+        }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundColor(.secondary)
+    }
+
+    private var appearancePage: some View {
         Form {
-            Section("Font") {
+            SettingsSection(.appearance, "Font") {
                 HStack {
                     Text("Size")
                     Spacer()
@@ -139,6 +179,7 @@ struct DamsonSettingsView: View {
                         Text("\(Int(fontSize)) pt").monospacedDigit().frame(minWidth: 50)
                     }
                 }
+                .setting("damson.fontSize")
                 Picker("Family", selection: $fontFamily) {
                     if !nerdFonts.isEmpty {
                         Section("Nerd Fonts (powerline/icon glyphs)") {
@@ -153,6 +194,7 @@ struct DamsonSettingsView: View {
                         }
                     }
                 }
+                .setting("damson.fontFamily")
                 // Preview — a glyph sample in the selected font (includes powerline separators, icons, etc.).
                 HStack {
                     Text("Preview")
@@ -162,150 +204,119 @@ struct DamsonSettingsView: View {
                         .frame(width: 220, alignment: .leading)
                 }
                 Toggle("Ligatures", isOn: $ligatures)
-                Text("Programming ligatures like => != -> ===. Shown only when the font supports them (Fira Code, JetBrains Mono, D2CodingLigature, etc.).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.ligatures")
+                caption("Programming ligatures like => != -> ===. Shown only when the font supports them (Fira Code, JetBrains Mono, D2CodingLigature, etc.).")
                 Toggle("Ambiguous-width symbols as double width", isOn: $ambiguousWide)
-                Text("Give circled numbers/letters (\u{2460}\u{2461}\u{24B6}), \u{203B}, \u{2605}, arrows and similar CJK-font full-width symbols two cells so they show at their designed size, even in runs. Apps that assume one cell (most TUIs) may misalign columns; existing lines re-render on new output.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.ambiguousWide")
+                caption("Give circled numbers/letters (\u{2460}\u{2461}\u{24B6}), \u{203B}, \u{2605}, arrows and similar CJK-font full-width symbols two cells so they show at their designed size, even in runs. Apps that assume one cell (most TUIs) may misalign columns; existing lines re-render on new output.")
             }
-            Section("Theme") {
+            SettingsSection(.appearance, "Theme") {
                 // Browsing the list with ↑↓ instantly updates the large preview on the right and the live terminal.
                 ThemeBrowser(themeName: $themeName)
+                    .setting("damson.theme")
                 if themeName == DamsonTheme.customName {
                     CustomThemeEditor(onChange: { postChanged() })
+                        .setting("damson.customTheme")
                 }
             }
         }
         .formStyle(.grouped)
-        .padding()
     }
 
-    private var windowTab: some View {
+    private var windowPage: some View {
         Form {
-            Section("Window") {
+            SettingsSection(.window, "Window") {
                 Picker("Tab Bar", selection: $tabBarStyleRaw) {
                     ForEach(TabBarStyle.allCases, id: \.rawValue) { style in
                         Text(style.displayName).tag(style.rawValue)
                     }
                 }
+                .setting("damson.tabBarStyle")
                 Toggle("Transparent tab bar", isOn: $tabBarTransparent)
-                Text("When off (default), the tab bar is a solid theme background color; when on, it's frosted-glass translucent.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.tabBarTransparent")
+                caption("When off (default), the tab bar is a solid theme background color; when on, it's frosted-glass translucent.")
                 Toggle("Always Show Scrollbar", isOn: $showScrollbar)
-                Text("When off (default), the scrollbar fades in while you scroll and when the pointer nears the right edge; when on, it stays visible whenever there is scrollback.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.showScrollbar")
+                caption("When off (default), the scrollbar fades in while you scroll and when the pointer nears the right edge; when on, it stays visible whenever there is scrollback.")
                 Picker("Tab Transition", selection: $tabTransitionRaw) {
                     ForEach(TabTransitionStyle.allCases, id: \.rawValue) { style in
                         Text(style.displayName).tag(style.rawValue)
                     }
                 }
-                Picker("Active Pane", selection: $activePaneRaw) {
-                    ForEach(ActivePaneIndicator.allCases, id: \.rawValue) { style in
-                        Text(style.displayName).tag(style.rawValue)
-                    }
-                }
+                .setting("damson.tabTransition")
                 Toggle("Focus follows mouse", isOn: $focusFollowsMouse)
-                Text("When on (default), the pane under the mouse cursor activates without a click. Only meaningful in split windows.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.focusFollowsMouse")
+                caption("When on (default), the pane under the mouse cursor activates without a click. Only meaningful in split windows.")
                 Toggle("Even splits", isOn: $evenSplits)
-                Text("When on (default), splitting (⌘D / ⌘⇧D) or closing (⌘W) a pane evens out every pane left in the same row or column — a third split gives ⅓ · ⅓ · ⅓. When off, a split just halves the active pane (½ · ¼ · ¼) and a close hands all of its space to the neighbor.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.evenSplits")
+                caption("When on (default), splitting (⌘D / ⌘⇧D) or closing (⌘W) a pane evens out every pane left in the same row or column — a third split gives ⅓ · ⅓ · ⅓. When off, a split just halves the active pane (½ · ¼ · ¼) and a close hands all of its space to the neighbor.")
                 Picker("New Tab Directory", selection: $newTabDirRaw) {
                     ForEach(NewTabDirectory.allCases, id: \.rawValue) { policy in
                         Text(policy.displayName).tag(policy.rawValue)
                     }
                 }
-                Text("Starting location for new tabs. Splits always inherit the current pane's directory. Shell integration (zsh OSC 7) is injected automatically.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .setting("damson.newTabDirectory")
+                caption("Starting location for new tabs. Splits always inherit the current pane's directory. Shell integration (zsh OSC 7) is injected automatically.")
             }
-            Section("Padding") {
-                HStack {
-                    Text("Horizontal")
-                    Slider(value: $paddingH, in: 0...32, step: 1)
-                    Text("\(Int(paddingH)) pt")
-                        .monospacedDigit()
-                        .frame(width: 44, alignment: .trailing)
-                }
-                HStack {
-                    Text("Vertical")
-                    Slider(value: $paddingV, in: 0...32, step: 1)
-                    Text("\(Int(paddingV)) pt")
-                        .monospacedDigit()
-                        .frame(width: 44, alignment: .trailing)
-                }
-                Text("Inner space between the window edges and the terminal content. Applies live; the grid size (cols×rows) adjusts to the remaining area.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            SettingsSection(.window, "Padding") {
+                sliderRow("Horizontal", value: $paddingH, range: 0...32, step: 1,
+                          label: "\(Int(paddingH)) pt")
+                    .setting("damson.paddingH")
+                sliderRow("Vertical", value: $paddingV, range: 0...32, step: 1,
+                          label: "\(Int(paddingV)) pt")
+                    .setting("damson.paddingV")
+                caption("Inner space between the window edges and the terminal content. Applies live; the grid size (cols×rows) adjusts to the remaining area.")
             }
-            Section("Transparency") {
-                HStack {
-                    Text("Background Opacity")
-                    Slider(value: $backgroundOpacity, in: 0.2...1.0)
-                    Text("\(Int((backgroundOpacity * 100).rounded()))%")
-                        .monospacedDigit()
-                        .frame(width: 40, alignment: .trailing)
-                }
+            SettingsSection(.window, "Transparency") {
+                sliderRow("Background Opacity", value: $backgroundOpacity, range: 0.2...1.0, step: nil,
+                          label: "\(Int((backgroundOpacity * 100).rounded()))%")
+                    .setting("damson.backgroundOpacity")
                 Toggle("Background Blur (frosted glass)", isOn: $backgroundBlur)
                     .disabled(backgroundOpacity >= 1.0)
-                Text("Lowering the background opacity lets what's behind the window show through. Blur frosts that backdrop like frosted glass (no effect at 100% opacity).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.backgroundBlur")
+                caption("Lowering the background opacity lets what's behind the window show through. Blur frosts that backdrop like frosted glass (no effect at 100% opacity).")
             }
         }
         .formStyle(.grouped)
-        .padding()
     }
 
-    private var effectsTab: some View {
+    private var effectsPage: some View {
         Form {
-            Section("Screen Effect") {
+            SettingsSection(.effects, "Screen Effect") {
                 Picker("Effect", selection: $screenEffectRaw) {
                     ForEach(ScreenEffect.allCases, id: \.rawValue) { e in
                         Text(e.displayName).tag(e.rawValue)
                     }
                 }
-                HStack {
-                    Text("Intensity")
-                    Slider(value: $screenEffectIntensity, in: 0.2...1.0)
-                    Text("\(Int((screenEffectIntensity * 100).rounded()))%")
-                        .monospacedDigit()
-                        .frame(width: 40, alignment: .trailing)
-                }
-                .disabled(screenEffectRaw == ScreenEffect.none.rawValue)
-                Text("An effect applied across the whole screen — CRT, phosphor, bloom, and more (static — no extra cost when idle).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .setting("damson.screenEffect")
+                sliderRow("Intensity", value: $screenEffectIntensity, range: 0.2...1.0, step: nil,
+                          label: "\(Int((screenEffectIntensity * 100).rounded()))%")
+                    .disabled(screenEffectRaw == ScreenEffect.none.rawValue)
+                    .setting("damson.screenEffectIntensity")
+                caption("An effect applied across the whole screen — CRT, phosphor, bloom, and more (static — no extra cost when idle).")
             }
-            Section("Text Animation") {
+            SettingsSection(.effects, "Text Animation") {
                 Picker("On Type (appear)", selection: $glyphAppearRaw) {
                     ForEach(GlyphAnimStyle.allCases, id: \.rawValue) { s in
                         Text(s.appearDisplayName()).tag(s.rawValue)
                     }
                 }
+                .setting("damson.glyphAppear")
                 Picker("On Delete (disappear)", selection: $glyphDisappearRaw) {
                     ForEach(GlyphAnimStyle.allCases, id: \.rawValue) { s in
                         Text(s.disappearDisplayName()).tag(s.rawValue)
                     }
                 }
-                Text("A short animation played when glyphs appear or are erased near the cursor. Applies only to typing and deleting (excludes scrolling and bulk output).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .setting("damson.glyphDisappear")
+                caption("A short animation played when glyphs appear or are erased near the cursor. Applies only to typing and deleting (excludes scrolling and bulk output).")
             }
         }
         .formStyle(.grouped)
-        .padding()
     }
 
-    private var terminalTab: some View {
+    private var terminalPage: some View {
         Form {
-            Section("Scrollback") {
+            SettingsSection(.terminal, "Scrollback") {
                 HStack {
                     Text("Lines")
                     Spacer()
@@ -313,88 +324,81 @@ struct DamsonSettingsView: View {
                         Text("\(scrollbackLines)").monospacedDigit().frame(minWidth: 70)
                     }
                 }
+                .setting("damson.scrollbackLines")
                 Toggle("Restore scrollback on relaunch", isOn: $restoreScrollback)
-                Text("Saves each pane's scrollback text on quit and shows it after relaunch (colors not preserved). Compact-mode windows only.")
-                    .font(.caption).foregroundColor(.secondary)
+                    .setting("damson.restoreScrollback")
+                caption("Saves each pane's scrollback text on quit and shows it after relaunch (colors not preserved). Compact-mode windows only.")
             }
-            Section("Sessions") {
+            SettingsSection(.terminal, "Sessions") {
                 Toggle("Keep sessions running across restarts", isOn: $keepSessionsOnRestart)
-                Text("Update installs and \"Restart Damson\" keep every pane's program running and reattach after the relaunch; the quit dialog gains a \"Keep Sessions & Quit\" option. Compact-mode windows only.")
-                    .font(.caption).foregroundColor(.secondary)
+                    .setting("damson.keepSessionsOnRestart")
+                caption("Update installs and \"Restart Damson\" keep every pane's program running and reattach after the relaunch; the quit dialog gains a \"Keep Sessions & Quit\" option. Compact-mode windows only.")
             }
-            Section("Cursor") {
+            SettingsSection(.terminal, "Cursor") {
                 Picker("Shape", selection: $cursorShapeRaw) {
                     Text("Block").tag(Grid.CursorShape.block.rawValue)
                     Text("Underline").tag(Grid.CursorShape.underline.rawValue)
                     Text("Bar").tag(Grid.CursorShape.bar.rawValue)
                 }
+                .setting("damson.cursorShape")
                 Toggle("Blink", isOn: $cursorBlink)
+                    .setting("damson.cursorBlink")
                 Picker("Motion", selection: $cursorMotionRaw) {
                     ForEach(CursorMotionStyle.allCases, id: \.rawValue) { style in
                         Text(style.displayName).tag(style.rawValue)
                     }
                 }
-                Text("The cursor slides to its new cell instead of jumping — about a tenth of "
-                     + "a second, drawn on the GPU — and \"with trail\" leaves a fading smear "
-                     + "along the way. Output that scrolls the screen still moves it instantly; "
-                     + "only moves within the screen slide.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .setting("damson.cursorMotion")
+                caption("The cursor slides to its new cell instead of jumping — about a tenth of "
+                        + "a second, drawn on the GPU — and \"with trail\" leaves a fading smear "
+                        + "along the way. Output that scrolls the screen still moves it instantly; "
+                        + "only moves within the screen slide.")
                 Toggle("Animations", isOn: $animations)
+                    .setting("damson.animations")
             }
-            Section("IME Composition (Korean / Japanese / Chinese composition display)") {
+            SettingsSection(.terminal, "IME Composition") {
                 Picker("Style", selection: $imeStyleRaw) {
                     ForEach(IMECompositionStyle.allCases, id: \.rawValue) { style in
                         Text(style.displayName).tag(style.rawValue)
                     }
                 }
+                .setting("damson.imeStyle")
+                caption("How Korean / Japanese / Chinese composition is displayed while you type.")
             }
-            Section("Selection") {
+            SettingsSection(.terminal, "Selection") {
                 Toggle("Copy on select", isOn: $copyOnSelect)
-                Text("When on (default), selecting text (drag, or double-/triple-click) copies it to the clipboard immediately.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.copyOnSelect")
+                caption("When on (default), selecting text (drag, or double-/triple-click) copies it to the clipboard immediately.")
                 HStack {
                     Text("Word separators")
                     TextField("(none)", text: $wordSeparators)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 160)
                 }
-                Text("Extra characters that break a word on double-click (whitespace always breaks). Leave empty so paths and identifiers like /usr/local/bin select as one word.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .setting("damson.wordSeparators")
+                caption("Extra characters that break a word on double-click (whitespace always breaks). Leave empty so paths and identifiers like /usr/local/bin select as one word.")
             }
-            Section("Scroll") {
-                HStack {
-                    Text("TUI Scroll Speed")
-                    Slider(value: $scrollSpeed, in: 0.25...4.0)
-                    Text(String(format: "%.2fx", scrollSpeed))
-                        .monospacedDigit()
-                        .frame(width: 48, alignment: .trailing)
-                }
-                Text("Trackpad scroll speed in mouse-tracking TUIs like Claude Code and tmux. Lower is slower. (No effect on normal scrollback scrolling.)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            SettingsSection(.terminal, "Scroll") {
+                sliderRow("TUI Scroll Speed", value: $scrollSpeed, range: 0.25...4.0, step: nil,
+                          label: String(format: "%.2fx", scrollSpeed), labelWidth: 48)
+                    .setting("damson.scrollSpeed")
+                caption("Trackpad scroll speed in mouse-tracking TUIs like Claude Code and tmux. Lower is slower. (No effect on normal scrollback scrolling.)")
             }
-            Section("Keyboard") {
+            SettingsSection(.terminal, "Keyboard") {
                 Toggle("Press and hold for accents", isOn: $pressAndHold)
-                Text("When off (default), every key repeats on press-and-hold (the terminal standard). When on, macOS default behavior applies — some keys like a/e show an accent popup on hold instead of repeating. Changes take effect after an app restart.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.pressAndHold")
+                caption("When off (default), every key repeats on press-and-hold (the terminal standard). When on, macOS default behavior applies — some keys like a/e show an accent popup on hold instead of repeating. Changes take effect after an app restart.")
             }
         }
         .formStyle(.grouped)
-        .padding()
     }
 
-    private var advancedTab: some View {
+    private var advancedPage: some View {
         Form {
-            Section("Updates") {
+            SettingsSection(.advanced, "Updates") {
                 Toggle("Automatic Updates", isOn: $autoUpdate)
-                Text("When on, checks for new versions in the background. You can always check manually via \"Check for Updates…\".")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
+                    .setting("damson.autoUpdate")
+                caption("When on, checks for new versions in the background. You can always check manually via \"Check for Updates…\".")
                 HStack {
                     Button("Check for Updates…") {
                         DamsonUpdater.shared.checkForUpdates(nil)
@@ -406,9 +410,24 @@ struct DamsonSettingsView: View {
                         .foregroundColor(.secondary)
                 }
             }
+            Section("Settings File") {
+                HStack {
+                    Button("Export Settings…") { SettingsTransfer.exportSettings() }
+                    Button("Import Settings…") { SettingsTransfer.importSettings() }
+                    Spacer()
+                    Button("Reset All Settings…", role: .destructive) { confirmResetAll = true }
+                }
+                caption("Export saves every setting on this page and the others — theme, custom colors and keyboard shortcuts included — to one file you can import on another Mac. Window layouts and sessions are not part of it.")
+            }
         }
         .formStyle(.grouped)
-        .padding()
+        .confirmationDialog("Reset all settings to their defaults?", isPresented: $confirmResetAll) {
+            Button("Reset All Settings", role: .destructive) {
+                for page in SettingsPage.allCases { model.reset(page) }
+            }
+        } message: {
+            Text("Every setting, including the theme, custom colors and keyboard shortcuts, goes back to its default. Your open windows and sessions are not affected.")
+        }
     }
 
     /// Settings for running several coding agents as tabs — read by `damson-crew`.
@@ -416,7 +435,7 @@ struct DamsonSettingsView: View {
     /// These live here rather than in a config file because the CLI ships inside this app
     /// bundle: someone who installed the .dmg has the tool but no obvious place to configure
     /// it. Every one of them can still be overridden per run with a flag.
-    private var orchestrationTab: some View {
+    private var agentsPage: some View {
         Form {
             Section("Setup") {
                 HStack {
@@ -425,11 +444,9 @@ struct DamsonSettingsView: View {
                     Text(toolSummary).foregroundColor(.secondary)
                     Button(toolButtonTitle) { installTools() }
                 }
-                Text("Links damson-cli, damson-crew and damson-computer into "
-                     + (binChoice.map { shortPath($0.url.path) } ?? "a folder on your PATH")
-                     + ". They are symlinks, so they follow this app when it updates.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                caption("Links damson-cli, damson-crew and damson-computer into "
+                        + (binChoice.map { shortPath($0.url.path) } ?? "a folder on your PATH")
+                        + ". They are symlinks, so they follow this app when it updates.")
                 if let choice = binChoice, !choice.onPath {
                     Label("\(shortPath(choice.url.path)) is not on your PATH — add it to your "
                           + "shell profile: export PATH=\"\(shortPath(choice.url.path)):$PATH\"",
@@ -446,32 +463,28 @@ struct DamsonSettingsView: View {
                     Button("Claude Code") { installClaudeSkill() }.disabled(installingSkill)
                     Button("Codex") { installCodexPrompt() }.disabled(installingSkill)
                 }
-                Text("Teaches the agent how to drive a run: the plugin for Claude Code, and a "
-                     + "/damson-orchestration prompt in ~/.codex/prompts for Codex, which has no "
-                     + "plugins. Both are safe to press again to update.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                caption("Teaches the agent how to drive a run: the plugin for Claude Code, and a "
+                        + "/damson-orchestration prompt in ~/.codex/prompts for Codex, which has no "
+                        + "plugins. Both are safe to press again to update.")
 
                 if let message = toolMessage ?? skillMessage {
                     Text(message).font(.caption).foregroundColor(.secondary).textSelection(.enabled)
                 }
             }
 
-            Section("Agent") {
+            SettingsSection(.agents, "Agent") {
                 TextField("Command", text: $agentCommand)
                     .textFieldStyle(.roundedBorder)
-                Text("What `damson-crew run` starts when a task does not name its own command. "
-                     + "claude, codex, grok and cursor-agent all work.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.orchestration.agentCommand")
+                caption("What `damson-crew run` starts when a task does not name its own command. "
+                        + "claude, codex, grok and cursor-agent all work.")
 
                 Toggle("Skip permission prompts", isOn: $skipPermissions)
-                Text("Passes --dangerously-skip-permissions to claude, so an agent runs a task "
-                     + "through instead of stopping to ask. An agent waiting on an approval is "
-                     + "the most common way a run stalls — the tabs look alive while every one "
-                     + "of them waits for a keypress.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.orchestration.skipPermissions")
+                caption("Passes --dangerously-skip-permissions to claude, so an agent runs a task "
+                        + "through instead of stopping to ask. An agent waiting on an approval is "
+                        + "the most common way a run stalls — the tabs look alive while every one "
+                        + "of them waits for a keypress.")
                 if skipPermissions {
                     Label("Agents will edit files and run commands without asking. "
                           + "Only claude is affected; other agents spell this differently.",
@@ -481,31 +494,29 @@ struct DamsonSettingsView: View {
                 }
             }
 
-            Section("Windows") {
+            SettingsSection(.agents, "Windows") {
                 Toggle("Open each run in a new window", isOn: $openRunsInNewWindow)
-                Text("A run's agent tabs open together in a window of their own instead of "
-                     + "beside the tabs you are working in. Run the same group again and the "
-                     + "new tabs join that window. Override it for one run with "
-                     + "damson-crew run --new-window or --no-new-window.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.orchestration.openRunsInNewWindow")
+                caption("A run's agent tabs open together in a window of their own instead of "
+                        + "beside the tabs you are working in. Run the same group again and the "
+                        + "new tabs join that window. Override it for one run with "
+                        + "damson-crew run --new-window or --no-new-window.")
             }
 
-            Section("Notifications") {
+            SettingsSection(.agents, "Notifications") {
                 Toggle("When an agent is blocked on me", isOn: $notifyOnWaiting)
+                    .setting("damson.orchestration.notifyOnWaiting")
                 Toggle("Bring its tab forward", isOn: $focusOnWaiting)
-                Text("A blocked agent will not move until you answer it, so this is the one "
-                     + "case worth pulling the window in front of you.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.orchestration.focusOnWaiting")
+                caption("A blocked agent will not move until you answer it, so this is the one "
+                        + "case worth pulling the window in front of you.")
 
                 Toggle("When an agent finishes working", isOn: $notifyOnFinished)
-                Text("Told when an agent that was working goes idle. Claude Code publishes no "
-                     + "completion signal for a session in a terminal, so this is \"it stopped\" "
-                     + "rather than \"the task is done\" — but without it a run of five finishes "
-                     + "in silence. It never steals focus.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.orchestration.notifyOnFinished")
+                caption("Told when an agent that was working goes idle. Claude Code publishes no "
+                        + "completion signal for a session in a terminal, so this is \"it stopped\" "
+                        + "rather than \"the task is done\" — but without it a run of five finishes "
+                        + "in silence. It never steals focus.")
 
                 Stepper(value: $stallMinutes, in: 0...120) {
                     HStack {
@@ -516,28 +527,25 @@ struct DamsonSettingsView: View {
                             .monospacedDigit()
                     }
                 }
-                Text("A long \"busy\" is not proof of progress: an agent retrying an overloaded "
-                     + "API shows exactly the same status as one doing real work. This reports "
-                     + "how long it has been quiet and leaves the judgement to you. 0 turns it off.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .setting("damson.orchestration.stallMinutes")
+                caption("A long \"busy\" is not proof of progress: an agent retrying an overloaded "
+                        + "API shows exactly the same status as one doing real work. This reports "
+                        + "how long it has been quiet and leaves the judgement to you. 0 turns it off.")
             }
 
-            Section("Worktrees") {
+            SettingsSection(.agents, "Worktrees") {
                 TextField("Root folder", text: $worktreeRoot, prompt: Text("Beside each repository"))
                     .textFieldStyle(.roundedBorder)
-                Text("Where damson-crew makes a git worktree for a task. Leave empty to keep "
-                     + "them next to the repository they came from, as <repo>-worktrees.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.orchestration.worktreeRoot")
+                caption("Where damson-crew makes a git worktree for a task. Leave empty to keep "
+                        + "them next to the repository they came from, as <repo>-worktrees.")
 
                 Toggle("Trust new worktrees automatically", isOn: $trustNewWorktrees)
-                Text("Claude Code asks before working in a git repository it has not seen, and "
-                     + "a worktree is a new one every time — so a run of five tasks stops five "
-                     + "times. This answers that once, for worktrees damson-crew created "
-                     + "itself from a repository you named.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .setting("damson.orchestration.trustNewWorktrees")
+                caption("Claude Code asks before working in a git repository it has not seen, and "
+                        + "a worktree is a new one every time — so a run of five tasks stops five "
+                        + "times. This answers that once, for worktrees damson-crew created "
+                        + "itself from a repository you named.")
                 if trustNewWorktrees {
                     Label("Writes ~/.claude.json, keeping a .damson-backup copy. Only Claude "
                           + "Code — codex and cursor-agent have their own prompts.",
@@ -548,7 +556,6 @@ struct DamsonSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .padding()
         .onAppear { refreshToolStatus() }
     }
 
@@ -685,6 +692,131 @@ struct DamsonSettingsView: View {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         return "Version \(short) (\(build))"
+    }
+
+    // MARK: - Panes (active-pane indicator, inactive-window dim, dividers)
+
+    private var paneMode: PaneIndicatorMode { PaneIndicatorMode(rawValue: activePaneRaw) ?? .accentBorder }
+
+    private var panesPage: some View {
+        Form {
+            SettingsSection(.panes, "Active Pane") {
+                Picker("Indicator", selection: $activePaneRaw) {
+                    ForEach(ActivePaneIndicator.allCases, id: \.rawValue) { style in
+                        Text(style.displayName).tag(style.rawValue)
+                    }
+                }
+                .setting("damson.activePaneIndicator")
+                if paneMode == .dimInactive || paneMode == .dimAndBorder || dimInactiveWindows {
+                    sliderRow("Dim Strength", value: $paneDimStrength,
+                              range: PaneIndicatorSettings.dimStrengthRange, step: 0.05,
+                              label: "\(Int((paneDimStrength * 100).rounded()))%")
+                        .setting("damson.paneDimStrength")
+                    Picker("Dim Color", selection: $paneDimTintRaw) {
+                        ForEach(PaneDimTint.allCases, id: \.rawValue) { t in
+                            Text(t.displayName).tag(t.rawValue)
+                        }
+                    }
+                    .setting("damson.paneDimTint")
+                }
+                if paneMode == .accentBorder || paneMode == .dimAndBorder {
+                    optionalColorRow("Custom accent color", hex: $paneAccentHex,
+                                     fallback: PaneIndicatorStyle.resolve(
+                                        PaneIndicatorSettings(), isActive: true, multiPane: true,
+                                        windowIsKey: true, background: .black,
+                                        systemAccent: .controlAccentColor).borderColor ?? .controlAccentColor)
+                        .setting("damson.paneAccentColor")
+                }
+                if paneMode.hasBorder {
+                    sliderRow("Border Width", value: $paneBorderWidth,
+                              range: lineWidthRange, step: 0.5, label: pointLabel(paneBorderWidth))
+                        .setting("damson.paneBorderWidth")
+                }
+            }
+            SettingsSection(.panes, "Inactive Windows") {
+                Toggle("Dim inactive windows", isOn: $dimInactiveWindows)
+                    .setting("damson.dimInactiveWindows")
+                caption("Dims every pane of a Damson window while another window or app has focus, so the focused window stands out. Uses the dim strength and color above.")
+            }
+            SettingsSection(.panes, "Dividers") {
+                optionalColorRow("Custom divider color", hex: $paneDividerHex, fallback: .separatorColor)
+                    .setting("damson.paneDividerColor")
+                sliderRow("Divider Width", value: $paneDividerWidth,
+                          range: lineWidthRange, step: 0.5, label: pointLabel(paneDividerWidth))
+                    .setting("damson.paneDividerWidth")
+                caption("The border and divider are drawn over the pane edge, inside the padding, so widths stop at 4 pt to keep text clear.")
+            }
+            Section("Preview") {
+                PaneIndicatorPreview(settings: currentPaneSettings, theme: previewTheme,
+                                     windowIsKey: !previewWindowInactive)
+                    .frame(height: 120)
+                if dimInactiveWindows {
+                    Toggle("Preview as inactive window", isOn: $previewWindowInactive)
+                        .controlSize(.small)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var lineWidthRange: ClosedRange<Double> {
+        Double(PaneIndicatorSettings.lineWidthRange.lowerBound)...Double(PaneIndicatorSettings.lineWidthRange.upperBound)
+    }
+
+    private func pointLabel(_ v: Double) -> String {
+        v == v.rounded() ? "\(Int(v)) pt" : String(format: "%.1f pt", v)
+    }
+
+    /// Built from the @AppStorage values rather than read back from defaults, so the preview
+    /// follows a slider during the drag.
+    private var currentPaneSettings: PaneIndicatorSettings {
+        var s = PaneIndicatorSettings()
+        s.mode = paneMode
+        s.dimStrength = paneDimStrength
+        s.dimTint = PaneDimTint(rawValue: paneDimTintRaw) ?? .auto
+        s.accentColor = NSColor(hexString: paneAccentHex)
+        s.borderWidth = CGFloat(paneBorderWidth)
+        s.dimInactiveWindows = dimInactiveWindows
+        s.dividerColor = NSColor(hexString: paneDividerHex)
+        s.dividerWidth = CGFloat(paneDividerWidth)
+        return s
+    }
+
+    private var previewTheme: DamsonTheme {
+        if themeName == DamsonTheme.customName { return CustomTheme.load().toTheme() }
+        return DamsonTheme.preset(named: themeName) ?? .defaultDark
+    }
+
+    private func sliderRow(_ title: String, value: Binding<Double>, range: ClosedRange<Double>,
+                           step: Double?, label: String, labelWidth: CGFloat = 44) -> some View {
+        HStack {
+            Text(title)
+            if let step {
+                Slider(value: value, in: range, step: step)
+            } else {
+                Slider(value: value, in: range)
+            }
+            Text(label)
+                .monospacedDigit()
+                .frame(width: labelWidth, alignment: .trailing)
+        }
+    }
+
+    /// A toggle that, when on, reveals a color well. Off stores "" (= the system color);
+    /// turning it on starts the well at `fallback`, so the color doesn't jump.
+    private func optionalColorRow(_ title: String, hex: Binding<String>, fallback: NSColor) -> some View {
+        HStack {
+            Toggle(title, isOn: Binding(
+                get: { !hex.wrappedValue.isEmpty },
+                set: { on in hex.wrappedValue = on ? fallback.hexString : "" }))
+            Spacer()
+            if !hex.wrappedValue.isEmpty {
+                ColorPicker("", selection: Binding(
+                    get: { Color(nsColor: NSColor(hexString: hex.wrappedValue) ?? fallback) },
+                    set: { hex.wrappedValue = NSColor($0).hexString }), supportsOpacity: false)
+                    .labelsHidden()
+            }
+        }
     }
 
     private func postChanged() {

@@ -296,6 +296,14 @@ final class KeyBindingStore {
     func reset(_ id: AppAction.ID) { overrides[id.rawValue] = nil; persistAndNotify() }
     func resetAll() { overrides.removeAll(); persistAndNotify() }
 
+    /// Re-read the overrides after something else rewrote them in UserDefaults (settings
+    /// import), and rebuild the menu like any other change.
+    func reloadFromDefaults() {
+        overrides = [:]
+        load()
+        NotificationCenter.default.post(name: .damsonKeybindingsChanged, object: nil)
+    }
+
     /// Actions whose effective chord collides with `chord`, excluding `except`.
     /// (Compared by the chord value; an action disabled or remapped away won't collide.)
     func conflicts(with chord: KeyChord, except: AppAction.ID) -> [AppAction.ID] {
