@@ -6,8 +6,8 @@ also exposes enabled menu commands and live panes across windows.
 | Tool | Use |
 | --- | --- |
 | Command Palette | `⌘⇧P`, search by action, tab title or cwd, arrow keys and Return; Escape returns to the original window. The shortcut is remappable in Settings → Keys. |
-| File actions | Right-click a path or file URI for Finder, Quick Look, editor, path/URI copy, or a new terminal in the containing folder. VS Code supports `file:line`; TextEdit is the fallback. |
-| Command notifications | Enable **Notify When Long Commands Finish**. Commands lasting at least 10 seconds notify when their pane is not focused. Clicking a notification reveals its originating pane. Requires macOS notification permission. |
+| File actions | Right-click a path or file URI for Finder, Quick Look, editor, path/URI copy, or a new terminal in the containing folder. Relative paths resolve against the pane's cwd; a `:line[:col]` suffix (also after a `file://` URI) is passed on. **Open in Editor** uses the file's default app when it is a known editor, else the first installed of VS Code, Cursor, Zed, Sublime Text, Windsurf, VSCodium, VS Code Insiders, a JetBrains IDE; Xcode only as the default app; TextEdit (no line) last. It is enabled only for text-like files. Plain (non-URI) paths stop at whitespace, so names with spaces need a `file://` URI or OSC 8 link. |
+| Command notifications | Enable **Notify When Long Commands Finish** (Tools menu, or Settings → Terminal → Command Notifications, which also sets the minimum duration, default 10 s). A command notifies unless its pane is focused in the frontmost app. Clicking a notification reveals its originating pane by pane id; if the pane has closed it only brings Damson forward. Requires macOS notification permission. |
 | Workspace presets | Save a named layout and reopen it in a new window. Saves folders, tab names/groups, splits and zoom; starts fresh shells. Existing sessions are preserved. Delete removes only the preset. |
 | Agent Activity | Search explicit provider reports and Claude observations. Waiting reports sort first; Return reveals the exact pane. Refreshes every three seconds. Unreported supported launchers show unknown. |
 | Project Summary | On-demand cwd, Git branch/changed-file count and TCP listeners owned by the pane's foreground process. Refresh checks the same folder. Local browser links are candidates; HTTP is not inferred from a port alone. |
@@ -20,7 +20,9 @@ after execution, then `A` for the prompt. The terminal records monotonic elapsed
 time, output boundaries and optional exit status. A new prompt without an end
 marker cancels the incomplete record, never inventing success. Duplicate end
 markers do not produce duplicate completion events. Other shells can provide the
-same protocol; automatic injection remains zsh-only.
+same protocol; automatic injection remains zsh-only. bash (macOS ships 3.2, without
+`PS0`) and fish would need their own hooks — a `DEBUG` trap/`PROMPT_COMMAND` pair and
+a `fish_preexec`/`fish_postexec` vendor config — and are not provided yet.
 
 ## Provider-neutral agent reports
 

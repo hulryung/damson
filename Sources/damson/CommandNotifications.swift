@@ -1,33 +1,37 @@
 import AppKit
 import UserNotifications
+import DamsonAgents
 import DamsonTerminal
 
 final class CommandNotifications: NSObject, UNUserNotificationCenterDelegate {
-    static let enabledKey = "damson.commandNotifications"
+    static let enabledKey = CommandNotificationPolicy.enabledKey
+    private static let paneKey = "damson.paneID"
     var reveal: ((DamsonSession) -> Void)?
     var isFocused: ((DamsonSession) -> Bool)?
-    private var pending: [String: () -> Void] = [:]
     private var observer: NSObjectProtocol?
     override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
         observer = NotificationCenter.default.addObserver(forName: DamsonSession.commandCompleted, object: nil, queue: .main) { [weak self] note in
-            guard let self, UserDefaults.standard.bool(forKey: Self.enabledKey),
+            guard let self,
                   let session = note.object as? DamsonSession,
                   let result = note.userInfo?["completion"] as? CommandCompletion,
-                  result.duration >= 10, !(NSApp.isActive && self.isFocused?(session) == true) else { return }
-            let id = UUID().uuidString
-            // Bound retention; closures hold sessions weakly, never prolong a shell's life.
-            if self.pending.count >= 100 { self.pending.removeAll() }
-            self.pending[id] = { [weak self, weak session] in
-                guard let session else { return }
-                self?.reveal?(session)
-            }
+                  CommandNotificationPolicy.shouldNotify(
+                      result, enabled: UserDefaults.standard.bool(forKey: Self.enabledKey),
+                      threshold: CommandNotificationPolicy.threshold(),
+                      appActive: NSApp.isActive, paneFocused: self.isFocused?(session) == true) else { return }
             let content = UNMutableNotificationContent()
-            let status = result.exitCode.map { $0 == 0 ? "Succeeded" : "Failed (exit \($0))" } ?? "Finished (status unknown)"
-            content.title = "\(status) · \(Int(result.duration))s"
+            content.title = CommandNotificationPolicy.title(for: result)
             content.body = session.currentWorkingDirectory ?? session.currentDirectory ?? "Damson terminal"
-            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+            // Route the click by pane id, not a retained closure: the registry holds sessions
+            // weakly, and restored panes keep their id across a keeper relaunch.
+            content.userInfo = [Self.paneKey: PaneRegistry.shared.id(for: session).uuidString]
+            let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+            // The setting can also be turned on from Settings, which cannot prompt; asking here
+            // is a no-op once the user has decided.
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                if granted { UNUserNotificationCenter.current().add(request) }
+            }
         }
     }
     deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
@@ -50,7 +54,14 @@ final class CommandNotifications: NSObject, UNUserNotificationCenterDelegate {
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        DispatchQueue.main.async { [weak self] in self?.pending.removeValue(forKey: response.notification.request.identifier)?() }
+        let paneID = (response.notification.request.content.userInfo[Self.paneKey] as? String).flatMap(UUID.init)
+        DispatchQueue.main.async { [weak self] in
+            // A pane closed before the click: just bring the app forward.
+            guard let paneID, let session = PaneRegistry.shared.session(for: paneID) else {
+                NSApp.activate(ignoringOtherApps: true); return
+            }
+            self?.reveal?(session)
+        }
         completionHandler()
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,

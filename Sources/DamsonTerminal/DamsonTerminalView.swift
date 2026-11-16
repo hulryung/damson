@@ -842,18 +842,27 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
         // Snapshot the clicked target: later output must not change the menu's destination.
         if let url = urlInfoAtCell(convertEventToCell(event))?.url {
             if url.isFileURL {
-                let local = ContextMenuFile.localURL(url)
+                // A file URI may carry a compiler-style `:line:col` suffix.
+                var location = ContextMenuFile.location(for: url)
+                let local = location?.url
                 add("Open File", #selector(openContextURL(_:)), enabled: local != nil, payload: local)
                 add("Reveal in Finder", #selector(revealContextFile(_:)), enabled: local != nil, payload: local)
                 add("Quick Look", #selector(previewContextFile(_:)), enabled: local != nil, payload: local)
-                var isDirectory: ObjCBool = false
-                let isFile = local.map { FileManager.default.fileExists(atPath: $0.path, isDirectory: &isDirectory) && !isDirectory.boolValue } ?? false
-                let editor = add("Open in Editor", #selector(editContextFile(_:)), enabled: isFile, payload: local)
-                let position = convertEventToCell(event)
-                let cells = cellsForTextViewRow(position.row)
-                let columns = cells.indices.filter { !cells[$0].isContinuation && !cells[$0].isWideSpacer }
-                editor.tag = FilePathDetector.token(at: position.col, chars: columns.map { cells[$0].char }, cols: columns)?.line ?? 0
-                let folder = local.map { isDirectory.boolValue ? $0 : $0.deletingLastPathComponent() }
+                if location?.line == nil {
+                    let position = convertEventToCell(event)
+                    let cells = cellsForTextViewRow(position.row)
+                    let columns = cells.indices.filter { !cells[$0].isContinuation && !cells[$0].isWideSpacer }
+                    let token = FilePathDetector.token(at: position.col, chars: columns.map { cells[$0].char }, cols: columns)
+                    location?.line = token?.line
+                    location?.column = token?.column
+                }
+                add("Open in Editor", #selector(editContextFile(_:)),
+                    enabled: local.map(ContextMenuFile.isLikelyText) ?? false, payload: location.map(ContextFileLocation.init))
+                let folder = local.map { url -> URL in
+                    var isDirectory: ObjCBool = false
+                    let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+                    return exists && isDirectory.boolValue ? url : url.deletingLastPathComponent()
+                }
                 add("New Terminal Here", #selector(newTerminalAtContextFolder(_:)), enabled: folder != nil, payload: folder)
                 add("Copy File Path", #selector(copyContextValue(_:)), payload: url.path)
                 add("Copy File URI", #selector(copyContextValue(_:)), payload: url.absoluteString)
@@ -895,8 +904,8 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     }
 
     @objc private func editContextFile(_ sender: NSMenuItem) {
-        guard let url = sender.representedObject as? URL else { return }
-        FileContextActions.shared.edit(url, line: sender.tag)
+        guard let payload = sender.representedObject as? ContextFileLocation else { return }
+        FileContextActions.shared.edit(payload.location)
     }
 
     @objc private func newTerminalAtContextFolder(_ sender: NSMenuItem) {
@@ -1414,17 +1423,7 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
     /// Resolve a path token to an existing file/dir URL: `/abs`, `~/home`, or relative to the
     /// session's current working directory (OSC 7). Returns nil if it doesn't exist.
     private func resolveExistingFile(_ path: String) -> URL? {
-        var p = path
-        if p.hasPrefix("~") { p = (p as NSString).expandingTildeInPath }
-        let url: URL
-        if p.hasPrefix("/") {
-            url = URL(fileURLWithPath: p)
-        } else if let cwd = session.currentDirectory ?? session.currentWorkingDirectory {
-            url = URL(fileURLWithPath: cwd).appendingPathComponent(p)
-        } else {
-            return nil
-        }
-        return FileManager.default.fileExists(atPath: url.path) ? url.standardizedFileURL : nil
+        ContextMenuFile.resolve(path: path, cwd: session.currentDirectory ?? session.currentWorkingDirectory)
     }
 
     /// Multi-row plain-URL detection at a unified (row, col) — adapter from the grid
