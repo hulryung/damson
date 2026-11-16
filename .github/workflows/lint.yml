@@ -33,13 +33,15 @@ jobs:
           docker run --rm -v "$PWD:/damson" -w /damson ghcr.io/realm/swiftlint:0.65.1 \
             swiftlint lint --reporter json > /tmp/lint.json
           status=$?
-          python3 -c 'import json,collections;r=json.load(open("/tmp/lint.json"));print("rows",len(r),"unique",len({(x["file"],x["line"],x["rule_id"]) for x in r}));print(collections.Counter(x["rule_id"] for x in r).most_common(12));print(sorted({x["file"] for x in r})[:5])'
           set -e
           python3 - "$status" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json, sys
           status = sys.argv[1]
           try:
               rows = json.load(open("/tmp/lint.json"))
+              # The Linux image reports each violation twice; count each once.
+              rows = list({(r.get("file"), r.get("line"), r.get("character"), r.get("rule_id")): r
+                           for r in rows}.values())
           except Exception:
               print("SwiftLint produced no parseable report (exit %s)." % status)
               raise SystemExit
