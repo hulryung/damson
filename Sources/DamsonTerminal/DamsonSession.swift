@@ -20,8 +20,18 @@ public final class DamsonSession: ObservableObject {
     /// Why the child never started, when it didn't. nil on the ordinary path.
     public private(set) var spawnFailure: String?
     public private(set) var commandLifecycle = CommandLifecycle()
-    public private(set) var reportedAgentState: ReportedAgentState?
-    public private(set) var agentStateReportedAt: Date?
+    /// The last explicit OSC 777 report, while the process group that sent it still
+    /// exists. Checked on read, so a reporter that died without `clear` stops counting
+    /// without any timer.
+    public var agentReport: AgentReport? {
+        guard let report = storedAgentReport else { return nil }
+        if report.isCurrent() { return report }
+        storedAgentReport = nil
+        return nil
+    }
+    private var storedAgentReport: AgentReport?
+    public var reportedAgentState: ReportedAgentState? { agentReport?.state }
+    public var agentStateReportedAt: Date? { agentReport?.receivedAt }
     public static let commandCompleted = Notification.Name("DamsonCommandCompleted")
 
     public private(set) var exitCode: Int32?
@@ -424,11 +434,10 @@ public final class DamsonSession: ObservableObject {
             // not erase the last valid report; "clear" removes the provider report.
             if oscParams.count == 4, oscParams[1] == "damson", oscParams[2] == "agent" {
                 if oscParams[3] == "clear" {
-                    reportedAgentState = nil
-                    agentStateReportedAt = nil
+                    storedAgentReport = nil
                 } else if let state = ReportedAgentState(rawValue: oscParams[3]) {
-                    reportedAgentState = state
-                    agentStateReportedAt = Date()
+                    storedAgentReport = AgentReport(state: state, receivedAt: Date(),
+                                                    ownerProcessGroup: pty.foregroundPID)
                 }
             }
         case "133":

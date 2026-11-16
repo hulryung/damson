@@ -12,39 +12,7 @@ import DamsonTerminal
 
 // MARK: - Serialization model
 
-/// Serialized form of a pane-tree node.
-/// `scrollbackID` is the file key where that pane's scrollback is stored (when the setting is
-/// on). It is optional so older saved data that lacked this field still decodes (restored
-/// without scrollback).
-/// `sessionID`/`preamble` exist only for leaves whose PTY was handed to the keeper at quit:
-/// the id keys the claim, the preamble (base64 escape bytes from
-/// `DamsonSession.stateRestorationPreamble`) rebuilds the tracked terminal modes in the
-/// adopting parser. Optional for the same backward-decode reason as `scrollbackID`.
-/// `paneID`/`argv` exist so a pane keeps its identity and its program across a restart:
-/// the id is what an external driver addressed it by, and argv is what it was running.
-/// Optional for the same backward-decode reason as the fields above — and added to the
-/// EXISTING case rather than as a new one, deliberately. `load()` is one `try?` over the
-/// whole state, so a saved file carrying a case an older build doesn't know would lose
-/// every window's layout on a downgrade, not just the new part.
-indirect enum RestorablePane: Codable {
-    case leaf(cwd: String?, scrollbackID: String?, sessionID: String?, preamble: String?,
-              paneID: String? = nil, argv: [String]? = nil, fontZoom: Double? = nil)
-    case split(direction: String, ratio: Double, first: RestorablePane, second: RestorablePane)
-}
-
-/// One window = an array of tabs. Each tab is the root of a pane tree.
-struct RestorableWindow: Codable {
-    var tabs: [RestorablePane]
-    var selectedTab: Int
-    /// Per-tab custom titles (double-click rename). Same order and length as `tabs`. Optional
-    /// so older saved data that lacked this field still decodes (all restored with auto titles).
-    var tabTitles: [String?]?
-    /// Tab groups and which tab is in which. Optional, and left out entirely when the window
-    /// has no groups, so an ordinary window's blob is byte-identical to what shipped before
-    /// groups existed. Same reason as every optional above: `load()` is one `try?` over the
-    /// whole state, so a required field would cost every window's layout on a downgrade.
-    var tabGroups: RestorableTabGroups?
-}
+// RestorablePane / RestorableWindow live in DamsonTabGroups (RestorableLayout.swift).
 
 /// The full restoration state.
 struct RestorableState: Codable {

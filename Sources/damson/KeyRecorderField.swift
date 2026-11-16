@@ -10,22 +10,30 @@ struct KeyRecorderField: NSViewRepresentable {
     var isDisabled: Bool
     /// Called with a freshly recorded chord.
     var onRecord: (KeyChord) -> Void
+    /// Also receives the virtual key code — for consumers that register by key code (the
+    /// quick terminal's Carbon hotkey) rather than match by character.
+    var onRecordKeyCode: ((KeyChord, UInt16) -> Void)? = nil
+    /// Shown instead of `chord.display` when the value isn't a KeyChord.
+    var displayText: String? = nil
 
     func makeNSView(context: Context) -> RecorderView {
         let v = RecorderView()
         v.onRecord = onRecord
+        v.onRecordKeyCode = onRecordKeyCode
         return v
     }
 
     func updateNSView(_ v: RecorderView, context: Context) {
         v.onRecord = onRecord
-        v.chordText = isDisabled ? "Disabled" : (chord?.display ?? "—")
+        v.onRecordKeyCode = onRecordKeyCode
+        v.chordText = isDisabled ? "Disabled" : (displayText ?? chord?.display ?? "—")
         v.isDisabledStyle = isDisabled
         v.needsDisplay = true
     }
 
     final class RecorderView: NSView {
         var onRecord: ((KeyChord) -> Void)?
+        var onRecordKeyCode: ((KeyChord, UInt16) -> Void)?
         var chordText: String = "—"
         var isDisabledStyle: Bool = false
         private(set) var recording = false {
@@ -55,7 +63,7 @@ struct KeyRecorderField: NSViewRepresentable {
                 return true
             }
             if let chord = KeyChord.from(event: event) {
-                commit(chord)
+                commit(chord, keyCode: event.keyCode)
                 return true
             }
             return true   // swallow bare keys while recording (no modifier)
@@ -64,14 +72,15 @@ struct KeyRecorderField: NSViewRepresentable {
         override func keyDown(with event: NSEvent) {
             guard recording else { super.keyDown(with: event); return }
             if event.keyCode == 53 { cancel(); return }
-            if let chord = KeyChord.from(event: event) { commit(chord); return }
+            if let chord = KeyChord.from(event: event) { commit(chord, keyCode: event.keyCode); return }
             // bare key without ⌘/⌥/⌃ — ignore (NSBeep would be noisy); keep recording.
         }
 
-        private func commit(_ chord: KeyChord) {
+        private func commit(_ chord: KeyChord, keyCode: UInt16) {
             recording = false
             window?.makeFirstResponder(nil)
             onRecord?(chord)
+            onRecordKeyCode?(chord, keyCode)
         }
         private func cancel() {
             recording = false

@@ -115,6 +115,11 @@ public enum SettingsCatalog {
                     .double(1), keywords: ["transparent", "alpha", "투명", "불투명도"]),
         SettingItem("damson.backgroundBlur", "Background blur", .window, "Transparency", .bool(false),
                     keywords: ["frosted glass", "vibrancy", "블러", "흐림"]),
+        SettingItem(QuickTerminalShortcut.enabledKey, "Global quick-terminal shortcut", .window,
+                    "Quick Terminal", .bool(false),
+                    keywords: ["hotkey", "global", "dropdown", "visor", "단축키"]),
+        SettingItem(QuickTerminalShortcut.storageKey, "Quick-terminal shortcut", .window,
+                    "Quick Terminal", .data, keywords: ["hotkey", "global", "단축키"]),
 
         // Panes
         SettingItem("damson.activePaneIndicator", "Active pane indicator", .panes, "Active Pane",
@@ -167,6 +172,10 @@ public enum SettingsCatalog {
                     keywords: ["double-click", "word", "선택"]),
         SettingItem("damson.scrollSpeed", "TUI scroll speed", .terminal, "Scroll", .double(1),
                     keywords: ["trackpad", "mouse", "tmux", "스크롤", "속도"]),
+        SettingItem("damson.commandNotifications", "Notify when long commands finish", .terminal,
+                    "Command Notifications", .bool(false), keywords: ["notification", "alert", "done", "exit", "알림"]),
+        SettingItem("damson.commandNotificationSeconds", "Minimum duration", .terminal,
+                    "Command Notifications", .int(10), keywords: ["threshold", "seconds", "long", "알림"]),
         SettingItem("damson.pressAndHold", "Press and hold for accents", .terminal, "Keyboard",
                     .bool(false), keywords: ["key repeat", "accent", "키 반복"]),
 

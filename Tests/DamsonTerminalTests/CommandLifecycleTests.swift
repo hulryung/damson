@@ -41,6 +41,7 @@ final class CommandLifecycleTests: XCTestCase {
         func terminate() {}
         var childWorkingDirectory: String? { nil }
         var isRunningForegroundJob: Bool { false }
+        var foregroundPID: pid_t?
     }
     func testOSCParserIntegrationAndProviderReports() {
         let backend = Backend()
@@ -58,5 +59,111 @@ final class CommandLifecycleTests: XCTestCase {
         feed("\u{1b}]777;damson;agent;clear\u{7}")
         XCTAssertNil(session.reportedAgentState)
         XCTAssertNil(session.agentStateReportedAt)
+        // ST-terminated, as documented; extra fields are not the protocol.
+        feed("\u{1b}]777;damson;agent;failed\u{1b}\\")
+        XCTAssertEqual(session.reportedAgentState, .failed)
+        feed("\u{1b}]777;damson;agent;running;extra\u{7}")
+        XCTAssertEqual(session.reportedAgentState, .failed)
+    }
+
+    /// A reporter that died without `clear` no longer speaks for the pane: the pane reads
+    /// as unreported, not as working forever.
+    func testReportExpiresWhenTheReportingProcessGroupIsGone() throws {
+        let finished = Process()
+        finished.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try finished.run()
+        finished.waitUntilExit()
+
+        let backend = Backend()
+        let session = DamsonSession(config: DamsonConfig(), backend: backend)
+        func feed(_ text: String) { backend.onData?(Data(text.utf8)) }
+
+        backend.foregroundPID = getpgrp()          // a group that certainly exists
+        feed("\u{1b}]777;damson;agent;running\u{7}")
+        XCTAssertEqual(session.agentReport?.ownerProcessGroup, getpgrp())
+        XCTAssertEqual(session.reportedAgentState, .running)
+
+        backend.foregroundPID = finished.processIdentifier   // reaped: no such group
+        feed("\u{1b}]777;damson;agent;waiting\u{7}")
+        XCTAssertNil(session.reportedAgentState)
+        XCTAssertNil(session.agentStateReportedAt)
+        // Expiry is final; the group coming back (pid reuse) cannot revive it.
+        backend.foregroundPID = getpgrp()
+        XCTAssertNil(session.agentReport)
+    }
+
+    func testReportOwnershipRule() {
+        let date = Date()
+        let owned = AgentReport(state: .waiting, receivedAt: date, ownerProcessGroup: 42)
+        XCTAssertTrue(owned.isCurrent { $0 == 42 })
+        XCTAssertFalse(owned.isCurrent { _ in false })
+        // No tty to ask (tmux -CC, tests): lasts until `clear`, never guessed stale.
+        let unowned = AgentReport(state: .waiting, receivedAt: date, ownerProcessGroup: nil)
+        XCTAssertTrue(unowned.isCurrent { _ in false })
+        XCTAssertFalse(AgentReport.processGroupExists(0))
+        XCTAssertTrue(AgentReport.processGroupExists(getpgrp()))
+    }
+
+    private func completion(_ seconds: TimeInterval, _ code: Int? = 0) -> CommandCompletion {
+        CommandCompletion(exitCode: code, duration: seconds, outputStartLine: 0, outputEndLine: 0)
+    }
+
+    func testNotificationPolicy() {
+        let long = completion(12)
+        XCTAssertTrue(CommandNotificationPolicy.shouldNotify(long, enabled: true, threshold: 10, appActive: false, paneFocused: true))
+        XCTAssertTrue(CommandNotificationPolicy.shouldNotify(long, enabled: true, threshold: 10, appActive: true, paneFocused: false))
+        XCTAssertFalse(CommandNotificationPolicy.shouldNotify(long, enabled: true, threshold: 10, appActive: true, paneFocused: true))
+        XCTAssertFalse(CommandNotificationPolicy.shouldNotify(long, enabled: false, threshold: 10, appActive: false, paneFocused: false))
+        XCTAssertFalse(CommandNotificationPolicy.shouldNotify(completion(9.9), enabled: true, threshold: 10, appActive: false, paneFocused: false))
+        XCTAssertTrue(CommandNotificationPolicy.shouldNotify(completion(10), enabled: true, threshold: 10, appActive: false, paneFocused: false))
+    }
+
+    func testNotificationThresholdSetting() throws {
+        let name = "damson.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertEqual(CommandNotificationPolicy.threshold(defaults), 10)
+        defaults.set(45, forKey: CommandNotificationPolicy.thresholdKey)
+        XCTAssertEqual(CommandNotificationPolicy.threshold(defaults), 45)
+        defaults.set(0, forKey: CommandNotificationPolicy.thresholdKey)
+        XCTAssertEqual(CommandNotificationPolicy.threshold(defaults), 1)
+        defaults.set("junk", forKey: CommandNotificationPolicy.thresholdKey)
+        XCTAssertEqual(CommandNotificationPolicy.threshold(defaults), 1)
+    }
+
+    func testNotificationTitle() {
+        XCTAssertEqual(CommandNotificationPolicy.title(for: completion(12.7, 0)), "Succeeded · 12s")
+        XCTAssertEqual(CommandNotificationPolicy.title(for: completion(125, 2)), "Failed (exit 2) · 2m 05s")
+        XCTAssertEqual(CommandNotificationPolicy.title(for: completion(3725, nil)), "Finished (status unknown) · 1h 02m")
+    }
+
+    func testMalformedAndInterleavedMarkers() {
+        var tracker = CommandLifecycle()
+        XCTAssertNil(tracker.receive("D", status: "0", line: 0, now: 1))   // end without start
+        XCTAssertNil(tracker.receive("Z", line: 0, now: 2))                // unknown marker
+        XCTAssertNil(tracker.receive("", line: 0, now: 2))
+        tracker.receive("C", line: 1, now: 10)
+        XCTAssertNil(tracker.receive("B", line: 1, now: 11))               // B does not end it
+        XCTAssertTrue(tracker.isRunning)
+        XCTAssertNil(tracker.receive("D", status: "abc", line: 2, now: 20)?.exitCode)
+        tracker.receive("C", line: 3, now: 30)
+        let skewed = tracker.receive("D", status: "256", line: 4, now: 25)
+        XCTAssertEqual(skewed?.duration, 0)                                 // never negative
+        XCTAssertNil(skewed?.exitCode)                                      // out of range
+    }
+
+    func testSessionMarkersWithExtraParametersAndNoStatus() {
+        let backend = Backend()
+        let session = DamsonSession(config: DamsonConfig(), backend: backend)
+        var posted: [CommandCompletion] = []
+        let token = NotificationCenter.default.addObserver(forName: DamsonSession.commandCompleted, object: session, queue: nil) {
+            if let c = $0.userInfo?["completion"] as? CommandCompletion { posted.append(c) }
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        func feed(_ text: String) { backend.onData?(Data(text.utf8)) }
+        feed("\u{1b}]133;A\u{1b}\\$ \u{1b}]133;C\u{1b}\\out\r\n\u{1b}]133;D;1;aid=7\u{1b}\\")
+        feed("\u{1b}]133;D;0\u{7}")                 // repeated end: no second event
+        feed("\u{1b}]133;C\u{7}x\u{1b}]133;D\u{7}")  // end without status
+        XCTAssertEqual(posted.map(\.exitCode), [1, nil])
     }
 }

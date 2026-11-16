@@ -43,6 +43,7 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.paddingH") private var paddingH: Double = 4
     @AppStorage("damson.paddingV") private var paddingV: Double = 4
     @AppStorage("damson.backgroundBlur") private var backgroundBlur: Bool = false
+    @AppStorage("damson.quickTerminal") private var quickTerminalEnabled: Bool = false
     @AppStorage("damson.screenEffect") private var screenEffectRaw: String = ScreenEffect.none.rawValue
     @AppStorage("damson.screenEffectIntensity") private var screenEffectIntensity: Double = 1.0
     @AppStorage("damson.glyphAppear") private var glyphAppearRaw: String = GlyphAnimStyle.none.rawValue
@@ -52,6 +53,9 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.scrollSpeed") private var scrollSpeed: Double = 1.0
     @AppStorage("damson.wordSeparators") private var wordSeparators: String = ""
     @AppStorage("damson.tabBarTransparent") private var tabBarTransparent: Bool = false
+    // CommandNotificationPolicy.enabledKey / .thresholdKey (literals required by @AppStorage).
+    @AppStorage("damson.commandNotifications") private var commandNotifications: Bool = false
+    @AppStorage("damson.commandNotificationSeconds") private var commandNotificationSeconds: Int = 10
 
     // Orchestration — read by `damson-crew`, which runs as a separate process and reads this
     // app's defaults domain. The key strings live in `OrchestrationSettings.Keys`; they are
@@ -276,6 +280,13 @@ struct DamsonSettingsView: View {
                     .setting("damson.backgroundBlur")
                 caption("Lowering the background opacity lets what's behind the window show through. Blur frosts that backdrop like frosted glass (no effect at 100% opacity).")
             }
+            SettingsSection(.window, "Quick Terminal") {
+                Toggle("Global quick-terminal shortcut", isOn: $quickTerminalEnabled)
+                    .setting("damson.quickTerminal")
+                QuickTerminalShortcutRow()
+                    .setting("damson.quickTerminal.shortcut")
+                caption("From any app, the shortcut shows or hides one dedicated terminal window; its shell keeps running while hidden. Only that exact chord is taken — it must include ⌘ or ⌃. If another app already owns it, the setting turns itself off and says so. Tools → Show/Hide Quick Terminal works without it.")
+            }
         }
         .formStyle(.grouped)
     }
@@ -383,6 +394,20 @@ struct DamsonSettingsView: View {
                           label: String(format: "%.2fx", scrollSpeed), labelWidth: 48)
                     .setting("damson.scrollSpeed")
                 caption("Trackpad scroll speed in mouse-tracking TUIs like Claude Code and tmux. Lower is slower. (No effect on normal scrollback scrolling.)")
+            }
+            SettingsSection(.terminal, "Command Notifications") {
+                Toggle("Notify when long commands finish", isOn: $commandNotifications)
+                    .setting("damson.commandNotifications")
+                HStack {
+                    Text("Minimum duration")
+                    Spacer()
+                    Stepper(value: $commandNotificationSeconds, in: 1...86_400, step: 5) {
+                        Text("\(commandNotificationSeconds) s").monospacedDigit().frame(minWidth: 70)
+                    }
+                }
+                .setting("damson.commandNotificationSeconds")
+                .disabled(!commandNotifications)
+                caption("Posts a macOS notification when a shell command runs at least this long, unless its pane is focused in the frontmost window. Clicking it reveals the pane. Needs zsh shell integration (or a shell that emits OSC 133 C/D) and notification permission.")
             }
             SettingsSection(.terminal, "Keyboard") {
                 Toggle("Press and hold for accents", isOn: $pressAndHold)

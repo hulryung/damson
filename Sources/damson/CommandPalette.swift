@@ -1,17 +1,28 @@
 import AppKit
+import DamsonPalette
 
 /// A transient searchable action list. Actions capture their original destination,
 /// rather than dispatching into the search field's responder chain.
-final class CommandPalette: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+///
+/// Unavailable menu commands are listed greyed out rather than hidden: a palette that drops
+/// "Close Pane" when there is one pane reads as "no such command", while a greyed row says
+/// "not here". They sort below available matches of equal relevance, and Return beeps.
+final class CommandPalette: NSWindowController, NSTableViewDataSource, NSTableViewDelegate,
+                            NSSearchFieldDelegate, NSWindowDelegate {
     struct Entry {
         let id: String
         let title: String
         let detail: String
+        let shortcut: String
+        let isEnabled: Bool
         let run: () -> Void
-        init(title: String, detail: String, id: String? = nil, run: @escaping () -> Void) {
+        init(title: String, detail: String, shortcut: String = "", isEnabled: Bool = true,
+             id: String? = nil, run: @escaping () -> Void) {
             self.id = id ?? title + detail
             self.title = title
             self.detail = detail
+            self.shortcut = shortcut
+            self.isEnabled = isEnabled
             self.run = run
         }
     }
@@ -28,17 +39,24 @@ final class CommandPalette: NSWindowController, NSTableViewDataSource, NSTableVi
                             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
         super.init(window: panel)
+        panel.delegate = self
         search.placeholderString = "Search commands, tabs, or folders…"
         search.delegate = self
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
-        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("action")))
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("action"))
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.headerView = nil
         table.rowHeight = 48
         table.delegate = self
         table.dataSource = self
         table.target = self
         table.doubleAction = #selector(activate)
+        // Keep typing focus in the search field even after a row is clicked, so Return,
+        // Escape and the arrows keep going through `control(_:textView:doCommandBy:)`.
+        table.refusesFirstResponder = true
         scroll.documentView = table
         let stack = NSStackView(views: [search, scroll])
         stack.orientation = .vertical
@@ -80,29 +98,46 @@ final class CommandPalette: NSWindowController, NSTableViewDataSource, NSTableVi
     func controlTextDidChange(_ obj: Notification) { updateResults() }
     private func updateResults() {
         let selected = filtered.indices.contains(table.selectedRow) ? filtered[table.selectedRow].id : nil
-        let terms = search.stringValue.lowercased().split(whereSeparator: \.isWhitespace)
-        filtered = entries.filter { entry in
-            let text = (entry.title + " " + entry.detail).lowercased()
-            return terms.allSatisfy { text.contains($0) }
+        let candidates = entries.map {
+            PaletteSearch.Candidate(title: $0.title, detail: $0.detail, isEnabled: $0.isEnabled)
         }
+        filtered = PaletteSearch.rank(candidates, query: search.stringValue).map { entries[$0] }
         table.reloadData()
         if !filtered.isEmpty {
             let row = filtered.firstIndex { $0.id == selected } ?? 0
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            table.scrollRowToVisible(row)
         }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let title = NSTextField(labelWithString: filtered[row].title)
-        let detail = NSTextField(labelWithString: filtered[row].detail)
+        let entry = filtered[row]
+        let title = NSTextField(labelWithString: entry.title)
+        title.textColor = entry.isEnabled ? .labelColor : .tertiaryLabelColor
+        title.lineBreakMode = .byTruncatingTail
+        let detail = NSTextField(labelWithString: entry.detail)
         detail.font = .systemFont(ofSize: 11)
-        detail.textColor = .secondaryLabelColor
+        detail.textColor = entry.isEnabled ? .secondaryLabelColor : .tertiaryLabelColor
         detail.lineBreakMode = .byTruncatingMiddle
-        let stack = NSStackView(views: [title, detail])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 2
-        return stack
+        let text = NSStackView(views: [title, detail])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Let the text column take the slack so the shortcut sits at the trailing edge.
+        text.setHuggingPriority(.defaultLow, for: .horizontal)
+        let shortcut = NSTextField(labelWithString: entry.shortcut)
+        shortcut.textColor = entry.isEnabled ? .secondaryLabelColor : .tertiaryLabelColor
+        shortcut.setContentHuggingPriority(.required, for: .horizontal)
+        shortcut.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let row = NSStackView(views: [text, shortcut])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 8)
+        return row
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
@@ -123,11 +158,24 @@ final class CommandPalette: NSWindowController, NSTableViewDataSource, NSTableVi
         window?.orderOut(nil)
         origin?.makeKeyAndOrderFront(nil)
     }
+    /// If the palette is key, hand key status back to the window it was opened over, so a
+    /// caller about to read `NSApp.keyWindow` (re-opening the palette from itself) resolves
+    /// commands against the user's window, not the palette and its field editor.
+    func returnFocusToOrigin() {
+        guard let window, window.isKeyWindow else { return }
+        dismiss()
+    }
+    /// The title-bar close button bypasses `cancelOperation`; it must restore focus too.
+    func windowWillClose(_ notification: Notification) {
+        timer?.invalidate()
+        origin?.makeKeyAndOrderFront(nil)
+    }
     @objc private func activate() {
         guard filtered.indices.contains(table.selectedRow) else { NSSound.beep(); return }
-        let action = filtered[table.selectedRow].run
+        let entry = filtered[table.selectedRow]
+        guard entry.isEnabled else { NSSound.beep(); return }
         dismiss()
-        action()
+        entry.run()
     }
 
     static func menuEntries(_ menu: NSMenu, origin: NSWindow?, path: String = "") -> [Entry] {
@@ -135,20 +183,19 @@ final class CommandPalette: NSWindowController, NSTableViewDataSource, NSTableVi
         return menu.items.flatMap { item -> [Entry] in
             guard !item.isHidden, !item.isSeparatorItem else { return [] }
             if let submenu = item.submenu {
-                return menuEntries(submenu, origin: origin, path: path + submenu.title + " › ")
+                return menuEntries(submenu, origin: origin, path: path.isEmpty ? submenu.title : path + " › " + submenu.title)
             }
-            guard item.isEnabled, let action = item.action,
-                  action != NSSelectorFromString("showCommandPalette:"),
-                  let target = NSApp.target(forAction: action, to: item.target, from: item) as AnyObject? else { return [] }
-            if let validator = target as? NSMenuItemValidation, !validator.validateMenuItem(item) { return [] }
-            var modifiers = ""
-            let flags = item.keyEquivalentModifierMask
-            if flags.contains(.control) { modifiers += "⌃" }
-            if flags.contains(.option) { modifiers += "⌥" }
-            if flags.contains(.shift) { modifiers += "⇧" }
-            if flags.contains(.command) { modifiers += "⌘" }
-            let shortcut = item.keyEquivalent.isEmpty ? "" : "  " + modifiers + item.keyEquivalent.uppercased()
-            return [Entry(title: item.title, detail: path + shortcut) { [weak origin, weak target] in
+            guard let action = item.action, action != NSSelectorFromString("showCommandPalette:") else { return [] }
+            // Resolved now, while the origin window is still key: this is the responder the
+            // menu item would have reached, and the palette's own chain never sees the action.
+            let target = NSApp.target(forAction: action, to: item.target, from: item) as AnyObject?
+            var enabled = item.isEnabled && target != nil
+            if enabled, let validator = target as? NSMenuItemValidation, !validator.validateMenuItem(item) {
+                enabled = false
+            }
+            let shortcut = ShortcutFormat.display(keyEquivalent: item.keyEquivalent,
+                                                  modifiers: item.keyEquivalentModifierMask.rawValue)
+            return [Entry(title: item.title, detail: path, shortcut: shortcut, isEnabled: enabled) { [weak origin, weak target] in
                 guard let target else { NSSound.beep(); return }
                 origin?.makeKeyAndOrderFront(nil)
                 NSApp.sendAction(action, to: target, from: item)
