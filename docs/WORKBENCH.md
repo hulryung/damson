@@ -8,10 +8,10 @@ also exposes enabled menu commands and live panes across windows.
 | Command Palette | `⌘⇧P`, search by action, tab title or cwd, arrow keys and Return; Escape returns to the original window. The shortcut is remappable in Settings → Keys. |
 | File actions | Right-click a path or file URI for Finder, Quick Look, editor, path/URI copy, or a new terminal in the containing folder. VS Code supports `file:line`; TextEdit is the fallback. |
 | Command notifications | Enable **Notify When Long Commands Finish**. Commands lasting at least 10 seconds notify when their pane is not focused. Clicking a notification reveals its originating pane. Requires macOS notification permission. |
-| Workspace presets | Save a named layout and reopen it in a new window. Saves folders, tab names/groups, splits and zoom; starts fresh shells. Existing sessions are preserved. Delete removes only the preset. |
+| Workspace presets | Save a named layout and reopen it in a new window. Saves folders, tab names/groups, splits and zoom; starts fresh shells. Existing sessions are preserved. Saving under an existing name (case-insensitive) asks before replacing it. Delete removes only the preset. In Standard mode the window's native tabs are saved together. |
 | Agent Activity | Search explicit provider reports and Claude observations. Waiting reports sort first; Return reveals the exact pane. Refreshes every three seconds. Unreported supported launchers show unknown. |
 | Project Summary | On-demand cwd, Git branch/changed-file count and TCP listeners owned by the pane's foreground process. Refresh checks the same folder. Local browser links are candidates; HTTP is not inferred from a port alone. |
-| Quick Terminal | **Show/Hide Quick Terminal** reuses a dedicated terminal window. Enable the global `⌃⌘` + grave-accent shortcut separately. Registration failure leaves the setting disabled. |
+| Quick Terminal | **Show/Hide Quick Terminal** reuses a dedicated terminal window. Enable the global shortcut in Settings → Window → Quick Terminal (or Tools); it defaults to `⌃⌘` + grave accent and can be re-recorded there. Hiding orders out only that window and returns focus to the app it was summoned from. The window survives a restart as the quick terminal (hidden if it was hidden), and a hidden quick terminal keeps the app running when the last visible window closes. |
 
 ## Shell command lifecycle
 
@@ -51,9 +51,18 @@ reports to reach the local terminal (for example tmux passthrough).
 Workspace presets use a versioned JSON file at
 `~/Library/Application Support/Damson/workspaces.json`, written atomically. They
 exclude commands, shell history, scrollback and PTY identities, including when an
-edited file supplies them. Missing folders follow the existing session-restoration
-fallback. Presets use current appearance/shell settings with saved per-pane zoom;
+edited file supplies them. A file written by a newer format version, or one that
+cannot be read, is reported and never overwritten. Missing folders follow the existing
+session-restoration fallback (nearest existing parent, else home), and opening says which. Presets use current appearance/shell settings with saved per-pane zoom;
 they do not snapshot a separate configuration profile.
+
+The quick-terminal shortcut is a Carbon hotkey: only the exact chord is delivered, and
+a chord without ⌘ or ⌃ is refused so it cannot swallow typing. A chord already used by
+one of Damson's own shortcuts is refused in the recorder. macOS refuses a chord only when
+it is already registered by the system or this app — another app's ordinary registration
+of the same chord is not reported, so a silent clash is resolved by choosing a different
+chord. A failed registration is reported and rolled back to the previous chord, or the
+setting is turned off.
 
 Project queries run off the main thread with a five-second process timeout and
 a two-megabyte output cap. Listener discovery is restricted to the known
