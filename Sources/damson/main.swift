@@ -1875,6 +1875,7 @@ extension DamsonAppDelegate {
     }
 
     @objc func showCommandPalette(_ sender: Any?) {
+        palette.returnFocusToOrigin()
         let commands = NSApp.mainMenu.map { CommandPalette.menuEntries($0, origin: NSApp.keyWindow) } ?? []
         palette.present(title: "Command Palette", entries: paneEntries() + commands)
     }
