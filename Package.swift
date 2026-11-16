@@ -89,6 +89,13 @@ let package = Package(
             name: "DamsonTabGroups",
             path: "Sources/DamsonTabGroups"
         ),
+        // The Settings window's catalogue — every setting's key, default, page and section —
+        // with search, reset, "modified" and export/import over it. Foundation only, so it
+        // is testable without the app.
+        .target(
+            name: "DamsonSettings",
+            path: "Sources/DamsonSettings"
+        ),
         .executableTarget(
             name: "damson",
             dependencies: [
@@ -96,6 +103,7 @@ let package = Package(
                 "DamsonControl",
                 "DamsonAgents",
                 "DamsonTabGroups",
+                "DamsonSettings",
                 "DamsonCrew",
                 "DamsonComputer",
                 "DamsonKeeperCore",
@@ -148,6 +156,11 @@ let package = Package(
             name: "DamsonCrewTests",
             dependencies: ["DamsonCrew", "DamsonControl"],
             path: "Tests/DamsonCrewTests"
+        ),
+        .testTarget(
+            name: "DamsonSettingsTests",
+            dependencies: ["DamsonSettings"],
+            path: "Tests/DamsonSettingsTests"
         ),
         .testTarget(
             name: "DamsonTabGroupsTests",

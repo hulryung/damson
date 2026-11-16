@@ -1538,6 +1538,22 @@ final class CompactWindowController: NSWindowController, NSWindowDelegate, TabSw
         for t in tabs { t.tree.terminateAllForClose() }   // honor panes dragged out to other windows
     }
 
+    // "Dim inactive windows": fade every pane of this window in/out as it loses/gains key.
+    // Only when the setting is on — otherwise a focus change between windows leaves the
+    // pane overlays alone entirely.
+    func windowDidBecomeKey(_ notification: Notification) {
+        refreshPaneIndicatorsForKeyChange()
+    }
+    func windowDidResignKey(_ notification: Notification) {
+        refreshPaneIndicatorsForKeyChange()
+    }
+    private func refreshPaneIndicatorsForKeyChange() {
+        guard PaneIndicatorSettings.current.dimInactiveWindows else { return }
+        // Every tab, not just the visible one: a background tab shown later must not come
+        // back still dimmed (or undimmed) from the previous key state.
+        for tab in tabs { tab.tree.refreshIndicators(animated: true) }
+    }
+
     // On full-screen enter/exit: update the leading reservation (traffic lights) + top inset (menu bar).
     func windowDidEnterFullScreen(_ notification: Notification) {
         updateFullScreenInset()
