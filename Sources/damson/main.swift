@@ -3,6 +3,8 @@ import Combine
 import DamsonControl
 import DamsonAgents
 import DamsonKeeperCore
+import DamsonSettings
+import DamsonTabGroups
 import DamsonTerminal
 import SwiftUI
 
@@ -37,9 +39,9 @@ final class DamsonWindowController: NSWindowController, NSWindowDelegate, PaneTr
         return tree.root.leaves().first?.session
     }
 
-    func workspaceWindow() -> RestorableWindow {
-        RestorableWindow(tabs: [tree.root.workspaceLayout()], selectedTab: 0, tabTitles: [window?.title])
-    }
+    /// This window's tab for a workspace preset. No title: a Standard-mode window's title
+    /// follows its shell, and saving it would freeze it as a custom tab name.
+    func workspaceTab() -> RestorablePane { tree.root.workspaceLayout() }
 
     init(session: DamsonSession) {
         self.tree = PaneTreeView(rootSession: session)
@@ -253,6 +255,8 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     private let commandNotifications = CommandNotifications()
     private let quickHotkey = QuickTerminalHotkey()
     private weak var quickController: CompactWindowController?
+    /// The app that was frontmost when the quick terminal was summoned; hiding returns to it.
+    private var quickPreviousApp: NSRunningApplication?
 
     /// IPC with damson-cli. Bound after the first window is created.
     private var controlSocket: ControlSocketServer?
@@ -312,7 +316,10 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, 
                 }
             }
             for restoreWindow in state.windows {
-                spawnCompactWindow(restoring: restoreWindow) { adopted.removeValue(forKey: $0) }
+                // A hidden quick terminal stays hidden — unless it is all there is to show.
+                let hide = restoreWindow.quickTerminalHidden == true && state.windows.count > 1
+                let c = spawnCompactWindow(restoring: restoreWindow, show: !hide) { adopted.removeValue(forKey: $0) }
+                if restoreWindow.quickTerminal == true { adoptQuickTerminal(c) }
             }
             // A claimed fd whose leaf vanished from the layout (shouldn't happen — the
             // state and keeper are separate stores): close it, so the child gets SIGHUP
@@ -382,7 +389,14 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         // aren't restored). Clear old scrollback files before capturing (toRestorable
         // writes fresh ones when the setting is on — and always for handed-off leaves).
         SessionRestore.resetScrollbackDir()
-        let windows = compactControllers.map { $0.toRestorableWindow(handoff: handoffRecords) }
+        let windows = compactControllers.map { c in
+            var w = c.toRestorableWindow(handoff: handoffRecords)
+            if c === quickController {
+                w.quickTerminal = true
+                w.quickTerminalHidden = c.window?.isVisible == false ? true : nil
+            }
+            return w
+        }
         if windows.isEmpty {
             SessionRestore.clear()
         } else {
@@ -1214,7 +1228,16 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        // A hidden quick terminal is a live window: closing the last visible one must not
+        // quit and take its shell with it.
+        !hasHiddenQuickTerminal
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Dock click with only the hidden quick terminal left: show it rather than nothing.
+        guard !flag, hasHiddenQuickTerminal, controllers.isEmpty, compactControllers.count == 1 else { return true }
+        toggleQuickTerminal()
+        return false
     }
 
     /// Every pane session across every tab of every window (single-session + Compact).
@@ -1324,7 +1347,8 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, 
             item.state = UserDefaults.standard.bool(forKey: CommandNotifications.enabledKey) ? .on : .off
         }
         if item.action == #selector(toggleQuickTerminalEnabled(_:)) {
-            item.state = UserDefaults.standard.bool(forKey: QuickTerminalHotkey.enabledKey) ? .on : .off
+            item.state = UserDefaults.standard.bool(forKey: QuickTerminalShortcut.enabledKey) ? .on : .off
+            item.title = "Enable Quick Terminal Shortcut (\(QuickTerminalShortcut.load(from: .standard).display))"
         }
         if item.action == #selector(saveWorkspace(_:)) || item.action == #selector(showProjectSummary(_:)) {
             return activeControlSession() != nil
@@ -1511,6 +1535,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     @discardableResult
     private func spawnCompactWindow(restoring: RestorableWindow? = nil,
                                     firstTab: DamsonConfig? = nil,
+                                    show: Bool = true,
                                     adopt: (String) -> AdoptedSession? = { _ in nil })
         -> CompactWindowController {
         let controller = CompactWindowController(restoring: restoring, firstTab: firstTab,
@@ -1528,7 +1553,7 @@ final class DamsonAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, 
             self.compactControllers.removeAll { $0 === controller }
         }
         compactControllers.append(controller)
-        controller.showWindow(nil)
+        if show { controller.showWindow(nil) }
         return controller
     }
 }
@@ -1764,7 +1789,7 @@ private func buildToolsMenu(into mainMenu: NSMenu) {
         ("Delete Workspace…", #selector(DamsonAppDelegate.deleteWorkspace(_:))),
         ("Notify When Long Commands Finish", #selector(DamsonAppDelegate.toggleCommandNotifications(_:))),
         ("Show/Hide Quick Terminal", #selector(DamsonAppDelegate.showQuickTerminal(_:))),
-        ("Enable Quick Terminal (⌃⌘`)", #selector(DamsonAppDelegate.toggleQuickTerminalEnabled(_:)))
+        ("Enable Quick Terminal Shortcut", #selector(DamsonAppDelegate.toggleQuickTerminalEnabled(_:)))
     ]
     for (title, action) in features { toolsMenu.addItem(NSMenuItem(title: title, action: action, keyEquivalent: "")) }
     toolsMenu.addItem(.separator())
@@ -1828,8 +1853,40 @@ extension DamsonAppDelegate {
         commandNotifications.reveal = { [weak self] session in self?.revealWorkbenchSession(session) }
         commandNotifications.isFocused = { [weak self] session in self?.activeControlSession() === session }
         quickHotkey.toggle = { [weak self] in self?.toggleQuickTerminal() }
-        if UserDefaults.standard.bool(forKey: QuickTerminalHotkey.enabledKey), !quickHotkey.enable() {
-            UserDefaults.standard.set(false, forKey: QuickTerminalHotkey.enabledKey)
+        // Settings toggle, shortcut recorder, menu, reset and import all just write defaults;
+        // this keeps the registration in step with whatever they wrote.
+        NotificationCenter.default.addObserver(self, selector: #selector(quickTerminalDefaultsChanged(_:)),
+                                               name: UserDefaults.didChangeNotification, object: nil)
+        syncQuickTerminalHotkey()
+    }
+
+    @objc nonisolated private func quickTerminalDefaultsChanged(_ note: Notification) {
+        // Posted on whichever thread wrote the default.
+        if Thread.isMainThread { MainActor.assumeIsolated { syncQuickTerminalHotkey() } }
+        else {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { (NSApp.delegate as? DamsonAppDelegate)?.syncQuickTerminalHotkey() }
+            }
+        }
+    }
+
+    /// Register what the settings ask for. A shortcut that cannot be registered (taken by
+    /// another app) is reported and rolled back: to the previous shortcut if one was working,
+    /// else the setting is turned off, so the checkbox never claims a shortcut that is dead.
+    private func syncQuickTerminalHotkey() {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: QuickTerminalShortcut.enabledKey) else { quickHotkey.disable(); return }
+        let wanted = QuickTerminalShortcut.load(from: defaults)
+        guard quickHotkey.registered != wanted else { return }
+        let previous = quickHotkey.registered
+        guard case .failure(let failure) = quickHotkey.register(wanted) else { return }
+        if let previous, case .success = quickHotkey.register(previous) {
+            previous.save(to: defaults)
+        } else {
+            defaults.set(false, forKey: QuickTerminalShortcut.enabledKey)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.showWorkbenchError("The quick-terminal shortcut \(wanted.display) could not be registered. \(failure.message)")
         }
     }
 
@@ -1891,32 +1948,67 @@ extension DamsonAppDelegate {
     @objc func toggleCommandNotifications(_ sender: Any?) { commandNotifications.toggle() }
 
     @objc func toggleQuickTerminalEnabled(_ sender: Any?) {
-        if UserDefaults.standard.bool(forKey: QuickTerminalHotkey.enabledKey) {
-            quickHotkey.disable()
-            UserDefaults.standard.set(false, forKey: QuickTerminalHotkey.enabledKey)
-        } else if quickHotkey.enable() {
-            UserDefaults.standard.set(true, forKey: QuickTerminalHotkey.enabledKey)
-        } else {
-            showWorkbenchError("The quick-terminal shortcut is already in use or could not be registered.")
-        }
+        let defaults = UserDefaults.standard
+        defaults.set(!defaults.bool(forKey: QuickTerminalShortcut.enabledKey), forKey: QuickTerminalShortcut.enabledKey)
+        syncQuickTerminalHotkey()
     }
 
     @objc func showQuickTerminal(_ sender: Any?) { toggleQuickTerminal() }
 
-    private func toggleQuickTerminal() {
-        if let controller = quickController, compactControllers.contains(where: { $0 === controller }), let window = controller.window {
-            if window.isKeyWindow { window.orderOut(nil) }
-            else { window.deminiaturize(nil); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    /// The live quick-terminal controller, if its window is still open.
+    private var liveQuickController: CompactWindowController? {
+        guard let c = quickController, compactControllers.contains(where: { $0 === c }), c.window != nil else { return nil }
+        return c
+    }
+
+    fileprivate var hasHiddenQuickTerminal: Bool { liveQuickController?.window?.isVisible == false }
+
+    fileprivate func adoptQuickTerminal(_ controller: CompactWindowController) {
+        quickController = controller
+        controller.window?.title = "Quick Terminal"
+    }
+
+    /// Show, or hide if it is the window in front. Hiding only orders this one window out —
+    /// other windows are untouched — and hands focus back to the app it was summoned from.
+    /// If its shell exited (window closed), the next press opens a new one.
+    fileprivate func toggleQuickTerminal() {
+        if let controller = liveQuickController, let window = controller.window {
+            if NSApp.isActive && window.isKeyWindow && window.isVisible {
+                window.orderOut(nil)
+                if let app = quickPreviousApp, !app.isTerminated { app.activate(options: []) }
+                quickPreviousApp = nil
+            } else {
+                rememberQuickPreviousApp()
+                window.deminiaturize(nil)
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
         } else {
-            let controller = spawnCompactWindow()
-            quickController = controller
-            controller.window?.title = "Quick Terminal"
+            rememberQuickPreviousApp()
+            adoptQuickTerminal(spawnCompactWindow())
             NSApp.activate(ignoringOtherApps: true)
         }
     }
 
+    private func rememberQuickPreviousApp() {
+        guard !NSApp.isActive else { quickPreviousApp = nil; return }
+        let front = NSWorkspace.shared.frontmostApplication
+        quickPreviousApp = front?.processIdentifier == getpid() ? nil : front
+    }
+
+    /// The key window as a preset: a Compact window as is, a Standard window together with
+    /// the native tabs it is grouped with.
+    private func activeWorkspaceWindow() -> RestorableWindow? {
+        if let compact = activeCompact() { return compact.workspaceWindow() }
+        guard let single = activeSingleController(), let window = single.window else { return nil }
+        let group = (window.tabbedWindows ?? [window]).compactMap { w in controllers.first { $0.window === w } }
+        let members = group.isEmpty ? [single] : group
+        return RestorableWindow(tabs: members.map { $0.workspaceTab() },
+                                selectedTab: members.firstIndex { $0 === single } ?? 0)
+    }
+
     @objc func saveWorkspace(_ sender: Any?) {
-        guard let layout = activeCompact()?.workspaceWindow() ?? activeSingleController()?.workspaceWindow() else { NSSound.beep(); return }
+        guard let layout = activeWorkspaceWindow() else { NSSound.beep(); return }
         let alert = NSAlert()
         alert.messageText = "Save Workspace"
         alert.informativeText = "Save folders, tab names, and pane layout. Reopening starts fresh shells."
@@ -1931,10 +2023,15 @@ extension DamsonAppDelegate {
         guard !title.isEmpty else { showWorkbenchError("Enter a workspace name."); return }
         do {
             var presets = try WorkspacePresets.load()
-            guard !presets.contains(where: { $0.name.caseInsensitiveCompare(title) == .orderedSame }) else {
-                showWorkbenchError("A workspace with this name already exists. Choose another name or delete the old preset."); return
+            if let existing = presets.index(named: title) {
+                let confirm = NSAlert()
+                confirm.messageText = "Replace workspace “\(presets[existing].name)”?"
+                confirm.informativeText = "Its saved layout is replaced with this window's. Running sessions are not affected."
+                confirm.addButton(withTitle: "Replace")
+                confirm.addButton(withTitle: "Cancel")
+                guard confirm.runModal() == .alertFirstButtonReturn else { return }
             }
-            presets.append(WorkspacePreset(id: UUID(), name: title, window: layout))
+            presets.upsert(name: title, window: layout)
             try WorkspacePresets.save(presets)
         } catch { showWorkbenchError(error.localizedDescription) }
     }
@@ -1958,10 +2055,15 @@ extension DamsonAppDelegate {
                         do { try WorkspacePresets.save(WorkspacePresets.load().filter { $0.id != preset.id }) }
                         catch { self.showWorkbenchError(error.localizedDescription) }
                     } else {
-                        var layout = preset.window
-                        layout.tabs = layout.tabs.map(\.freshWorkspace)
+                        let layout = preset.window.freshWorkspace
                         guard !layout.tabs.isEmpty else { self.showWorkbenchError("This workspace has no tabs."); return }
+                        // Restore falls back to the nearest folder that still exists; say so.
+                        let missing = Array(Set(layout.tabs.flatMap(\.directories).filter { PTYHost.cwdProblem($0) != nil })).sorted()
                         self.spawnCompactWindow(restoring: layout)
+                        if !missing.isEmpty {
+                            self.showWorkbenchError("These folders no longer exist, so their panes opened in the nearest parent folder that does (or your home folder):\n"
+                                                    + missing.joined(separator: "\n"))
+                        }
                     }
                 }
             }

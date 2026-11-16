@@ -43,6 +43,7 @@ struct DamsonSettingsView: View {
     @AppStorage("damson.paddingH") private var paddingH: Double = 4
     @AppStorage("damson.paddingV") private var paddingV: Double = 4
     @AppStorage("damson.backgroundBlur") private var backgroundBlur: Bool = false
+    @AppStorage("damson.quickTerminal") private var quickTerminalEnabled: Bool = false
     @AppStorage("damson.screenEffect") private var screenEffectRaw: String = ScreenEffect.none.rawValue
     @AppStorage("damson.screenEffectIntensity") private var screenEffectIntensity: Double = 1.0
     @AppStorage("damson.glyphAppear") private var glyphAppearRaw: String = GlyphAnimStyle.none.rawValue
@@ -278,6 +279,13 @@ struct DamsonSettingsView: View {
                     .disabled(backgroundOpacity >= 1.0)
                     .setting("damson.backgroundBlur")
                 caption("Lowering the background opacity lets what's behind the window show through. Blur frosts that backdrop like frosted glass (no effect at 100% opacity).")
+            }
+            SettingsSection(.window, "Quick Terminal") {
+                Toggle("Global quick-terminal shortcut", isOn: $quickTerminalEnabled)
+                    .setting("damson.quickTerminal")
+                QuickTerminalShortcutRow()
+                    .setting("damson.quickTerminal.shortcut")
+                caption("From any app, the shortcut shows or hides one dedicated terminal window; its shell keeps running while hidden. Only that exact chord is taken — it must include ⌘ or ⌃. If another app already owns it, the setting turns itself off and says so. Tools → Show/Hide Quick Terminal works without it.")
             }
         }
         .formStyle(.grouped)

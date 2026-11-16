@@ -115,6 +115,11 @@ public enum SettingsCatalog {
                     .double(1), keywords: ["transparent", "alpha", "투명", "불투명도"]),
         SettingItem("damson.backgroundBlur", "Background blur", .window, "Transparency", .bool(false),
                     keywords: ["frosted glass", "vibrancy", "블러", "흐림"]),
+        SettingItem(QuickTerminalShortcut.enabledKey, "Global quick-terminal shortcut", .window,
+                    "Quick Terminal", .bool(false),
+                    keywords: ["hotkey", "global", "dropdown", "visor", "단축키"]),
+        SettingItem(QuickTerminalShortcut.storageKey, "Quick-terminal shortcut", .window,
+                    "Quick Terminal", .data, keywords: ["hotkey", "global", "단축키"]),
 
         // Panes
         SettingItem("damson.activePaneIndicator", "Active pane indicator", .panes, "Active Pane",
