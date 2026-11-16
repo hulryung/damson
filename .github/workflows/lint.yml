@@ -8,6 +8,11 @@ name: lint
 # that, a failure reports only "Found N violations, 1 serious" and the file has
 # to be dug out of the annotations — which is how this workflow stayed red for
 # weeks: nobody could see what to fix at a glance.
+#
+# It runs on Linux with SwiftLint's official image: linting builds nothing, and
+# macOS runners can queue past the 15-minute pickup limit, which fails the job
+# without ever linting. The version is pinned so a SwiftLint release can't turn
+# main red on its own; bump it deliberately.
 
 on:
   push:
@@ -16,17 +21,17 @@ on:
 
 jobs:
   swiftlint:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      - name: Install SwiftLint
-        run: brew install swiftlint
 
       - name: SwiftLint
         run: |
           set +e
-          swiftlint lint --reporter json > /tmp/lint.json
+          # Mounted at /damson so report paths read /damson/Sources/..., which the
+          # summary below trims to repo-relative.
+          docker run --rm -v "$PWD:/damson" -w /damson ghcr.io/realm/swiftlint:0.65.1 \
+            swiftlint lint --reporter json > /tmp/lint.json
           status=$?
           set -e
           python3 - "$status" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
@@ -34,6 +39,9 @@ jobs:
           status = sys.argv[1]
           try:
               rows = json.load(open("/tmp/lint.json"))
+              # The Linux image reports each violation twice; count each once.
+              rows = list({(r.get("file"), r.get("line"), r.get("character"), r.get("rule_id")): r
+                           for r in rows}.values())
           except Exception:
               print("SwiftLint produced no parseable report (exit %s)." % status)
               raise SystemExit
