@@ -44,7 +44,10 @@ final class CommandPalette: NSWindowController, NSTableViewDataSource, NSTableVi
         search.delegate = self
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
-        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("action")))
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("action"))
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.headerView = nil
         table.rowHeight = 48
         table.delegate = self
@@ -123,6 +126,8 @@ final class CommandPalette: NSWindowController, NSTableViewDataSource, NSTableVi
         text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Let the text column take the slack so the shortcut sits at the trailing edge.
+        text.setHuggingPriority(.defaultLow, for: .horizontal)
         let shortcut = NSTextField(labelWithString: entry.shortcut)
         shortcut.textColor = entry.isEnabled ? .secondaryLabelColor : .tertiaryLabelColor
         shortcut.setContentHuggingPriority(.required, for: .horizontal)
@@ -130,6 +135,7 @@ final class CommandPalette: NSWindowController, NSTableViewDataSource, NSTableVi
         let row = NSStackView(views: [text, shortcut])
         row.orientation = .horizontal
         row.alignment = .centerY
+        row.distribution = .fill
         row.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 8)
         return row
     }
