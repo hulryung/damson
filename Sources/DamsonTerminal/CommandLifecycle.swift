@@ -77,3 +77,32 @@ public enum CommandNotificationPolicy {
 public enum ReportedAgentState: String, CaseIterable {
     case running, waiting, completed, failed, unknown
 }
+
+/// An explicit OSC 777 agent report, tied to the process group that owned the terminal's
+/// foreground when it arrived. Hooks run inside the agent's job, so that group is the
+/// agent. Once it no longer exists the report speaks for nobody: an agent that crashed
+/// after `running` must read as unreported, not as working forever.
+public struct AgentReport: Equatable {
+    public let state: ReportedAgentState
+    public let receivedAt: Date
+    /// nil when the backend has no tty to ask (tmux -CC panes, tests); such a report
+    /// lasts until `clear`, as before.
+    public let ownerProcessGroup: pid_t?
+
+    public init(state: ReportedAgentState, receivedAt: Date, ownerProcessGroup: pid_t?) {
+        self.state = state
+        self.receivedAt = receivedAt
+        self.ownerProcessGroup = ownerProcessGroup
+    }
+
+    /// Whether the owning group still exists. EPERM means it exists but is not ours.
+    public func isCurrent(groupExists: (pid_t) -> Bool = AgentReport.processGroupExists) -> Bool {
+        guard let owner = ownerProcessGroup else { return true }
+        return groupExists(owner)
+    }
+
+    public static func processGroupExists(_ group: pid_t) -> Bool {
+        guard group > 0 else { return false }
+        return kill(-group, 0) == 0 || errno == EPERM
+    }
+}

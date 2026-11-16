@@ -9,8 +9,8 @@ also exposes the menu's commands and live panes across windows.
 | File actions | Right-click a path or file URI for Finder, Quick Look, editor, path/URI copy, or a new terminal in the containing folder. Relative paths resolve against the pane's cwd; a `:line[:col]` suffix (also after a `file://` URI) is passed on. **Open in Editor** uses the file's default app when it is a known editor, else the first installed of VS Code, Cursor, Zed, Sublime Text, Windsurf, VSCodium, VS Code Insiders, a JetBrains IDE; Xcode only as the default app; TextEdit (no line) last. It is enabled only for text-like files. Plain (non-URI) paths stop at whitespace, so names with spaces need a `file://` URI or OSC 8 link. |
 | Command notifications | Enable **Notify When Long Commands Finish** (Tools menu, or Settings → Terminal → Command Notifications, which also sets the minimum duration, default 10 s). A command notifies unless its pane is focused in the frontmost app. Clicking a notification reveals its originating pane by pane id; if the pane has closed it only brings Damson forward. Requires macOS notification permission. |
 | Workspace presets | Save a named layout and reopen it in a new window. Saves folders, tab names/groups, splits and zoom; starts fresh shells. Existing sessions are preserved. Delete removes only the preset. |
-| Agent Activity | Search explicit provider reports and Claude observations. Waiting reports sort first; Return reveals the exact pane. Refreshes every three seconds. Unreported supported launchers show unknown. |
-| Project Summary | On-demand cwd, Git branch/changed-file count and TCP listeners owned by the pane's foreground process. Refresh checks the same folder. Local browser links are candidates; HTTP is not inferred from a port alone. |
+| Agent Activity | Search explicit provider reports and Claude observations. Each row shows state, source (explicit report with receipt time, or Claude observation) and cwd. Waiting panes sort first, then failed reports, then the rest by title; Return reveals the exact pane. Refreshes every three seconds. Unreported supported launchers show unknown. |
+| Project Summary | On-demand cwd, Git branch (or detached commit)/changed-file count and TCP listeners owned by the pane's foreground job. Refresh checks the same folder and re-reads the pane's current foreground job. Local browser links are candidates; HTTP is not inferred from a port alone. |
 | Quick Terminal | **Show/Hide Quick Terminal** reuses a dedicated terminal window. Enable the global `⌃⌘` + grave-accent shortcut separately. Registration failure leaves the setting disabled. |
 
 ## Shell command lifecycle
@@ -29,7 +29,17 @@ a `fish_preexec`/`fish_postexec` vendor config — and are not provided yet.
 A CLI or its hook can write a report to its own terminal:
 
 ```sh
-printf '\033]777;damson;agent;waiting\007'
+printf '\033]777;damson;agent;waiting\007'      # BEL or ST (ESC \\) terminated
+```
+
+The grammar is exactly `OSC 777 ; damson ; agent ; <state> BEL|ST`; anything else is
+ignored, and an unrecognised state leaves the previous report in place. A hook whose
+stdout is captured by the agent (Claude Code's hooks are) must write to `/dev/tty`
+instead. Inside tmux, wrap it for passthrough
+(`set -g allow-passthrough on`):
+
+```sh
+printf '\033Ptmux;\033\033]777;damson;agent;running\007\033\\' > /dev/tty
 ```
 
 States: `running`, `waiting`, `completed`, `failed`, `unknown`. `clear` removes the
@@ -44,8 +54,15 @@ activity panel and protocol preserve the other explicit states. A provider's
 advance managed workflows. Inactivity is never interpreted as completion.
 
 Adapters must emit new states as their tool progresses and `clear` when they no
-longer own the pane. Other providers are not automatically instrumented; a
-launcher without reports remains unknown. Remote sessions must arrange for
+longer own the pane. A report belongs to the process group that held the terminal's
+foreground when it arrived (agent hooks run inside the agent's group). When that group
+no longer exists the report is dropped, so an agent that exits or crashes without
+`clear` reads as unreported rather than as running forever. Consequently a report sent
+by a short-lived external command typed at the prompt expires when that command exits;
+send it from the agent's own process, its hooks, or a shell builtin (`printf` in a
+wrapper function belongs to the shell and lasts until `clear` or the shell exits).
+Panes without a tty to ask (tmux `-CC`) keep reports until `clear`. Other providers
+are not automatically instrumented; a launcher without reports remains unknown. Remote sessions must arrange for
 reports to reach the local terminal (for example tmux passthrough).
 
 ## Storage and limits
@@ -57,10 +74,18 @@ edited file supplies them. Missing folders follow the existing session-restorati
 fallback. Presets use current appearance/shell settings with saved per-pane zoom;
 they do not snapshot a separate configuration profile.
 
-Project queries run off the main thread with a five-second process timeout and
-a two-megabyte output cap. Listener discovery is restricted to the known
-foreground PID, so services in other process groups are not listed. These are
-local tools: remote file URI actions are disabled, and remote Git/SFTP inspection
+Project queries run off the main thread with a five-second process timeout
+(SIGTERM, then SIGKILL; the panel does not wait for a pipe a grandchild still
+holds) and a two-megabyte output cap. Timeouts, oversized status output ("more than
+N"), missing folders, a missing Git (`/usr/bin/git` is used only when the developer
+tools are installed, so the install dialog never appears; Homebrew git is the
+fallback), a Git directory without a work tree, and other Git errors are each
+reported as such, never as "not a repository". Git's stderr is read separately and
+never counted as a status record. Listener discovery uses `lsof -g` on the pane's
+foreground process group, so a server started by `npm run dev` (owned by a child of
+the group leader) is found, while services in other process groups (background jobs,
+other panes) are not listed. Each listener names its owning command and pid.
+These are local tools: remote file URI actions are disabled, and remote Git/SFTP inspection
 is not provided.
 
 ## Verification (2026-10-27)

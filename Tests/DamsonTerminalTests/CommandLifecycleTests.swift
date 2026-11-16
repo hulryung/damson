@@ -41,6 +41,7 @@ final class CommandLifecycleTests: XCTestCase {
         func terminate() {}
         var childWorkingDirectory: String? { nil }
         var isRunningForegroundJob: Bool { false }
+        var foregroundPID: pid_t?
     }
     func testOSCParserIntegrationAndProviderReports() {
         let backend = Backend()
@@ -58,6 +59,49 @@ final class CommandLifecycleTests: XCTestCase {
         feed("\u{1b}]777;damson;agent;clear\u{7}")
         XCTAssertNil(session.reportedAgentState)
         XCTAssertNil(session.agentStateReportedAt)
+        // ST-terminated, as documented; extra fields are not the protocol.
+        feed("\u{1b}]777;damson;agent;failed\u{1b}\\")
+        XCTAssertEqual(session.reportedAgentState, .failed)
+        feed("\u{1b}]777;damson;agent;running;extra\u{7}")
+        XCTAssertEqual(session.reportedAgentState, .failed)
+    }
+
+    /// A reporter that died without `clear` no longer speaks for the pane: the pane reads
+    /// as unreported, not as working forever.
+    func testReportExpiresWhenTheReportingProcessGroupIsGone() throws {
+        let finished = Process()
+        finished.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try finished.run()
+        finished.waitUntilExit()
+
+        let backend = Backend()
+        let session = DamsonSession(config: DamsonConfig(), backend: backend)
+        func feed(_ text: String) { backend.onData?(Data(text.utf8)) }
+
+        backend.foregroundPID = getpgrp()          // a group that certainly exists
+        feed("\u{1b}]777;damson;agent;running\u{7}")
+        XCTAssertEqual(session.agentReport?.ownerProcessGroup, getpgrp())
+        XCTAssertEqual(session.reportedAgentState, .running)
+
+        backend.foregroundPID = finished.processIdentifier   // reaped: no such group
+        feed("\u{1b}]777;damson;agent;waiting\u{7}")
+        XCTAssertNil(session.reportedAgentState)
+        XCTAssertNil(session.agentStateReportedAt)
+        // Expiry is final; the group coming back (pid reuse) cannot revive it.
+        backend.foregroundPID = getpgrp()
+        XCTAssertNil(session.agentReport)
+    }
+
+    func testReportOwnershipRule() {
+        let date = Date()
+        let owned = AgentReport(state: .waiting, receivedAt: date, ownerProcessGroup: 42)
+        XCTAssertTrue(owned.isCurrent { $0 == 42 })
+        XCTAssertFalse(owned.isCurrent { _ in false })
+        // No tty to ask (tmux -CC, tests): lasts until `clear`, never guessed stale.
+        let unowned = AgentReport(state: .waiting, receivedAt: date, ownerProcessGroup: nil)
+        XCTAssertTrue(unowned.isCurrent { _ in false })
+        XCTAssertFalse(AgentReport.processGroupExists(0))
+        XCTAssertTrue(AgentReport.processGroupExists(getpgrp()))
     }
 
     private func completion(_ seconds: TimeInterval, _ code: Int? = 0) -> CommandCompletion {
