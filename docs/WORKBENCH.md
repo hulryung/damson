@@ -1,11 +1,11 @@
 # Workbench tools
 
 Tracked in #43–#49. These tools are available from **Tools**; the command palette
-also exposes enabled menu commands and live panes across windows.
+also exposes the menu's commands and live panes across windows.
 
 | Tool | Use |
 | --- | --- |
-| Command Palette | `⌘⇧P`, search by action, tab title or cwd, arrow keys and Return; Escape returns to the original window. The shortcut is remappable in Settings → Keys. |
+| Command Palette | `⌘⇧P`, search by action, tab title or cwd, arrow keys and Return; Escape (or the close button) returns to the original window. Title matches rank above menu-path/cwd matches. Each command shows its current shortcut (remaps included; arrows as `⌥⌘←`). Commands unavailable in the original window are shown greyed and do nothing on Return. The shortcut is remappable in Settings → Keys. |
 | File actions | Right-click a path or file URI for Finder, Quick Look, editor, path/URI copy, or a new terminal in the containing folder. VS Code supports `file:line`; TextEdit is the fallback. |
 | Command notifications | Enable **Notify When Long Commands Finish**. Commands lasting at least 10 seconds notify when their pane is not focused. Clicking a notification reveals its originating pane. Requires macOS notification permission. |
 | Workspace presets | Save a named layout and reopen it in a new window. Saves folders, tab names/groups, splits and zoom; starts fresh shells. Existing sessions are preserved. Delete removes only the preset. |

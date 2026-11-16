@@ -96,6 +96,12 @@ let package = Package(
             name: "DamsonSettings",
             path: "Sources/DamsonSettings"
         ),
+        // The command palette's search ranking and shortcut rendering — Foundation only,
+        // so the ordering and the key glyphs are testable without the app.
+        .target(
+            name: "DamsonPalette",
+            path: "Sources/DamsonPalette"
+        ),
         .executableTarget(
             name: "damson",
             dependencies: [
@@ -104,6 +110,7 @@ let package = Package(
                 "DamsonAgents",
                 "DamsonTabGroups",
                 "DamsonSettings",
+                "DamsonPalette",
                 "DamsonCrew",
                 "DamsonComputer",
                 "DamsonKeeperCore",
@@ -161,6 +168,11 @@ let package = Package(
             name: "DamsonSettingsTests",
             dependencies: ["DamsonSettings"],
             path: "Tests/DamsonSettingsTests"
+        ),
+        .testTarget(
+            name: "DamsonPaletteTests",
+            dependencies: ["DamsonPalette"],
+            path: "Tests/DamsonPaletteTests"
         ),
         .testTarget(
             name: "DamsonTabGroupsTests",
