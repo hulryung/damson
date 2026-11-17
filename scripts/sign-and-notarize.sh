@@ -152,8 +152,7 @@ fi
 xcrun notarytool submit "$ZIP" "${NOTARY_ARGS[@]}" --wait
 
 echo "==> staple ticket"
-xcrun stapler staple "$APP"
-xcrun stapler validate "$APP"
+"$REPO_ROOT/scripts/staple.sh" "$APP"
 spctl --assess --type execute --verbose=4 "$APP" 2>&1 | tail -3
 
 rm -f "$ZIP"
