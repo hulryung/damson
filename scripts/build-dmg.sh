@@ -102,8 +102,7 @@ if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
         fi
         if [[ ${#NOTARY_ARGS[@]} -gt 0 ]]; then
             xcrun notarytool submit "$DMG" "${NOTARY_ARGS[@]}" --wait
-            xcrun stapler staple "$DMG"
-            xcrun stapler validate "$DMG"
+            "$REPO_ROOT/scripts/staple.sh" "$DMG"
         fi
     fi
 fi
