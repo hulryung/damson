@@ -15,14 +15,28 @@ also exposes the menu's commands and live panes across windows.
 
 ## Shell command lifecycle
 
-The generated zsh integration emits OSC 133 `C` before execution and `D;status`
-after execution, then `A` for the prompt. The terminal records monotonic elapsed
-time, output boundaries and optional exit status. A new prompt without an end
-marker cancels the incomplete record, never inventing success. Duplicate end
-markers do not produce duplicate completion events. Other shells can provide the
-same protocol; automatic injection remains zsh-only. bash (macOS ships 3.2, without
-`PS0`) and fish would need their own hooks — a `DEBUG` trap/`PROMPT_COMMAND` pair and
-a `fish_preexec`/`fish_postexec` vendor config — and are not provided yet.
+Damson's shell integration emits OSC 133 `C` before a command runs and `D;status`
+after it, then OSC 7 (the working directory) and `A` for the prompt. The terminal
+records monotonic elapsed time, output boundaries and optional exit status. A new
+prompt without an end marker cancels the incomplete record, never inventing success.
+Duplicate end markers do not produce duplicate completion events. Any shell can
+provide the same protocol itself.
+
+It is injected automatically when a pane spawns zsh, bash or fish, without touching
+the user's dotfiles; each shell runs its own startup files in its usual order first:
+
+| Shell | How it is loaded |
+| --- | --- |
+| zsh | `ZDOTDIR` points at wrappers that forward to `~/.zshenv`, `~/.zprofile`, `~/.zshrc`, `~/.zlogin`. |
+| bash 4+ | Started with `--posix`, so it reads `$ENV` instead of its startup files (login shells included). The script leaves POSIX mode, restores the user's `ENV`, and runs the login or interactive files itself. |
+| bash 3.2 (`/bin/bash`) | Ignores `$ENV` in POSIX mode, so it is started with `--rcfile … -i`; the script runs `/etc/profile` and the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile` when a login shell was asked for. The shell is not itself a login shell: `shopt login_shell` reads off and `~/.bash_logout` does not run. |
+| fish | Our directory is prepended to `XDG_DATA_DIRS`; its `vendor_conf.d` script restores the variable. fish 4 emits these sequences natively, so the hooks only install on fish 3. |
+
+bash's command start comes from a `DEBUG` trap (bash 3.2 has no `PS0`); an existing
+`DEBUG` trap is chained, and `PROMPT_COMMAND` (string or array) is wrapped so the
+user's prompt commands and `PS1` still see the command's `$?`. A bash given anything
+other than `-l`, `--login` or `-i` (for example `bash -c`) is spawned unchanged.
+`scripts/test-shell-integration.py` runs every supported shell on a real PTY.
 
 ## Provider-neutral agent reports
 

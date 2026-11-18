@@ -175,10 +175,16 @@ public final class DamsonSession: ObservableObject {
             self?.handlePTYExit(code: code)
         }
 
+        // Rewritten here, at spawn, rather than in the config: `launchArgv` and a restored
+        // pane keep the argv the user asked for, and a config whose argv was swapped for a
+        // non-shell program carries none of the shell's integration variables.
+        let launch = config.shellIntegration
+            ? ShellIntegration.prepare(argv: config.argv, env: config.env)
+            : (argv: config.argv, env: config.env)
         do {
             try pty.spawn(
-                argv: config.argv,
-                env: config.env,
+                argv: launch.argv,
+                env: launch.env,
                 cwd: config.cwd,
                 cols: cols,
                 rows: rows
