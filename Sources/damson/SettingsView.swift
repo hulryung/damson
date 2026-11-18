@@ -1151,10 +1151,9 @@ extension DamsonConfig {
         // command run from somewhere), forcing a cd every time. (The caller may override this
         // under an "inherit current directory" policy.)
         config.cwd = NSHomeDirectory()
-        // Inject shell integration so the shell reports cwd via OSC 7 (zsh only). The source of split/new-tab cwd inheritance.
-        config.env.merge(
-            ShellIntegration.envOverrides(forShellPath: config.argv.first)
-        ) { _, new in new }
+        // Shell integration (OSC 7 cwd, OSC 133 prompt marks and command lifecycle) is
+        // applied when the session spawns, for zsh, bash and fish.
+        config.shellIntegration = true
         return config
     }
 }

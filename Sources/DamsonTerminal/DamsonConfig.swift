@@ -92,6 +92,10 @@ public struct DamsonConfig {
     public var argv: [String]
     public var env: [String: String]
     public var cwd: String?
+    /// Point a supported shell (zsh, bash, fish) at damson's integration scripts when it is
+    /// spawned — see `ShellIntegration`. Off by default so a library embedder or a test
+    /// spawns exactly what it asked for.
+    public var shellIntegration = false
 
     public init(
         fontFamily: String = "Menlo",
