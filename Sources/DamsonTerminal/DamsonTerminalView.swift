@@ -1053,7 +1053,8 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             }
         }
         guard let idx = clickCharIndex,
-              let range = SelectionLogic.smartTokenRange(in: text, at: idx),
+              let range = SelectionLogic.smartTokenRange(
+                in: text, at: idx, fileExists: { [self] in resolveExistingFile($0) != nil }),
               range.lowerBound < charToCell.count,
               range.upperBound - 1 < charToCell.count, range.upperBound > 0 else { return nil }
         let startCell = charToCell[range.lowerBound]
@@ -1415,9 +1416,11 @@ public final class DamsonSurfaceView: NSView, NSTextInputClient {
             chars.append(c.char)
             cols.append(i)
         }
-        guard let tok = FilePathDetector.token(at: pos.col, chars: chars, cols: cols),
-              let url = resolveExistingFile(tok.path) else { return nil }
-        return (url, [(pos.row, tok.cols)])
+        // Longest reading first; shorter ones drop a Korean particle glued onto the path.
+        for tok in FilePathDetector.candidates(at: pos.col, chars: chars, cols: cols) {
+            if let url = resolveExistingFile(tok.path) { return (url, [(pos.row, tok.cols)]) }
+        }
+        return nil
     }
 
     /// Resolve a path token to an existing file/dir URL: `/abs`, `~/home`, or relative to the

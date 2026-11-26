@@ -151,6 +151,35 @@ final class SelectionLogicTests: XCTestCase {
         XCTAssertEqual(r.map { String(Array(text)[$0]) }, "~/.config/foo.toml")
     }
 
+    private func smart(_ text: String, _ index: Int, files: Set<String>? = nil) -> String? {
+        SelectionLogic.smartTokenRange(in: text, at: index, fileExists: files.map { set in { set.contains($0) } })
+            .map { String(Array(text)[$0]) }
+    }
+
+    /// "docs/a.md에 있습니다": the particle is not part of the path.
+    func testSmartPathDropsKoreanParticle() {
+        let text = "표는 docs/30_max_temperature_2026-11-26.md에 있습니다."
+        let path = "docs/30_max_temperature_2026-11-26.md"
+        XCTAssertEqual(smart(text, 5, files: [path]), path)
+        // No filesystem answer (file elsewhere): the ASCII extension still ends it.
+        XCTAssertEqual(smart(text, 5, files: []), path)
+        XCTAssertEqual(smart(text, 5), path)
+        XCTAssertEqual(smart("src/main.swift입니다.", 0), "src/main.swift")
+        // Double-clicking the particle itself is not a path selection.
+        XCTAssertNil(smart("docs/a.md에 있다", 9))
+    }
+
+    func testSmartPathKeepsHangulThatIsThePath() {
+        // The whole token exists: nothing is cut, extension or not.
+        XCTAssertEqual(smart("open 문서/설명 now", 5, files: ["문서/설명"]), "문서/설명")
+        XCTAssertEqual(smart("docs/a.md에", 0, files: ["docs/a.md에", "docs/a.md"]), "docs/a.md에")
+        // Unknown file, no extension before the Hangul: left alone.
+        XCTAssertEqual(smart("open 문서/설명 now", 5, files: []), "문서/설명")
+        XCTAssertEqual(smart("open docs/메모 now", 5), "docs/메모")
+        // The filesystem finds a path that itself ends in Hangul under a longer particle.
+        XCTAssertEqual(smart("문서/설명에서 확인", 0, files: ["문서/설명"]), "문서/설명")
+    }
+
     func testSmartPlainWordNoMatch() {
         // A plain identifier has no smart token → caller falls back to word span.
         let text = "let value_count = 3"
