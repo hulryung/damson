@@ -25,18 +25,29 @@ enum FilePathDetector {
     /// and wide-spacer cells already excluded by the caller). Returns nil if the cell isn't
     /// on something that looks like a path.
     static func token(at col: Int, chars: [Character], cols: [Int]) -> Token? {
-        guard let idx = cols.firstIndex(of: col), idx < chars.count else { return nil }
-        guard isPathChar(chars[idx]) else { return nil }
+        candidates(at: col, chars: chars, cols: cols).first
+    }
+
+    /// Longest Hangul tail tried as a glued-on particle ("에서는", "입니다만", …).
+    private static let maxParticle = 6
+
+    /// Every reading of the token under `col`, longest first; the caller takes the first
+    /// that exists on disk.
+    ///
+    /// The first is the whole run of path characters. Hangul is a letter, and a real path
+    /// may contain it ("문서/설명.md"), but Korean also glues particles onto the word before
+    /// them with no space — "docs/report.md에 있습니다" — so the whole run names a file that
+    /// is not there. Only the filesystem can tell the two apart, so the rest are the same
+    /// run with its Hangul tail shortened one character at a time ("설명.md에서" → "설명.md에"
+    /// → "설명.md"). A shortened reading that no longer covers `col` is dropped: clicking the
+    /// particle itself opens nothing.
+    static func candidates(at col: Int, chars: [Character], cols: [Int]) -> [Token] {
+        guard let idx = cols.firstIndex(of: col), idx < chars.count else { return [] }
+        guard isPathChar(chars[idx]) else { return [] }
 
         var lo = idx, hi = idx
         while lo > 0, isPathChar(chars[lo - 1]) { lo -= 1 }
         while hi + 1 < chars.count, isPathChar(chars[hi + 1]) { hi += 1 }
-
-        // Trim a trailing '.' (sentence punctuation) so "see foo/bar.swift." doesn't include the dot.
-        while hi > lo, chars[hi] == "." { hi -= 1 }
-
-        let token = String(chars[lo...hi])
-        guard looksLikePath(token) else { return nil }
 
         // Optional ":NN" line number immediately after the token (also accepts ":NN:CC").
         // Only ASCII digits: `isNumber` also accepts e.g. "½" and full-width digits.
@@ -47,10 +58,27 @@ enum FilePathDetector {
             while j < chars.count, chars[j].isASCII, chars[j].isNumber { digits.append(chars[j]); j += 1 }
             return Int(digits).map { ($0, j) }
         }
-        let line = number(after: hi + 1)
-        let column = line.flatMap { number(after: $0.end) }
+        func make(_ end: Int) -> Token? {
+            var hi = end
+            // Trim a trailing '.' (sentence punctuation) so "see foo/bar.swift." doesn't include the dot.
+            while hi > lo, chars[hi] == "." { hi -= 1 }
+            guard idx <= hi else { return nil }
+            let token = String(chars[lo...hi])
+            guard looksLikePath(token) else { return nil }
+            let line = number(after: hi + 1)
+            let column = line.flatMap { number(after: $0.end) }
+            return Token(path: token, line: line?.value, column: column?.value, cols: cols[lo]..<(cols[hi] + 1))
+        }
 
-        return Token(path: token, line: line?.value, column: column?.value, cols: cols[lo]..<(cols[hi] + 1))
+        var result = make(hi).map { [$0] } ?? []
+        // The particle may itself be followed by the sentence's dot: "foo.swift입니다."
+        while hi > lo, chars[hi] == "." { hi -= 1 }
+        var end = hi
+        while end > lo, hi - end < maxParticle, MultiRowURLDetector.isHangul(chars[end]) {
+            end -= 1
+            if let t = make(end), t != result.last { result.append(t) }
+        }
+        return result
     }
 
     /// A token is path-ish if it has a separator, a home/relative prefix, or a short extension.

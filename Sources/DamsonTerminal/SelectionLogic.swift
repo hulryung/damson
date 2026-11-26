@@ -102,13 +102,16 @@ public enum SelectionLogic {
 
     /// Try each smart rule in order against `text`, returning the first token
     /// range that contains the character `index`. nil means no rule matched.
+    ///
+    /// `fileExists` answers whether a path token names a real file; it settles where a
+    /// path ends when Korean prose runs into it (see `pathWithoutParticle`).
     public static func smartTokenRange(
-        in text: String, at index: Int
+        in text: String, at index: Int, fileExists: ((String) -> Bool)? = nil
     ) -> Range<Int>? {
         let chars = Array(text)
         guard index >= 0, index < chars.count else { return nil }
         for rule in SmartRule.allCases {
-            if let r = match(rule: rule, chars: chars, index: index) { return r }
+            if let r = match(rule: rule, chars: chars, index: index, fileExists: fileExists) { return r }
         }
         return nil
     }
@@ -122,7 +125,9 @@ public enum SelectionLogic {
     private static let emailRegex = try? NSRegularExpression(
         pattern: #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#)
 
-    private static func match(rule: SmartRule, chars: [Character], index: Int) -> Range<Int>? {
+    private static func match(
+        rule: SmartRule, chars: [Character], index: Int, fileExists: ((String) -> Bool)?
+    ) -> Range<Int>? {
         switch rule {
         case .url:
             // Same ending as the clickable link: sentence punctuation after the URL
@@ -140,10 +145,54 @@ public enum SelectionLogic {
                 chars, index,
                 allowed: { !" \t\"'()<>".contains($0) }
             ), tokenIsPath(chars, r) {
-                return r
+                let kept = pathWithoutParticle(chars, r, fileExists: fileExists)
+                return index < kept.upperBound ? kept : nil
             }
             return nil
         }
+    }
+
+    /// Longest Hangul tail tried as a glued-on particle — as `FilePathDetector.maxParticle`.
+    private static let maxParticle = 6
+
+    /// A path token cut back before a Korean particle glued onto it: "docs/a.md에" →
+    /// "docs/a.md". Hangul may also be the path itself ("문서/설명"), so the tail is only
+    /// dropped on evidence, the same way the clickable link decides:
+    ///
+    /// - the filesystem: the longest reading that exists wins, the whole token included;
+    /// - failing that (a file elsewhere, no cwd), the shape: Hangul straight after an
+    ///   ASCII extension is prose — no file is named "report.md에".
+    ///
+    /// A sentence dot after the particle ("…a.md입니다.") goes with it.
+    private static func pathWithoutParticle(
+        _ chars: [Character], _ r: Range<Int>, fileExists: ((String) -> Bool)?
+    ) -> Range<Int> {
+        let lo = r.lowerBound
+        var tailEnd = r.upperBound
+        while tailEnd > lo, chars[tailEnd - 1] == "." { tailEnd -= 1 }
+        var cut = tailEnd
+        while cut > lo, tailEnd - cut < maxParticle, MultiRowURLDetector.isHangul(chars[cut - 1]) {
+            cut -= 1
+        }
+        guard cut < tailEnd, cut > lo else { return r }
+
+        if let fileExists {
+            if fileExists(String(chars[lo..<tailEnd])) { return r }
+            for end in stride(from: tailEnd - 1, through: cut, by: -1)
+            where fileExists(String(chars[lo..<end])) {
+                return lo..<end
+            }
+        }
+        // Shape: "<name>.<ascii ext>" right before the Hangul tail.
+        var dot = cut
+        while dot > lo, chars[dot - 1].isASCII, chars[dot - 1].isLetter || chars[dot - 1].isNumber {
+            dot -= 1
+        }
+        let ext = cut - dot
+        if (1...8).contains(ext), dot - 1 > lo, chars[dot - 1] == ".", chars[dot - 2] != "/" {
+            return lo..<cut
+        }
+        return r
     }
 
     private static func tokenIsPath(_ chars: [Character], _ r: Range<Int>) -> Bool {
