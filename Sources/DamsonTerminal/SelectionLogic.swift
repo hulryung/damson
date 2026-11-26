@@ -148,7 +148,13 @@ public enum SelectionLogic {
                 let kept = pathWithoutParticle(chars, r, fileExists: fileExists)
                 return index < kept.upperBound ? kept : nil
             }
-            return nil
+            // A bare filename — "README.md", "README.md에" — has nothing that marks it as
+            // a path: "value.count" has the same shape. So it is one only when the file
+            // is there, read the way the clickable link reads it (particle dropped).
+            guard let fileExists else { return nil }
+            return FilePathDetector
+                .candidates(at: index, chars: chars, cols: Array(chars.indices))
+                .first { fileExists($0.path) }?.cols
         }
     }
 
