@@ -180,6 +180,18 @@ final class SelectionLogicTests: XCTestCase {
         XCTAssertEqual(smart("문서/설명에서 확인", 0, files: ["문서/설명"]), "문서/설명")
     }
 
+    func testSmartBareFilenameThatExists() {
+        let files: Set<String> = ["README.md"]
+        XCTAssertEqual(smart("README.md에 정리했습니다.", 0, files: files), "README.md")
+        XCTAssertEqual(smart("see README.md.", 6, files: files), "README.md")
+        XCTAssertEqual(smart("Update(README.md)", 8, files: files), "README.md")
+        // On the particle, or with no such file, it is left to plain word selection —
+        // "value.count" looks the same as a filename.
+        XCTAssertNil(smart("README.md에 정리", 9, files: files))
+        XCTAssertNil(smart("value.count에 넣는다", 0, files: files))
+        XCTAssertNil(smart("README.md에 정리", 0))
+    }
+
     func testSmartPlainWordNoMatch() {
         // A plain identifier has no smart token → caller falls back to word span.
         let text = "let value_count = 3"
